@@ -450,6 +450,12 @@ ggml_add_backend(BLAS)
 ggml_add_backend(CANN)
 ggml_add_backend(CUDA)
 ggml_add_backend(HIP)
+
+# ggml-rocm: custom ROCm kernel library (ternary/Bonsai/Sherry kernels)
+# Built as a standalone shared library with no ggml dependency.
+if (GGML_ROCM)
+    add_subdirectory(ggml-rocm)
+endif()
 ggml_add_backend(METAL)
 ggml_add_backend(MUSA)
 ggml_add_backend(RPC)
