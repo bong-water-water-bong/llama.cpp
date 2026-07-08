@@ -85,11 +85,16 @@ void llama_model_zaya::load_arch_tensors(llama_model_loader &) {
             layer.cca_k_scale = create_tensor(tn(LLM_TENSOR_CCA_K_SCALE, "weight", i), {n_head_kv}, 0);
         }
 
-        // Residual scaling
+        // Residual scaling (post-attention)
         layer.res_scale_hs   = create_tensor(tn(LLM_TENSOR_RES_SCALE_HS, "weight", i), {n_embd}, 0);
         layer.res_scale_hs_b = create_tensor(tn(LLM_TENSOR_RES_SCALE_HS, "bias", i), {n_embd}, TENSOR_NOT_REQUIRED);
         layer.res_scale_res  = create_tensor(tn(LLM_TENSOR_RES_SCALE_RES, "weight", i), {n_embd}, TENSOR_NOT_REQUIRED);
         layer.res_scale_res_b = create_tensor(tn(LLM_TENSOR_RES_SCALE_RES, "bias", i), {n_embd}, TENSOR_NOT_REQUIRED);
+        // Post-MLP residual scales (fallback to post-attention if not present)
+        layer.res_scale_hs_mlp   = create_tensor(tn(LLM_TENSOR_RES_SCALE_HS_MLP, "weight", i), {n_embd}, TENSOR_NOT_REQUIRED);
+        layer.res_scale_hs_mlp_b = create_tensor(tn(LLM_TENSOR_RES_SCALE_HS_MLP, "bias", i), {n_embd}, TENSOR_NOT_REQUIRED);
+        layer.res_scale_res_mlp  = create_tensor(tn(LLM_TENSOR_RES_SCALE_RES_MLP, "weight", i), {n_embd}, TENSOR_NOT_REQUIRED);
+        layer.res_scale_res_mlp_b = create_tensor(tn(LLM_TENSOR_RES_SCALE_RES_MLP, "bias", i), {n_embd}, TENSOR_NOT_REQUIRED);
 
         // MoE layers (odd indices)
         if (i % 2 == 1) {
@@ -176,10 +181,16 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
         const int64_t n_groups  = n_head + n_head_kv;
         const int64_t n_gqa     = n_head / n_head_kv;
 
-        ggml_tensor * hidden_states = apply_res_scale(inpL, layer.res_scale_hs, layer.res_scale_hs_b, "res_scale_hs", il);
-        // residual_in_fp32 = true in config
+        // Select residual scales: prev layer was MoE (odd) → use post-mlp scales
+        bool prev_moe = (il > 0) && ((il - 1) % 2 == 1);
+        auto* hs  = prev_moe && layer.res_scale_hs_mlp   ? layer.res_scale_hs_mlp   : layer.res_scale_hs;
+        auto* hb  = prev_moe && layer.res_scale_hs_mlp_b ? layer.res_scale_hs_mlp_b : layer.res_scale_hs_b;
+        auto* rs  = prev_moe && layer.res_scale_res_mlp  ? layer.res_scale_res_mlp  : layer.res_scale_res;
+        auto* rb  = prev_moe && layer.res_scale_res_mlp_b ? layer.res_scale_res_mlp_b : layer.res_scale_res_b;
+        
+        ggml_tensor * hidden_states = apply_res_scale(inpL, hs, hb, "res_scale_hs", il);
         if (residual != nullptr) {
-            residual = apply_res_scale(residual, layer.res_scale_res, layer.res_scale_res_b, "res_scale_res", il);
+            residual = apply_res_scale(residual, rs, rb, "res_scale_res", il);
             residual = ggml_add(ctx0, ggml_cast(ctx0, hidden_states, GGML_TYPE_F32), ggml_cast(ctx0, residual, GGML_TYPE_F32));
         } else {
             residual = ggml_cast(ctx0, hidden_states, GGML_TYPE_F32);

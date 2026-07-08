@@ -617,6 +617,8 @@ class MODEL_TENSOR(IntEnum):
     CCA_VAL_PROJ2        = auto() # Zaya: CCA value projection stream 2
     RES_SCALE_HS         = auto() # Zaya: hidden_states_scale (+ bias)
     RES_SCALE_RES        = auto() # Zaya: residual_scale (+ bias)
+    RES_SCALE_HS_MLP     = auto() # Zaya: post-mlp hidden_states_scale (+ bias)
+    RES_SCALE_RES_MLP    = auto() # Zaya: post-mlp residual_scale (+ bias)
     RES_SCALE_HS_FINAL   = auto() # Zaya: final hidden_states_scale (+ bias)
     RES_SCALE_RES_FINAL  = auto() # Zaya: final residual_scale (+ bias)
     ZAYA_ROUTER_MLP2     = auto() # Zaya: router MLP layer 2 (+ bias)
@@ -1143,6 +1145,8 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.CCA_VAL_PROJ2:             "blk.{bid}.cca_val_proj2",        # Zaya
     MODEL_TENSOR.RES_SCALE_HS:              "blk.{bid}.res_scale_hs",         # Zaya
     MODEL_TENSOR.RES_SCALE_RES:             "blk.{bid}.res_scale_res",        # Zaya
+    MODEL_TENSOR.RES_SCALE_HS_MLP:          "blk.{bid}.res_scale_hs.mlp",    # Zaya
+    MODEL_TENSOR.RES_SCALE_RES_MLP:          "blk.{bid}.res_scale_res.mlp",  # Zaya
     MODEL_TENSOR.RES_SCALE_HS_FINAL:        "res_scale_hs",                   # Zaya
     MODEL_TENSOR.RES_SCALE_RES_FINAL:       "res_scale_res",                  # Zaya
     MODEL_TENSOR.ZAYA_ROUTER_MLP2:          "blk.{bid}.zaya_router_mlp2",     # Zaya

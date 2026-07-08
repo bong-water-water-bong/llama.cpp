@@ -6463,6 +6463,8 @@ class ZayaModel(TextModel):
         super().__init__(*args, **kwargs)
         # Buffer for accumulating expert weights per layer
         self._experts: dict[int, dict[str, Tensor]] | None = {}
+        # Track emitted tensor names to avoid duplicates
+        self._emitted: set[str] = set()
         # Pre-load tokenizer to know the vocab count for embedding trimming
         self._tokenizer_vocab_size: int | None = None
         try:
@@ -6490,6 +6492,12 @@ class ZayaModel(TextModel):
         partial_rotary = self.hparams.get("partial_rotary_factor", 0.5)
         self.gguf_writer.add_rope_dimension_count(int(partial_rotary * head_dim))
 
+        # RoPE freq_base from rope_parameters.hybrid.rope_theta (default 10000)
+        rope_params = self.hparams.get("rope_parameters", {})
+        hybrid_params = rope_params.get("hybrid", {}) if isinstance(rope_params, dict) else {}
+        rope_theta = hybrid_params.get("rope_theta", 10000.0)
+        self.gguf_writer.add_rope_freq_base(rope_theta)
+
         # MoE params
         n_expert = self.find_hparam(["num_experts"])
         self.gguf_writer.add_expert_count(n_expert)
@@ -6501,6 +6509,7 @@ class ZayaModel(TextModel):
         self.gguf_writer.add_expert_feed_forward_length(n_ff_exp)
 
     def _map_cca(self, name: str, data_torch: Tensor, bid: int) -> Iterable[tuple[str, Tensor]]:
+        # Original naming (old Zaya checkpoints)
         if "linear_q" in name:
             yield self.format_tensor_name(gguf.MODEL_TENSOR.ATTN_Q, bid), data_torch
         elif "linear_k" in name:
@@ -6512,23 +6521,40 @@ class ZayaModel(TextModel):
         elif "o_proj" in name:
             yield self.format_tensor_name(gguf.MODEL_TENSOR.ATTN_OUT, bid), data_torch
         elif "conv_qk.0" in name and name.endswith(".weight"):
-            # PyTorch: [n_qk, 1, kernel] (depthwise) -> ggml: {kernel, n_qk}
             data_torch = data_torch.squeeze(1).contiguous()
             yield self.format_tensor_name(gguf.MODEL_TENSOR.SSM_CONV1D, bid), data_torch
         elif "conv_qk.0" in name and name.endswith(".bias"):
             yield self.format_tensor_name(gguf.MODEL_TENSOR.SSM_CONV1D, bid, suffix=".bias"), data_torch
         elif "conv_qk.1" in name and name.endswith(".weight"):
-            # PyTorch: [n_qk, in_ch_per_group, kernel] -> ggml: {kernel, in_ch_per_group, n_qk}
             yield self.format_tensor_name(gguf.MODEL_TENSOR.CCA_CONV_GRP, bid), data_torch
         elif "conv_qk.1" in name and name.endswith(".bias"):
             yield self.format_tensor_name(gguf.MODEL_TENSOR.CCA_CONV_GRP, bid, suffix=".bias"), data_torch
         elif "temp" in name:
             yield self.format_tensor_name(gguf.MODEL_TENSOR.CCA_K_SCALE, bid), data_torch
+        # New naming (Zyphra ZAYA1-8B checkpoint)
+        elif name.endswith("qkv_proj.q_proj.weight") or name.endswith("qkv_proj.q_proj.bias"):
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.ATTN_Q, bid), data_torch
+        elif name.endswith("qkv_proj.k_proj.weight") or name.endswith("qkv_proj.k_proj.bias"):
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.ATTN_K, bid), data_torch
+        elif name.endswith("qkv_proj.v_proj_current.weight") or name.endswith("qkv_proj.v_proj_current.bias"):
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.CCA_VAL_PROJ1, bid), data_torch
+        elif name.endswith("qkv_proj.v_proj_delayed.weight") or name.endswith("qkv_proj.v_proj_delayed.bias"):
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.CCA_VAL_PROJ2, bid), data_torch
+        elif name.endswith("qkv_proj.conv_qk_depthwise.weight"):
+            data_torch = data_torch.squeeze(1).contiguous()
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.SSM_CONV1D, bid), data_torch
+        elif name.endswith("qkv_proj.conv_qk_depthwise.bias"):
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.SSM_CONV1D, bid, suffix=".bias"), data_torch
+        elif name.endswith("qkv_proj.conv_qk_grouped.weight"):
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.CCA_CONV_GRP, bid), data_torch
+        elif name.endswith("qkv_proj.conv_qk_grouped.bias"):
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.CCA_CONV_GRP, bid, suffix=".bias"), data_torch
 
     def _map_router(self, name: str, data_torch: Tensor, bid: int) -> Iterable[tuple[str, Tensor]]:
-        if "down_proj.weight" in name:
+        # Original naming (old Zaya checkpoints)
+        if "down_proj.weight" in name and "router_mlp" not in name:
             yield self.format_tensor_name(gguf.MODEL_TENSOR.FFN_GATE_INP, bid), data_torch
-        elif "down_proj.bias" in name:
+        elif "down_proj.bias" in name and "router_mlp" not in name:
             yield self.format_tensor_name(gguf.MODEL_TENSOR.FFN_GATE_INP, bid, suffix=".bias"), data_torch
         elif "rmsnorm_eda" in name:
             yield self.format_tensor_name(gguf.MODEL_TENSOR.FFN_NORM, bid), data_torch
@@ -6546,6 +6572,21 @@ class ZayaModel(TextModel):
             yield self.format_tensor_name(gguf.MODEL_TENSOR.ZAYA_ROUTER_BIASES, bid), data_torch
         elif "router_states_scale" in name:
             yield self.format_tensor_name(gguf.MODEL_TENSOR.ZAYA_ROUTER_EDA_SCALE, bid), data_torch
+        # New naming (Zyphra ZAYA1-8B checkpoint)
+        elif "gate.down_proj.weight" in name or name.endswith("gate.down_proj.bias"):
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.FFN_GATE_INP, bid), data_torch
+        elif "router_mlp.fc1.weight" in name:
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.FFN_GATE, bid), data_torch
+        elif "router_mlp.fc1.bias" in name:
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.FFN_GATE, bid, suffix=".bias"), data_torch
+        elif "router_mlp.fc2.weight" in name:
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.ZAYA_ROUTER_MLP2, bid), data_torch
+        elif "router_mlp.fc2.bias" in name:
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.ZAYA_ROUTER_MLP2, bid, suffix=".bias"), data_torch
+        elif "router_mlp.out_proj.weight" in name:
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.ZAYA_ROUTER_MLP4, bid), data_torch
+        elif "router_mlp.norm.weight" in name:
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.FFN_NORM, bid), data_torch
 
     def _map_res_scale(self, name: str, data_torch: Tensor, bid: int) -> Iterable[tuple[str, Tensor]]:
         if "hidden_states_scale" in name:
@@ -6575,8 +6616,11 @@ class ZayaModel(TextModel):
                 data_torch = data_torch[:self._tokenizer_vocab_size]
             yield self.format_tensor_name(gguf.MODEL_TENSOR.TOKEN_EMBD), data_torch
             return
-        if name == "model.final_norm.weight":
+        if name == "model.final_norm.weight" or name == "model.norm.weight":
             yield self.format_tensor_name(gguf.MODEL_TENSOR.OUTPUT_NORM), data_torch
+            return
+        # Skip final residual scale for now
+        if name.startswith("model.input_hidden_states_"):
             return
         if name.startswith("model.res_scale."):
             yield from self._map_final_res_scale(name, data_torch)
@@ -6589,33 +6633,55 @@ class ZayaModel(TextModel):
                 yield from self._map_cca(name, data_torch, bid)
                 return
 
-            # Router tensors
+            # Router tensors (including mlp.gate tensors without 'router' in name)
+            if "mlp.gate" in name and "experts" not in name:
+                yield from self._map_router(name, data_torch, bid)
+                return
             if "router" in name:
                 yield from self._map_router(name, data_torch, bid)
                 return
 
-            # Input norm
-            if "input_norm" in name:
+            # Input norm (accept both input_norm and input_layernorm)
+            if "input_norm" in name or "input_layernorm" in name:
                 yield self.format_tensor_name(gguf.MODEL_TENSOR.ATTN_NORM, bid), data_torch
                 return
-
-            # Residual scaling
-            if "res_scale" in name:
-                yield from self._map_res_scale(name, data_torch, bid)
+            # Skip post_attention_layernorm — Zaya uses FFN_NORM for router norm, not layernorm
+            if "post_attention_layernorm" in name:
                 return
 
-            # Expert stacking
-            if "zaya_block.experts" in name:
+            # Residual scaling — emit post-mlp scales with .mlp suffix
+            if "residual_scale" in name or "post_attention_res_scale" in name or "post_mlp_res_scale" in name or "post_attention_residual_scale" in name or "post_mlp_residual_scale" in name:
+                is_mlp = "post_mlp" in name
+                for tensor_name, data in self._map_res_scale(name, data_torch, bid):
+                    if is_mlp:
+                        # Add .mlp suffix: blk.0.res_scale_hs.weight -> blk.0.res_scale_hs.mlp.weight
+                        parts = tensor_name.rsplit('.', 1)
+                        tensor_name = parts[0] + '.mlp.' + parts[1]
+                    if tensor_name not in self._emitted:
+                        self._emitted.add(tensor_name)
+                        yield tensor_name, data
+                return
+
+            # Expert tensors — already pre-stacked in new checkpoints ([n_expert, ...])
+            # or per-expert in old checkpoints (need stacking)
+            if "experts" in name and ("zaya_block" in name or "mlp.experts" in name):
                 assert bid is not None
+                # New format: pre-stacked tensors like mlp.experts.down_proj [16, 2048, 2048]
+                if "mlp.experts" in name:
+                    if name.endswith("down_proj"):
+                        yield self.format_tensor_name(gguf.MODEL_TENSOR.FFN_DOWN_EXP, bid), data_torch
+                    elif name.endswith("gate_up_proj"):
+                        yield self.format_tensor_name(gguf.MODEL_TENSOR.FFN_GATE_UP_EXP, bid), data_torch
+                    return
+                # Old format: per-expert tensors, need stacking (existing logic)
                 if self._experts is None:
                     self._experts = {}
                 if bid not in self._experts:
                     self._experts[bid] = {}
                 self._experts[bid][name] = data_torch
-
                 n_expert = self.find_hparam(["num_experts"])
-                # Each layer has 2 expert weights per expert (fc1, fc2) = 2 * n_expert tensors
-                if len(self._experts[bid]) >= n_expert * 2:
+                expected = n_expert * 2
+                if len(self._experts[bid]) >= expected:
                     for w_name, gguf_tensor, permute_dims in [
                         ("linear_fc1", gguf.MODEL_TENSOR.FFN_GATE_UP_EXP, None),
                         ("linear_fc2", gguf.MODEL_TENSOR.FFN_DOWN_EXP, None),

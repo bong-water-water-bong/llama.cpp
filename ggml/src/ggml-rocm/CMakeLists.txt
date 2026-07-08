@@ -66,6 +66,8 @@ set(ROCM_ALL_SRCS
     "${_R1B}/kernels/ternary_gemv_tq1_halo.hip"
     "${_R1B}/kernels/rotorquant_pack.hip"
     "${_R1B}/kernels/hadamard_rotate_butterfly.hip"
+    "${_R1B}/kernels/zaya_moe_ternary_gemv.hip"
+    "${_R1B}/src/zaya_moe_launcher.hip"
 )
 
 # All sources as LANGUAGE HIP so amdclang++ handles everything

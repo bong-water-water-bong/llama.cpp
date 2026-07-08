@@ -487,10 +487,14 @@ struct llama_layer {
     struct ggml_tensor * cca_val_proj2  = nullptr;  // V projection stream 2
 
     // ZAYA residual scaling
-    struct ggml_tensor * res_scale_hs   = nullptr;  // hidden_states_scale
-    struct ggml_tensor * res_scale_hs_b = nullptr;  // hidden_states_bias
-    struct ggml_tensor * res_scale_res  = nullptr;  // residual_scale
-    struct ggml_tensor * res_scale_res_b = nullptr; // residual_bias
+    struct ggml_tensor * res_scale_hs      = nullptr;  // hidden_states_scale (post-attention)
+    struct ggml_tensor * res_scale_hs_b    = nullptr;  // hidden_states_bias
+    struct ggml_tensor * res_scale_res     = nullptr;  // residual_scale (post-attention)
+    struct ggml_tensor * res_scale_res_b   = nullptr; // residual_bias
+    struct ggml_tensor * res_scale_hs_mlp  = nullptr;  // post-mlp hidden_states_scale
+    struct ggml_tensor * res_scale_hs_mlp_b= nullptr;  // post-mlp hidden_states_bias
+    struct ggml_tensor * res_scale_res_mlp = nullptr;  // post-mlp residual_scale
+    struct ggml_tensor * res_scale_res_mlp_b= nullptr; // post-mlp residual_bias
 
     // ZAYA Router (MoE gating)
     struct ggml_tensor * zaya_router_down     = nullptr;  // router down_proj
