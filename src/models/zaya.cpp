@@ -20,7 +20,7 @@ void llama_model_zaya::load_arch_hparams(llama_model_loader & ml) {
     }
 
     switch (hparams.n_layer) {
-        case 80: type = LLM_TYPE_8B; break;
+        case 40: type = LLM_TYPE_8B; break;   // ZAYA1-8B: 40 sub-blocks (20 CCA + 20 MoE)
         default: type = LLM_TYPE_UNKNOWN;
     }
 }
@@ -181,19 +181,36 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
         const int64_t n_groups  = n_head + n_head_kv;
         const int64_t n_gqa     = n_head / n_head_kv;
 
-        // Select residual scales: prev layer was MoE (odd) → use post-mlp scales
-        bool prev_moe = (il > 0) && ((il - 1) % 2 == 1);
-        auto* hs  = prev_moe && layer.res_scale_hs_mlp   ? layer.res_scale_hs_mlp   : layer.res_scale_hs;
-        auto* hb  = prev_moe && layer.res_scale_hs_mlp_b ? layer.res_scale_hs_mlp_b : layer.res_scale_hs_b;
-        auto* rs  = prev_moe && layer.res_scale_res_mlp  ? layer.res_scale_res_mlp  : layer.res_scale_res;
-        auto* rb  = prev_moe && layer.res_scale_res_mlp_b ? layer.res_scale_res_mlp_b : layer.res_scale_res_b;
-        
-        ggml_tensor * hidden_states = apply_res_scale(inpL, hs, hb, "res_scale_hs", il);
-        if (residual != nullptr) {
+        // Residual scaling: Python applies post-sub-block residual scales as
+        //   new_residual = (sub_out + hs_bias) * hs_scale + (residual + rs_bias) * rs_scale
+        // In C++ one Python layer is split into two C++ layers (even=attention, odd=MoE).
+        // Post-attention scales are applied at the start of the NEXT (odd/MoE) layer.
+        // Post-mlp scales are applied at the start of the NEXT (even/attention) layer.
+        // Both sets live on the PREVIOUS layer, not the current one.
+        if (il == 0) {
+            // First layer: no previous residual scaling. Python uses identity
+            // input_hidden_states_scale/bias (ones/zeros), so pass through.
+            residual = ggml_cast(ctx0, inpL, GGML_TYPE_F32);
+        } else {
+            const auto & prev_layer = model.layers[il - 1];
+            ggml_tensor * hs, * hb, * rs, * rb;
+            if (il % 2 == 1) {
+                // Odd layer (MoE): previous was attention → use post-attention scales
+                hs = prev_layer.res_scale_hs;
+                hb = prev_layer.res_scale_hs_b;
+                rs = prev_layer.res_scale_res;
+                rb = prev_layer.res_scale_res_b;
+            } else {
+                // Even layer (attention, il>=2): previous was MoE → use post-mlp scales
+                hs = prev_layer.res_scale_hs_mlp   ? prev_layer.res_scale_hs_mlp   : prev_layer.res_scale_hs;
+                hb = prev_layer.res_scale_hs_mlp_b ? prev_layer.res_scale_hs_mlp_b : prev_layer.res_scale_hs_b;
+                rs = prev_layer.res_scale_res_mlp  ? prev_layer.res_scale_res_mlp  : prev_layer.res_scale_res;
+                rb = prev_layer.res_scale_res_mlp_b ? prev_layer.res_scale_res_mlp_b : prev_layer.res_scale_res_b;
+            }
+
+            ggml_tensor * hidden_states = apply_res_scale(inpL, hs, hb, "res_scale_hs", il);
             residual = apply_res_scale(residual, rs, rb, "res_scale_res", il);
             residual = ggml_add(ctx0, ggml_cast(ctx0, hidden_states, GGML_TYPE_F32), ggml_cast(ctx0, residual, GGML_TYPE_F32));
-        } else {
-            residual = ggml_cast(ctx0, hidden_states, GGML_TYPE_F32);
         }
         cb(residual, "residual", il);
 
@@ -423,13 +440,32 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
             cb(cur, "moe_out", il);
         }
 
+    if (getenv("ZAYA_DUMP")) {
+        char fname[64]; snprintf(fname, 64, "/tmp/zaya_gguf/layer_%d.bin", il);
+        FILE* fp = fopen(fname, "wb");
+        if (fp) { fclose(fp); } /* marker for layer debug */
+    }
         inpL = cur;
     }
 
-    ggml_tensor * final_hidden = apply_res_scale(inpL, model.zaya_res_scale_hs, model.zaya_res_scale_hs_b, "final_res_scale_hs", -1);
+    // Apply post-mlp residual scales from the final MoE layer (always odd-indexed).
+    // Python ZayaDecoderLayer ends with post_mlp_residual_scale, not a bare sum.
+    const auto & last_layer = model.layers[n_layer - 1];
+    ggml_tensor * final_hs  = last_layer.res_scale_hs_mlp   ? last_layer.res_scale_hs_mlp   : last_layer.res_scale_hs;
+    ggml_tensor * final_hb  = last_layer.res_scale_hs_mlp_b ? last_layer.res_scale_hs_mlp_b : last_layer.res_scale_hs_b;
+    ggml_tensor * final_rs  = last_layer.res_scale_res_mlp  ? last_layer.res_scale_res_mlp  : last_layer.res_scale_res;
+    ggml_tensor * final_rb  = last_layer.res_scale_res_mlp_b ? last_layer.res_scale_res_mlp_b : last_layer.res_scale_res_b;
+
+    // Fallback to model-level scales if per-layer mlp scales are missing
+    if (final_hs == nullptr) final_hs = model.zaya_res_scale_hs;
+    if (final_hb == nullptr) final_hb = model.zaya_res_scale_hs_b;
+    if (final_rs == nullptr) final_rs = model.zaya_res_scale_res;
+    if (final_rb == nullptr) final_rb = model.zaya_res_scale_res_b;
+
+    ggml_tensor * final_hidden = apply_res_scale(inpL, final_hs, final_hb, "final_res_scale_hs", -1);
     // residual_in_fp32 = true in config
     if (residual != nullptr) {
-        residual = apply_res_scale(residual, model.zaya_res_scale_res, model.zaya_res_scale_res_b, "final_res_scale_res", -1);
+        residual = apply_res_scale(residual, final_rs, final_rb, "final_res_scale_res", -1);
         cur = ggml_add(ctx0, ggml_cast(ctx0, final_hidden, GGML_TYPE_F32), ggml_cast(ctx0, residual, GGML_TYPE_F32));
     } else {
         cur = ggml_cast(ctx0, final_hidden, GGML_TYPE_F32);
