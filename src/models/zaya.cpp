@@ -415,6 +415,8 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
                     ggml_view_2d(ctx0, router_probs, n_expert, n_tokens, router_probs->nb[1], 0));
             cb(gate_probs, "gate_probs", il);
 
+            // NOTE: balancing_biases are applied to PROBABILITIES in Python (expert_prob + bias),
+            // but build_moe_ffn applies them to LOGITS. This is a known difference.
             ggml_tensor * expert_biases = nullptr;
             if (layer.zaya_router_biases != nullptr) {
                 expert_biases = ggml_view_1d(ctx0, layer.zaya_router_biases, n_expert, 0);
@@ -441,7 +443,7 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
         if (getenv("ZAYA_DUMP")) {
             char fname[64]; snprintf(fname, 64, "/tmp/zaya_gguf/layer_%d.bin", il);
             FILE* fp = fopen(fname, "wb");
-            if (fp) { fclose(fp); } /* marker for layer debug */
+            if (fp) { fclose(fp); }
         }
         inpL = cur;
     }
