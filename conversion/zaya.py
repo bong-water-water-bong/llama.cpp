@@ -34,8 +34,11 @@ class ZayaModel(TextModel):
 
     def set_gguf_parameters(self):
         super().set_gguf_parameters()
-        # Use actual tokenizer vocab size if available, fallback to config vocab_size
-        vocab_size = self._tokenizer_vocab_size if self._tokenizer_vocab_size is not None else self.hparams["vocab_size"]
+        # Use the LARGER of tokenizer vocab size and config vocab_size.
+        # Truncating would lose token IDs and cause garbled model output.
+        hparam_vocab = self.hparams.get("vocab_size", 0)
+        tokenizer_vocab = self._tokenizer_vocab_size or 0
+        vocab_size = max(hparam_vocab, tokenizer_vocab)
         self.gguf_writer.add_vocab_size(vocab_size)
 
         # n_ff = ffn_hidden_size / 2 (SwiGLU halves the intermediate)
@@ -170,9 +173,19 @@ class ZayaModel(TextModel):
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         # Common tensors
         if name == "model.embed_tokens.weight":
-            # Trim embedding to match tokenizer vocab size if needed
+            # Pad embedding to full model vocab size if tokenizer is smaller.
+            # Truncation would lose token IDs and cause garbled output.
             if self._tokenizer_vocab_size is not None and data_torch.shape[0] > self._tokenizer_vocab_size:
-                data_torch = data_torch[:self._tokenizer_vocab_size]
+                # There are extra tokens in the model that the tokenizer doesn't know
+                # about. Keep them (don't truncate) — they'll be unused during tokenization
+                # but needed for correct LM head / embedding tensor shape.
+                pass
+            elif self._tokenizer_vocab_size is not None and data_torch.shape[0] < self.hparams.get("vocab_size", 0):
+                # Tokenizer is larger than the raw embedding tensor. Pad with zeros.
+                target = max(data_torch.shape[0], self.hparams.get("vocab_size", data_torch.shape[0]))
+                if target > data_torch.shape[0]:
+                    pad = torch.zeros(target - data_torch.shape[0], data_torch.shape[1], dtype=data_torch.dtype)
+                    data_torch = torch.cat([data_torch, pad], dim=0)
             yield self.format_tensor_name(gguf.MODEL_TENSOR.TOKEN_EMBD), data_torch
             return
         if name == "model.final_norm.weight" or name == "model.norm.weight":
@@ -204,8 +217,9 @@ class ZayaModel(TextModel):
             if "input_norm" in name or "input_layernorm" in name:
                 yield self.format_tensor_name(gguf.MODEL_TENSOR.ATTN_NORM, bid), data_torch
                 return
-            # Skip post_attention_layernorm — Zaya uses FFN_NORM for router norm, not layernorm
+            # Post-attention layernorm — second RMSNorm before MoE in every layer
             if "post_attention_layernorm" in name:
+                yield self.format_tensor_name(gguf.MODEL_TENSOR.ATTN_NORM_2, bid), data_torch
                 return
 
             # Residual scaling — emit post-mlp scales with .mlp suffix
@@ -278,7 +292,7 @@ class ZayaModel(TextModel):
             scores.append(score)
             toktypes.append(toktype)
 
-        assert len(tokens) == vocab.vocab_size
+        assert len(tokens) >= vocab.vocab_size, f"tokenizer has {len(tokens)} tokens, expected at least {vocab.vocab_size}"
 
         self.gguf_writer.add_tokenizer_model("gemma4")
         self.gguf_writer.add_token_list(tokens)

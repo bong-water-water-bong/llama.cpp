@@ -25,16 +25,21 @@ void llama_model_zaya::load_arch_hparams(llama_model_loader & ml) {
     }
 }
 
-void llama_model_zaya::load_arch_tensors(llama_model_loader &) {
+void llama_model_zaya::load_arch_tensors(llama_model_loader & ml) {
     LLAMA_LOAD_LOCALS;
 
-    tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, 0);
+    // n_vocab from tokenizer may be smaller than model's actual vocab_size.
+    uint32_t meta_vocab = 0;
+    ml.get_key(LLM_KV_VOCAB_SIZE, meta_vocab, false);
+    const int64_t zaya_vocab = std::max((int64_t)n_vocab, (int64_t)meta_vocab);
+
+    tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, zaya_vocab}, 0);
 
     // output norm
     output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), {n_embd}, 0);
 
     // output (tied with tok_embd if not present)
-    output = create_tensor(tn(LLM_TENSOR_OUTPUT, "weight"), {n_embd, n_vocab}, TENSOR_NOT_REQUIRED);
+    output = create_tensor(tn(LLM_TENSOR_OUTPUT, "weight"), {n_embd, zaya_vocab}, TENSOR_NOT_REQUIRED);
     if (output == nullptr) {
         output = tok_embd;
     }
