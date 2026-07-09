@@ -370,6 +370,11 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
                 1.0f / sqrtf((float) n_embd_head), il);
             cb(cur, "attn_out", il);
 
+            // DEBUG: dump first layer attention output for comparison
+            if (il == 0 && getenv("ZAYA_DEBUG")) {
+                fprintf(stderr, "ZAYA_DEBUG L0 attn_out ne[0]=%ld ne[1]=%ld\n", cur->ne[0], cur->ne[1]);
+            }
+
         } else {
             // ===== MoE (ZayaDecoderMLPLayer) =====
             // Build Zaya router network matching Python ZayaRouter:
