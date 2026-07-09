@@ -15,11 +15,11 @@ void llama_model_zaya::load_arch_hparams(llama_model_loader & ml) {
     hparams.ssm_d_state = 1;
     hparams.ssm_n_group = 0;
 
-    for (uint32_t i = 0; i < hparams.n_layer; ++i) {
-        hparams.recurrent_layer_arr[i] = (i % 2) == 0;
+    for (uint32_t i = 0; i < hparams.n_layer(); ++i) {
+        hparams.is_recr_impl[i] = (i % 2) == 0;
     }
 
-    switch (hparams.n_layer) {
+    switch (hparams.n_layer()) {
         case 40: type = LLM_TYPE_8B; break;   // ZAYA1-8B: 40 sub-blocks (20 CCA + 20 MoE)
         default: type = LLM_TYPE_UNKNOWN;
     }

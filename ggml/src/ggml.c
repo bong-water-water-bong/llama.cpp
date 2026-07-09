@@ -4613,6 +4613,9 @@ struct ggml_tensor * ggml_conv_1d_grouped(
         }
     }
 
+    return result;
+}
+
 // ggml_col2im_1d
 
 struct ggml_tensor * ggml_col2im_1d(
