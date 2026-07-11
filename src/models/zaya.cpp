@@ -16,7 +16,7 @@ void llama_model_zaya::load_arch_hparams(llama_model_loader & ml) {
     hparams.ssm_n_group = 0;
 
     for (uint32_t i = 0; i < hparams.n_layer(); ++i) {
-        hparams.is_recr_impl[i] = (i % 2) == 0; // only ATT layers (even) have CCA state
+        hparams.is_recr_impl[i] = true; // ALL layers need recurrent state
     }
 
     switch (hparams.n_layer()) {
@@ -390,7 +390,7 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
             router_h = ggml_add(ctx0, router_h, layer.zaya_router_down_b);
             cb(router_h, "router_down", il);
 
-            if (il != 1 && prev_router != nullptr && layer.zaya_router_eda_scale != nullptr) {
+            if (il != 0 && prev_router != nullptr && layer.zaya_router_eda_scale != nullptr) {
                 router_h = ggml_add(ctx0, router_h, ggml_mul(ctx0, prev_router, layer.zaya_router_eda_scale));
                 cb(router_h, "router_eda", il);
             }

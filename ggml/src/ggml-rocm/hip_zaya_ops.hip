@@ -135,7 +135,7 @@ extern "C" __global__ void kernel_conv_1d_grouped_f32(
         int64_t input_pos = l * stride + k;
         if (input_pos >= L) break;
         for (int64_t ic = 0; ic < IC_G; ++ic) {
-            float k_val = kernel[k * IC_G * OC + ic * OC + oc];
+            float k_val = kernel[k + ic * K + oc * K * IC_G];
             float i_val = input[input_pos + (ic_offset + ic) * i_stride + n * L * IC];
             sumf += k_val * i_val;
         }

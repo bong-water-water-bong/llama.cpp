@@ -7721,6 +7721,78 @@ void ggml_graph_dump_dot(const struct ggml_cgraph * gb, const struct ggml_cgraph
     GGML_LOG_INFO("%s: dot -Tpng %s -o %s.png && open %s.png\n", __func__, filename, filename, filename);
 }
 
+void ggml_graph_dump_txt(const struct ggml_cgraph * gf, const char * filename) {
+    FILE * f = fopen(filename, "w");
+    if (!f) { fprintf(stderr, "ggml_graph_dump_txt: cannot open %s\n", filename); return; }
+    
+    fprintf(f, "=== ggml computation graph ===\n");
+    fprintf(f, "n_nodes = %d, n_leafs = %d\n\n", gf->n_nodes, gf->n_leafs);
+    
+    for (int i = 0; i < gf->n_nodes; i++) {
+        const struct ggml_tensor * t = gf->nodes[i];
+        const struct ggml_tensor * src0 = t->src[0];
+        const struct ggml_tensor * src1 = t->src[1];
+        const struct ggml_tensor * src2 = t->src[2];
+        
+        fprintf(f, "node[%d]: %s\n", i, ggml_op_name(t->op));
+        
+        // Output shape
+        fprintf(f, "  out: [%lld,%lld,%lld,%lld]\n", 
+                (long long)t->ne[0], (long long)t->ne[1], 
+                (long long)t->ne[2], (long long)t->ne[3]);
+        
+        // Input shapes
+        if (src0) fprintf(f, "  src0: %s [%lld,%lld,%lld,%lld]\n", 
+                ggml_op_name(src0->op),
+                (long long)src0->ne[0], (long long)src0->ne[1],
+                (long long)src0->ne[2], (long long)src0->ne[3]);
+        if (src1) fprintf(f, "  src1: %s [%lld,%lld,%lld,%lld]\n", 
+                ggml_op_name(src1->op),
+                (long long)src1->ne[0], (long long)src1->ne[1],
+                (long long)src1->ne[2], (long long)src1->ne[3]);
+        if (src2) fprintf(f, "  src2: %s [%lld,%lld,%lld,%lld]\n",
+                ggml_op_name(src2->op),
+                (long long)src2->ne[0], (long long)src2->ne[1],
+                (long long)src2->ne[2], (long long)src2->ne[3]);
+        
+        // Op-specific parameters
+        if (t->op == GGML_OP_RESHAPE || t->op == GGML_OP_VIEW) {
+            // These ops change shape, already printed above
+        } else if (t->op == GGML_OP_MUL_MAT) {
+            fprintf(f, "  (matmul)\n");
+        }
+        
+        fprintf(f, "\n");
+    }
+    
+    fclose(f);
+}
+
+void ggml_graph_dump_json(const struct ggml_cgraph * gf, const char * filename) {
+    FILE * f = fopen(filename, "w");
+    if (!f) { fprintf(stderr, "ggml_graph_dump_json: cannot open %s\n", filename); return; }
+    
+    fprintf(f, "{\n  \"n_nodes\": %d,\n  \"nodes\": [\n", gf->n_nodes);
+    
+    for (int i = 0; i < gf->n_nodes; i++) {
+        const struct ggml_tensor * t = gf->nodes[i];
+        fprintf(f, "    {\"op\":\"%s\",\"out\":\"[%lld,%lld,%lld,%lld]\"",
+                ggml_op_name(t->op),
+                (long long)t->ne[0], (long long)t->ne[1],
+                (long long)t->ne[2], (long long)t->ne[3]);
+        
+        if (t->src[0]) fprintf(f, ",\"src0\":\"%s\"", ggml_op_name(t->src[0]->op));
+        if (t->src[1]) fprintf(f, ",\"src1\":\"%s\"", ggml_op_name(t->src[1]->op));
+        fprintf(f, "}");
+        if (i < gf->n_nodes - 1) fprintf(f, ",");
+        fprintf(f, "\n");
+    }
+    
+    fprintf(f, "  ]\n}\n");
+    fclose(f);
+}
+
+
 ////////////////////////////////////////////////////////////////////////////////
 
 void ggml_set_input(struct ggml_tensor * tensor) {

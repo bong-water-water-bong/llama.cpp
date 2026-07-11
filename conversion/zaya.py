@@ -191,7 +191,14 @@ class ZayaModel(TextModel):
         if name == "model.final_norm.weight" or name == "model.norm.weight":
             yield self.format_tensor_name(gguf.MODEL_TENSOR.OUTPUT_NORM), data_torch
             return
-        # Skip final residual scale for now
+        # Model-level input scaling (ZayaModel.input_hidden_states_scale/bias)
+        # Applied to embeddings before the first layer: emb = (emb + bias) * scale
+        if name == "model.input_hidden_states_scale":
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.ZAYA_INPUT_SCALE), data_torch
+            return
+        if name == "model.input_hidden_states_bias":
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.ZAYA_INPUT_SCALE, suffix=".bias"), data_torch
+            return
         if name.startswith("model.input_hidden_states_"):
             return
         if name.startswith("model.res_scale."):

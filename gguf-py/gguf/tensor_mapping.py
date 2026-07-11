@@ -119,6 +119,11 @@ class TensorNameMap:
             "model.final_norm",                        # Zaya
         ),
 
+        # Zaya model input scaling
+        MODEL_TENSOR.ZAYA_INPUT_SCALE: (
+            "model.input_hidden_states_scale",               # Zaya
+        ),
+
         # Rope frequencies
         MODEL_TENSOR.ROPE_FREQS: (
             "rope.freqs",  # llama-pth

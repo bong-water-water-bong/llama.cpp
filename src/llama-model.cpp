@@ -2096,12 +2096,9 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                         filter_attn = [&](uint32_t) { return true; };
                         filter_recr = [&](uint32_t) { return true; };
                     } else if (arch == LLM_ARCH_ZAYA) {
-                        filter_attn = [&](uint32_t il) {
-                            return il % 2 == 0;
-                        };
-                        filter_recr = [&](uint32_t il) {
-                            return il % 2 == 0;
-                        };
+                        // Every ZayaDecoderLayer has both CCA attention (recurrent) and standard attention
+                        filter_attn = [&](uint32_t) { return true; };
+                        filter_recr = [&](uint32_t) { return true; };
                     } else if (arch == LLM_ARCH_NEMOTRON_H || arch == LLM_ARCH_NEMOTRON_H_MOE) {
                         filter_attn = [&](uint32_t il) {
                             return !hparams.is_recr(il) && hparams.n_ff(il) == 0;
