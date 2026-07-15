@@ -119,8 +119,18 @@ static __device__ __forceinline__ void dequantize_rocmfpx_fp3(const void * vx, c
     const float d0 = rocmfpx_ue4m3_to_fp32_finite(x[ib].e[i0 >= QK_ROCMFP3/2]);
     const float d1 = rocmfpx_ue4m3_to_fp32_finite(x[ib].e[i1 >= QK_ROCMFP3/2]);
 
-    v.x = d0 * (float) rocmfpx_decode_fp3_code_cuda(rocmfpx_get_fp3_code_cuda(x[ib].qs, i0));
-    v.y = d1 * (float) rocmfpx_decode_fp3_code_cuda(rocmfpx_get_fp3_code_cuda(x[ib].qs, i1));
+    // Register-level 3-bit extraction + codebook table lookup
+    const int bp0 = i0 * 3;
+    uint32_t w0;
+    memcpy(&w0, x[ib].qs + (bp0 >> 3), 4);
+    w0 >>= (bp0 & 7);
+    const int bp1 = i1 * 3;
+    uint32_t w1;
+    memcpy(&w1, x[ib].qs + (bp1 >> 3), 4);
+    w1 >>= (bp1 & 7);
+
+    v.x = d0 * (float) rocmfpx_fp3_codebook[w0 & 7u];
+    v.y = d1 * (float) rocmfpx_fp3_codebook[w1 & 7u];
 }
 
 static __device__ __forceinline__ void dequantize_rocmfpx_fp6(const void * vx, const int64_t ib, const int iqs, float2 & v) {

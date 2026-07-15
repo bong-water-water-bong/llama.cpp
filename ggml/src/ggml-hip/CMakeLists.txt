@@ -126,6 +126,16 @@ if (GGML_HIP_ROCWMMA_FATTN)
     add_compile_definitions(GGML_HIP_ROCWMMA_FATTN)
 endif()
 
+# Enable AMD WMMA (Wave Matrix Multiply-Accumulate) for RDNA3+.
+# Used in MMQ kernels for quantized matmul acceleration.
+add_compile_definitions(AMD_WMMA_AVAILABLE)
+
+# rocwmma is needed for WMMA operations on AMD GPUs
+find_package(rocwmma QUIET)
+if(rocwmma_FOUND)
+    message(STATUS "rocwmma found")
+endif()
+
 if (NOT GGML_HIP_MMQ_MFMA)
     add_compile_definitions(GGML_HIP_NO_MMQ_MFMA)
 endif()

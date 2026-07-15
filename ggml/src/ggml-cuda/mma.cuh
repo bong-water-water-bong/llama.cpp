@@ -1,4 +1,8 @@
 #pragma once
+#include "common.cuh"
+#if defined(AMD_WMMA_AVAILABLE)
+#include <rocwmma/rocwmma.hpp>
+#endif
 // This file contains primitives that expose the tensor core PTX instructions for CUDA code.
 // The primitives can be used in a similar way as the nvcuda::wmma interface but with a well-defined memory layout.
 // The documentation for the PTX instructions can be found under:
@@ -15,8 +19,6 @@
 //
 // As described in the PTX documentation, all pointers for load_ldmatrix must be to shared memory and aligned to 16 bytes.
 // The API in this file also assumes that the pointers for load_generic are aligned to 16 bytes, unaligned pointers are considered undefined behavior.
-
-#include "common.cuh"
 
 // On Volta each warp is doing 4 8x8 mma operations in parallel.
 // The basic memory layout for a 32x8 output tile is to stack 4 input tiles in I direction and to mirror the B tile.
@@ -966,6 +968,79 @@ namespace ggml_cuda_mma {
         NO_DEVICE_CODE;
 #endif // TURING_MMA_AVAILABLE
     }
+
+#if defined(AMD_WMMA_AVAILABLE)
+    // AMD WMMA: A(16x8 int32 = 16x32 int8), B(16x8 int32 = 16x32 int8) -> D(16x16 int32)
+    // Splits into 2 WMMA operations along K (K=16 each) using rocwmma.
+    // Uses per-warp offsets into __shared__ staging buffer to support multi-warp kernels.
+    static __device__ __forceinline__ void mma(
+            tile<16, 16, int> & D, const tile<16, 8, int> & A, const tile<16, 8, int> & B) {
+        using namespace rocwmma;
+
+        // Per-warp staging area in shared memory (2KB per warp)
+        __shared__ int8_t wmma_stage[8][2048]; // up to 8 warps
+        const int warp_id = threadIdx.y;
+        const int warp_off = warp_id * 2048;
+        int8_t * stage_a = wmma_stage[0] + warp_off;
+        int8_t * stage_b = wmma_stage[0] + warp_off + 512;
+        int32_t * stage_c = (int32_t*)(wmma_stage[0] + warp_off + 1024);
+
+        // Each thread writes its tile elements to the row-major staging buffer
+        #pragma unroll
+        for (int l = 0; l < A.ne; ++l) {
+            const int row = A.get_i(l);
+            const int col_start = A.get_j(l);
+            const int32_t val = A.x[l];
+            stage_a[row * 32 + col_start * 4 + 0] = (int8_t)(val >> 0);
+            stage_a[row * 32 + col_start * 4 + 1] = (int8_t)(val >> 8);
+            stage_a[row * 32 + col_start * 4 + 2] = (int8_t)(val >> 16);
+            stage_a[row * 32 + col_start * 4 + 3] = (int8_t)(val >> 24);
+        }
+
+        #pragma unroll
+        for (int l = 0; l < B.ne; ++l) {
+            const int row = B.get_i(l);
+            const int col_start = B.get_j(l);
+            const int32_t val = B.x[l];
+            stage_b[row * 32 + col_start * 4 + 0] = (int8_t)(val >> 0);
+            stage_b[row * 32 + col_start * 4 + 1] = (int8_t)(val >> 8);
+            stage_b[row * 32 + col_start * 4 + 2] = (int8_t)(val >> 16);
+            stage_b[row * 32 + col_start * 4 + 3] = (int8_t)(val >> 24);
+        }
+
+        // Warp-level sync ensures staging writes are visible before WMMA loads them.
+        // rocwmma's load_matrix_sync/mma_sync handle wavefront-level synchronization.
+        __syncwarp();
+
+        // Two WMMA operations along K dimension (K=16 each)
+        fragment<matrix_a, 16, 16, 16, int8_t, row_major> a_frag;
+        fragment<matrix_b, 16, 16, 16, int8_t, col_major> b_frag;
+        fragment<accumulator, 16, 16, 16, int32_t> c_frag;
+        fill_fragment(c_frag, 0);
+
+        // K=0..15
+        load_matrix_sync(a_frag, stage_a, 32);
+        load_matrix_sync(b_frag, stage_b, 32);
+        mma_sync(c_frag, a_frag, b_frag, c_frag);
+
+        // K=16..31
+        load_matrix_sync(a_frag, stage_a + 16, 32);
+        load_matrix_sync(b_frag, stage_b + 16, 32);
+        mma_sync(c_frag, a_frag, b_frag, c_frag);
+
+        // Store result (row-major output)
+        store_matrix_sync(stage_c, c_frag, 16, mem_row_major);
+        __syncwarp();
+
+        // Read back from row-major stage_c into D tile
+        #pragma unroll
+        for (int l = 0; l < D.ne; ++l) {
+            const int row = D.get_i(l);
+            const int col = D.get_j(l);
+            D.x[l] = stage_c[row * 16 + col];
+        }
+    }
+#endif // defined(AMD_WMMA_AVAILABLE)
 
     static __device__ __forceinline__ void mma(
             tile<16, 4, half2> & D, const tile<16, 8, half2> & A, const tile<8, 8, half2> & B) {

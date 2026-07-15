@@ -31,9 +31,15 @@
 #include <unordered_map>
 #include <vector>
 
+// FP6 expanded device layout: expands packed 26-byte blocks to 34-byte int8 format
+// on the GPU, eliminating bit-unpacking at +31% memory bandwidth cost.
+// Enable for compute-bound GPUs (CDNA3 MI300X): -DGGML_ROCMFP6_EXPANDED_DEVICE=1
+// Disable for bandwidth-bound GPUs (RDNA3 gfx11): 0 (default)
 #ifndef GGML_ROCMFP6_EXPANDED_DEVICE
 #define GGML_ROCMFP6_EXPANDED_DEVICE 0
 #endif
+
+#include "../../rocmfpx/rocmfpx_hip_codebook.cuh"
 
 // Optional device-only ROCmFP6 layout. GGUF/CPU storage remains the packed
 // block_rocmfp6 layout; experimental ROCm builds may expand qs to signed

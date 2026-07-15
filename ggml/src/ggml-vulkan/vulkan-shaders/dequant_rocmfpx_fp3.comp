@@ -7,20 +7,8 @@ layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 layout (binding = 0) readonly buffer A {block_rocmfpx_fp3 data_a[];};
 layout (binding = 1) writeonly buffer D {D_TYPE data_b[];};
 
-uint rocmfpx_fp3_get_bits(uint ib, uint bit_pos) {
-    uint code = 0u;
-    [[unroll]] for (uint bit = 0u; bit < 3u; ++bit) {
-        const uint src_bit = bit_pos + bit;
-        code |= ((uint(data_a[ib].qs[src_bit >> 3u]) >> (src_bit & 7u)) & 1u) << bit;
-    }
-    return code;
-}
-
-int rocmfpx_fp3_decode_code(uint code) {
-    const uint mag_code = code & 3u;
-    const int mag = mag_code == 3u ? 4 : int(mag_code);
-    return (code & 4u) != 0u ? -mag : mag;
-}
+// FP3 codebook: index 0-7 -> 0,1,2,4,0,-1,-2,-4
+const int rocmfpx_fp3_codebook[8] = int[](0, 1, 2, 4, 0, -1, -2, -4);
 
 void main() {
     const uint i = gl_WorkGroupID.x * 4 + gl_LocalInvocationID.x / 64;
@@ -41,6 +29,14 @@ void main() {
 
     [[unroll]] for (uint l = 0; l < 16; ++l) {
         const uint idx = q_idx + l;
-        data_b[b_idx + l] = D_TYPE(d * float(rocmfpx_fp3_decode_code(rocmfpx_fp3_get_bits(ib, idx * 3u))));
+        // Load 4 bytes starting at the byte containing bit (idx*3), shift, mask 3 bits
+        const uint bit_pos = idx * 3u;
+        const uint byte_off = bit_pos >> 3u;
+        uint window = uint(data_a[ib].qs[byte_off]);
+        window |= uint(data_a[ib].qs[byte_off + 1u]) << 8u;
+        window |= uint(data_a[ib].qs[byte_off + 2u]) << 16u;
+        window |= uint(data_a[ib].qs[byte_off + 3u]) << 24u;
+        const uint code = (window >> (bit_pos & 7u)) & 7u;
+        data_b[b_idx + l] = D_TYPE(d * float(rocmfpx_fp3_codebook[code]));
     }
 }

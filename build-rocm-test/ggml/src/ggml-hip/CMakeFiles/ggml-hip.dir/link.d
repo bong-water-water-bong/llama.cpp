@@ -1,0 +1,562 @@
+../../../bin/libggml-hip.so.0.11.1: \
+  /lib/x86_64-linux-gnu/crti.o \
+  /usr/lib/llvm-21/lib/clang/21/lib/linux/clang_rt.crtbegin-x86_64.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/acc.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/add-id.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/allreduce.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/arange.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/argmax.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/argsort.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/binbcast.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/clamp.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/concat.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/conv-transpose-1d.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/conv2d-dw.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/conv2d-transpose.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/conv2d.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/convert.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/count-equal.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/cpy.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/cross-entropy-loss.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/cumsum.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/diag.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/diagmask.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/dsv4.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/fattn-tile.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/fattn-wmma-f16.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/fattn.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/fill.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/fwht.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/gated_delta_net.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/getrows.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/ggml-cuda.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/gla.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/im2col.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/mean.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/mmf.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/mmid.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/mmq-hopper-q1.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/mmq.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/mmvf.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/mmvq.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/norm.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/opt-step-adamw.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/opt-step-sgd.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/out-prod.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/pad.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/pad_reflect_1d.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/pool2d.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/quantize.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/roll.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/rope.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/scale.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/set-rows.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/set.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/snake.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/softcap.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/softmax.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/solve_tri.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/ssm-conv.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/ssm-scan.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/sum.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/sumrows.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/top-k.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/topk-moe.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/tri.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/tsembd.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/unary.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/upscale.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/wkv.cu.o \
+  CMakeFiles/ggml-hip.dir/__/__/rocmfp4/rocmfp4_hip.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-tile-instance-dkq112-dv112.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-tile-instance-dkq128-dv128.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-tile-instance-dkq192-dv128.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-tile-instance-dkq256-dv256.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-tile-instance-dkq320-dv256.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-tile-instance-dkq40-dv40.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-tile-instance-dkq512-dv512.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-tile-instance-dkq576-dv512.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-tile-instance-dkq64-dv64.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-tile-instance-dkq72-dv72.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-tile-instance-dkq80-dv80.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-tile-instance-dkq96-dv96.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_1-ncols2_16.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_1-ncols2_32.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_1-ncols2_8.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_16-ncols2_1.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_16-ncols2_2.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_16-ncols2_4.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_2-ncols2_16.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_2-ncols2_32.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_2-ncols2_4.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_2-ncols2_8.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_32-ncols2_1.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_32-ncols2_2.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_4-ncols2_16.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_4-ncols2_2.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_4-ncols2_4.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_4-ncols2_8.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_64-ncols2_1.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_8-ncols2_1.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_8-ncols2_2.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_8-ncols2_4.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_8-ncols2_8.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-iq1_s.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-iq2_s.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-iq2_xs.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-iq2_xxs.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-iq3_s.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-iq3_xxs.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-iq4_nl.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-iq4_xs.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-mxfp4.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-nvfp4.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q1_0.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q2_k.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q3_0_rocmfpx.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q3_k.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q4_0.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q4_0_rocmfp4.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q4_0_rocmfp4_fast.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q4_1.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q4_k.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q5_0.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q5_1.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q5_k.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q6_0_rocmfpx.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q6_k.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q8_0.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q8_0_rocmfpx.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_1.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_10.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_11.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_12.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_13.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_14.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_15.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_16.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_2.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_3.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_4.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_5.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_6.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_7.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_8.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_9.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-vec-instance-f16-f16.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-vec-instance-q4_0-q4_0.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-vec-instance-q4_0_rocmfp4-q4_0_rocmfp4.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-vec-instance-q4_0_rocmfp4_fast-q4_0_rocmfp4_fast.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-vec-instance-q3_0_rocmfpx-q3_0_rocmfpx.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-vec-instance-q6_0_rocmfpx-q6_0_rocmfpx.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-vec-instance-q8_0_rocmfpx-q8_0_rocmfpx.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-vec-instance-q8_0-q8_0.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-vec-instance-bf16-bf16.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-vec-instance-turbo3_0-turbo3_0.cu.o \
+  CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-vec-instance-turbo4_0-turbo4_0.cu.o \
+  ../../../bin/libggml-base.so.0.11.1 \
+  /opt/rocm-7.2.4/lib/libhipblas.so.3.2.70204 \
+  /opt/rocm-7.2.4/lib/librocblas.so.5.2.70204 \
+  /opt/rocm/lib/libamdhip64.so.7.2.70204 \
+  /opt/rocm/lib/libamdhip64.so.7.2.70204 \
+  /lib/x86_64-linux-gnu/libamdhip64.so \
+  /usr/lib/gcc/x86_64-linux-gnu/16/libstdc++.so \
+  /lib/x86_64-linux-gnu/libm.so \
+  /lib/x86_64-linux-gnu/libm.so \
+  /lib/x86_64-linux-gnu/libm.so \
+  /usr/lib/x86_64-linux-gnu/libm.so.6 \
+  /usr/lib/x86_64-linux-gnu/libmvec.so.1 \
+  /usr/lib/llvm-21/lib/clang/21/lib/linux/libclang_rt.builtins-x86_64.a \
+  /usr/lib/gcc/x86_64-linux-gnu/16/libgcc_s.so \
+  /usr/lib/gcc/x86_64-linux-gnu/16/libgcc_s.so \
+  /usr/lib/gcc/x86_64-linux-gnu/16/libgcc_s.so \
+  /lib/x86_64-linux-gnu/libgcc_s.so.1 \
+  /usr/lib/gcc/x86_64-linux-gnu/16/libgcc.a \
+  /lib/x86_64-linux-gnu/libc.so \
+  /lib/x86_64-linux-gnu/libc.so \
+  /lib/x86_64-linux-gnu/libc.so \
+  /usr/lib/x86_64-linux-gnu/libc.so.6 \
+  /usr/lib/x86_64-linux-gnu/libc_nonshared.a \
+  /lib64/ld-linux-x86-64.so.2 \
+  /usr/lib/llvm-21/lib/clang/21/lib/linux/libclang_rt.builtins-x86_64.a \
+  /usr/lib/gcc/x86_64-linux-gnu/16/libgcc_s.so \
+  /usr/lib/gcc/x86_64-linux-gnu/16/libgcc_s.so \
+  /usr/lib/gcc/x86_64-linux-gnu/16/libgcc_s.so \
+  /lib/x86_64-linux-gnu/libgcc_s.so.1 \
+  /usr/lib/gcc/x86_64-linux-gnu/16/libgcc.a \
+  /usr/lib/llvm-21/lib/clang/21/lib/linux/clang_rt.crtend-x86_64.o \
+  /lib/x86_64-linux-gnu/crtn.o
+
+/lib/x86_64-linux-gnu/crti.o:
+
+/usr/lib/llvm-21/lib/clang/21/lib/linux/clang_rt.crtbegin-x86_64.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/acc.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/add-id.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/allreduce.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/arange.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/argmax.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/argsort.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/binbcast.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/clamp.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/concat.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/conv-transpose-1d.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/conv2d-dw.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/conv2d-transpose.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/conv2d.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/convert.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/count-equal.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/cpy.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/cross-entropy-loss.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/cumsum.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/diag.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/diagmask.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/dsv4.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/fattn-tile.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/fattn-wmma-f16.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/fattn.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/fill.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/fwht.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/gated_delta_net.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/getrows.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/ggml-cuda.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/gla.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/im2col.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/mean.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/mmf.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/mmid.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/mmq-hopper-q1.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/mmq.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/mmvf.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/mmvq.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/norm.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/opt-step-adamw.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/opt-step-sgd.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/out-prod.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/pad.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/pad_reflect_1d.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/pool2d.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/quantize.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/roll.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/rope.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/scale.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/set-rows.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/set.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/snake.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/softcap.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/softmax.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/solve_tri.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/ssm-conv.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/ssm-scan.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/sum.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/sumrows.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/top-k.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/topk-moe.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/tri.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/tsembd.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/unary.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/upscale.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/wkv.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/__/rocmfp4/rocmfp4_hip.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-tile-instance-dkq112-dv112.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-tile-instance-dkq128-dv128.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-tile-instance-dkq192-dv128.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-tile-instance-dkq256-dv256.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-tile-instance-dkq320-dv256.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-tile-instance-dkq40-dv40.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-tile-instance-dkq512-dv512.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-tile-instance-dkq576-dv512.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-tile-instance-dkq64-dv64.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-tile-instance-dkq72-dv72.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-tile-instance-dkq80-dv80.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-tile-instance-dkq96-dv96.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_1-ncols2_16.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_1-ncols2_32.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_1-ncols2_8.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_16-ncols2_1.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_16-ncols2_2.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_16-ncols2_4.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_2-ncols2_16.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_2-ncols2_32.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_2-ncols2_4.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_2-ncols2_8.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_32-ncols2_1.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_32-ncols2_2.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_4-ncols2_16.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_4-ncols2_2.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_4-ncols2_4.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_4-ncols2_8.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_64-ncols2_1.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_8-ncols2_1.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_8-ncols2_2.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_8-ncols2_4.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-mma-f16-instance-ncols1_8-ncols2_8.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-iq1_s.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-iq2_s.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-iq2_xs.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-iq2_xxs.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-iq3_s.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-iq3_xxs.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-iq4_nl.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-iq4_xs.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-mxfp4.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-nvfp4.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q1_0.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q2_k.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q3_0_rocmfpx.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q3_k.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q4_0.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q4_0_rocmfp4.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q4_0_rocmfp4_fast.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q4_1.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q4_k.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q5_0.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q5_1.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q5_k.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q6_0_rocmfpx.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q6_k.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q8_0.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmq-instance-q8_0_rocmfpx.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_1.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_10.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_11.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_12.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_13.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_14.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_15.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_16.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_2.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_3.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_4.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_5.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_6.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_7.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_8.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/mmf-instance-ncols_9.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-vec-instance-f16-f16.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-vec-instance-q4_0-q4_0.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-vec-instance-q4_0_rocmfp4-q4_0_rocmfp4.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-vec-instance-q4_0_rocmfp4_fast-q4_0_rocmfp4_fast.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-vec-instance-q3_0_rocmfpx-q3_0_rocmfpx.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-vec-instance-q6_0_rocmfpx-q6_0_rocmfpx.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-vec-instance-q8_0_rocmfpx-q8_0_rocmfpx.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-vec-instance-q8_0-q8_0.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-vec-instance-bf16-bf16.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-vec-instance-turbo3_0-turbo3_0.cu.o:
+
+CMakeFiles/ggml-hip.dir/__/ggml-cuda/template-instances/fattn-vec-instance-turbo4_0-turbo4_0.cu.o:
+
+../../../bin/libggml-base.so.0.11.1:
+
+/opt/rocm-7.2.4/lib/libhipblas.so.3.2.70204:
+
+/opt/rocm-7.2.4/lib/librocblas.so.5.2.70204:
+
+/opt/rocm/lib/libamdhip64.so.7.2.70204:
+
+/opt/rocm/lib/libamdhip64.so.7.2.70204:
+
+/lib/x86_64-linux-gnu/libamdhip64.so:
+
+/usr/lib/gcc/x86_64-linux-gnu/16/libstdc++.so:
+
+/lib/x86_64-linux-gnu/libm.so:
+
+/lib/x86_64-linux-gnu/libm.so:
+
+/lib/x86_64-linux-gnu/libm.so:
+
+/usr/lib/x86_64-linux-gnu/libm.so.6:
+
+/usr/lib/x86_64-linux-gnu/libmvec.so.1:
+
+/usr/lib/llvm-21/lib/clang/21/lib/linux/libclang_rt.builtins-x86_64.a:
+
+/usr/lib/gcc/x86_64-linux-gnu/16/libgcc_s.so:
+
+/usr/lib/gcc/x86_64-linux-gnu/16/libgcc_s.so:
+
+/usr/lib/gcc/x86_64-linux-gnu/16/libgcc_s.so:
+
+/lib/x86_64-linux-gnu/libgcc_s.so.1:
+
+/usr/lib/gcc/x86_64-linux-gnu/16/libgcc.a:
+
+/lib/x86_64-linux-gnu/libc.so:
+
+/lib/x86_64-linux-gnu/libc.so:
+
+/lib/x86_64-linux-gnu/libc.so:
+
+/usr/lib/x86_64-linux-gnu/libc.so.6:
+
+/usr/lib/x86_64-linux-gnu/libc_nonshared.a:
+
+/lib64/ld-linux-x86-64.so.2:
+
+/usr/lib/llvm-21/lib/clang/21/lib/linux/libclang_rt.builtins-x86_64.a:
+
+/usr/lib/gcc/x86_64-linux-gnu/16/libgcc_s.so:
+
+/usr/lib/gcc/x86_64-linux-gnu/16/libgcc_s.so:
+
+/usr/lib/gcc/x86_64-linux-gnu/16/libgcc_s.so:
+
+/lib/x86_64-linux-gnu/libgcc_s.so.1:
+
+/usr/lib/gcc/x86_64-linux-gnu/16/libgcc.a:
+
+/usr/lib/llvm-21/lib/clang/21/lib/linux/clang_rt.crtend-x86_64.o:
+
+/lib/x86_64-linux-gnu/crtn.o:

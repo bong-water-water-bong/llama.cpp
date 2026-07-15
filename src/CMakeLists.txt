@@ -7,6 +7,12 @@ llama_add_compile_flags()
 # llama
 
 file(GLOB LLAMA_MODELS_SOURCES "models/*.cpp")
+# Exclude WIP/placeholder model files that don't compile yet
+list(REMOVE_ITEM LLAMA_MODELS_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/models/dspark.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/models/mellum.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/models/talkie.cpp"
+)
 
 add_library(llama
             ../include/llama.h

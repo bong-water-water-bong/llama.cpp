@@ -284,8 +284,28 @@ void ggml_cuda_op_get_rows(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     GGML_ASSERT(src1->nb[0] == ggml_type_size(src1->type));
     GGML_ASSERT(dst->nb[0]  == ggml_type_size(dst->type));
 
+    // FP6 expanded device layout: use expanded strides on GPU
+    size_t nb01_e = nb01, nb02_e = nb02, nb03_e = nb03;
+    if (GGML_ROCMFP6_EXPANDED_DEVICE && src0->type == GGML_TYPE_Q6_0_ROCMFPX) {
+        constexpr size_t disk_block = sizeof(block_rocmfp6);
+        constexpr size_t dev_block  = sizeof(block_rocmfp6_expanded);
+        auto expand = [](size_t s) { return (s / disk_block) * dev_block; };
+        nb01_e = expand(nb01_e); nb02_e = expand(nb02_e); nb03_e = expand(nb03_e);
+    }
+    // Redirect local references to expanded strides
+    #undef nb01
+    #define nb01 nb01_e
+    #undef nb02
+    #define nb02 nb02_e
+    #undef nb03
+    #define nb03 nb03_e
+
     get_rows_cuda(src0->data, src0->type, (const int32_t *) src1->data, dst->data, dst->type,
         ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+
+#undef nb01
+#undef nb02
+#undef nb03
 }
 
 void ggml_cuda_op_get_rows_back(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {

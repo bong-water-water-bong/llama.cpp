@@ -616,6 +616,22 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
 
     GGML_TENSOR_BINARY_OP_LOCALS
 
+    // FP6 expanded device layout: use expanded strides for destination
+    size_t nb1_e = nb1, nb2_e = nb2, nb3_e = nb3;
+    if (GGML_ROCMFP6_EXPANDED_DEVICE && dst->type == GGML_TYPE_Q6_0_ROCMFPX) {
+        constexpr size_t disk_block = sizeof(block_rocmfp6);
+        constexpr size_t dev_block  = sizeof(block_rocmfp6_expanded);
+        auto expand = [](size_t s) { return (s / disk_block) * dev_block; };
+        nb1_e = expand(nb1_e); nb2_e = expand(nb2_e); nb3_e = expand(nb3_e);
+    }
+    // Redirect local references to expanded strides
+    #undef nb1
+    #define nb1 nb1_e
+    #undef nb2
+    #define nb2 nb2_e
+    #undef nb3
+    #define nb3 nb3_e
+
     cudaStream_t stream = ctx.stream();
 
 
@@ -791,6 +807,9 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
         GGML_ABORT("unsupported type %s", ggml_type_name(dst->type));
     }
 }
+#undef nb1
+#undef nb2
+#undef nb3
 
 
 void ggml_cuda_op_set_rows(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
