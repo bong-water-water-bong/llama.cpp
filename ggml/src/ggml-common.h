@@ -175,11 +175,17 @@ typedef sycl::half2 ggml_half2;
 #endif // _MSC_VER
 
 #define QK1_0 128
+#define QK2_0 128
 typedef struct {
     ggml_half d;           // delta
     uint8_t qs[QK1_0 / 8]; // bits / quants
 } block_q1_0;
 static_assert(sizeof(block_q1_0) == sizeof(ggml_half) + QK1_0 / 8, "wrong q1_0 block size/padding");
+typedef struct {
+    ggml_half d;           // scale (fp16)
+    uint8_t qs[QK2_0 / 4]; // 2 bits per element
+} block_q2_0;
+static_assert(sizeof(block_q2_0) == sizeof(ggml_half) + QK2_0 / 4, "wrong q2_0 block size/padding");
 
 #define QK4_0 32
 typedef struct {
@@ -296,6 +302,8 @@ typedef struct {
     ggml_half d;
 } block_tq2_0;
 static_assert(sizeof(block_tq2_0) == sizeof(ggml_half) + QK_K / 4, "wrong tq2_0 block size/padding");
+
+
 
 //
 // Super-block quantization structures
