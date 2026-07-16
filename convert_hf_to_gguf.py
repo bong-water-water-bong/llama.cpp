@@ -238,6 +238,17 @@ def main() -> None:
         if not is_mistral_format:
             model_architecture = get_model_architecture(hparams, model_type)
             logger.info(f"Model architecture: {model_architecture}")
+
+            # UNITE (UNIversal mulTimodal Embedder) is structurally identical to Qwen2-VL.
+            # The HuggingFace config reports "UniteQwen2VL" / "unite_qwen2_vl" as the
+            # architecture, so we transparently remap it here so the converter uses
+            # the Qwen2-VL tensor mapping and GGUF writer.
+            if model_architecture in ("unite_qwen2_vl", "UniteQwen2VL", "unite_qwen2vl"):
+                logger.info("  -> remapped to qwen2vl (UNITE uses Qwen2-VL backbone)")
+                model_architecture = "qwen2vl"
+                # Override hparams so the downstream model class sees the canonical arch
+                hparams["_model_type"] = hparams.get("model_type", "qwen2_vl")
+
             try:
                 model_class = get_model_class(model_architecture, mmproj=(model_type == ModelType.MMPROJ))
             except NotImplementedError:

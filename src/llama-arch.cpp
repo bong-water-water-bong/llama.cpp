@@ -904,10 +904,25 @@ const char * llm_arch_name(llm_arch arch) {
     return it->second;
 }
 
+// Architecture alias table: maps alternative GGUF architecture names to canonical arch enums.
+// Use when a HuggingFace model uses a custom architecture name (e.g., UniteQwen2VL)
+// that is structurally identical to a supported architecture.
+static const std::map<std::string, llm_arch> LLM_ARCH_ALIASES = {
+    { "unite_qwen2_vl", LLM_ARCH_QWEN2VL },
+};
+
 llm_arch llm_arch_from_string(const std::string & name) {
     for (const auto & kv : LLM_ARCH_NAMES) { // NOLINT
         if (kv.second == name) {
             return kv.first;
+        }
+    }
+
+    // Check alias table for alternative architecture names
+    {
+        auto it = LLM_ARCH_ALIASES.find(name);
+        if (it != LLM_ARCH_ALIASES.end()) {
+            return it->second;
         }
     }
 
