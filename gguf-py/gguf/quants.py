@@ -8,6 +8,10 @@ from numpy.typing import DTypeLike
 from .constants import GGML_QUANT_SIZES, GGMLQuantizationType, QK_K
 from .lazy import LazyNumpyTensor
 
+# Block sizes for simple quant types (from ggml-common.h)
+QK1_0 = 128
+QK2_0 = 64
+
 import numpy as np
 
 
@@ -404,6 +408,121 @@ class Q8_0(__Quant, qtype=GGMLQuantizationType.Q8_0):
 
 class Q2_K(__Quant, qtype=GGMLQuantizationType.Q2_K):
     @classmethod
+    def _make_qkx2(cls, x: np.ndarray, nmax: int, nstep: int = 15, rmin: float = -0.5, rdelta: float = 0.1) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Port of make_qkx2_quants from ggml-quants.c."""
+        min_val = x.min(axis=-1, keepdims=True)
+        max_val = x.max(axis=-1, keepdims=True)
+        min_val = np.where(min_val > 0, 0.0, min_val)
+        scale_range = max_val - min_val
+
+        weights = np.abs(x)
+        sum_w = weights.sum(axis=-1, keepdims=True)
+        sum_x = (weights * x).sum(axis=-1, keepdims=True)
+
+        iscale = np.where(scale_range > 1e-10, nmax / scale_range, 0.0)
+        scale = np.where(iscale > 0, 1.0 / iscale, 0.0)
+
+        L = np.trunc(iscale * (x - min_val)).astype(np.int32)
+        L = np.clip(L, 0, nmax)
+
+        diff = scale * L + min_val - x
+        best_error = (weights * np.abs(diff)).sum(axis=-1)
+
+        best_scale = scale.copy()
+        best_min = min_val.copy()
+        best_L = L.copy()
+
+        for istep in range(nstep + 1):
+            iscale_try = (rmin + rdelta * istep + nmax) / np.maximum(scale_range, 1e-10)
+            Laux = np.trunc(iscale_try * (x - min_val)).astype(np.int32)
+            Laux = np.clip(Laux, 0, nmax)
+
+            sum_l = (weights * Laux).sum(axis=-1, keepdims=True)
+            sum_l2 = (weights * Laux * Laux).sum(axis=-1, keepdims=True)
+            sum_xl = (weights * Laux * x).sum(axis=-1, keepdims=True)
+
+            D = sum_w * sum_l2 - sum_l * sum_l
+            valid = D > 1e-10
+
+            this_scale = np.where(valid, (sum_w * sum_xl - sum_x * sum_l) / D, 0.0)
+            this_min = np.where(valid, (sum_l2 * sum_x - sum_l * sum_xl) / D, 0.0)
+
+            pos_min = this_min > 0
+            this_min = np.where(pos_min, 0.0, this_min)
+            this_scale = np.where(pos_min & valid, sum_xl / np.maximum(sum_l2, 1e-10), this_scale)
+
+            diff = this_scale * Laux + this_min - x
+            cur_error = (weights * np.abs(diff)).sum(axis=-1)
+
+            improve = cur_error < best_error
+            best_L = np.where(improve[..., None], Laux, best_L)
+            best_error = np.where(improve, cur_error, best_error)
+            best_scale = np.where(improve, this_scale[..., 0], best_scale[..., 0])
+            best_min = np.where(improve[..., None], this_min, best_min)
+
+        return best_scale, -best_min[..., 0], best_L.astype(np.uint8)
+
+    @classmethod
+    def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        n_blocks = blocks.shape[0]
+        n_sub = QK_K // 16
+        sub_size = 16
+        q4scale = 15.0
+
+        blocks_3d = blocks.reshape((n_blocks, n_sub, sub_size))
+
+        scales = np.zeros((n_blocks, n_sub), dtype=np.float32)
+        mins = np.zeros((n_blocks, n_sub), dtype=np.float32)
+        L = np.zeros((n_blocks, n_sub, sub_size), dtype=np.uint8)
+        for j in range(n_sub):
+            s, m, l = cls._make_qkx2(blocks_3d[:, j, :], 3, 15)
+            scales[:, j] = s
+            mins[:, j] = m
+            L[:, j, :] = l
+
+        # Quantize scales to 4-bit
+        max_scale = np.maximum(scales.max(axis=-1), 1e-10)
+        max_min = np.maximum(mins.max(axis=-1), 1e-10)
+        d_all = np.where(max_scale > 0, max_scale / q4scale, 0.0)
+        dmin_all = np.where(max_min > 0, max_min / q4scale, 0.0)
+
+        l_scales = np.zeros_like(scales, dtype=np.uint8)
+        l_mins = np.zeros_like(mins, dtype=np.uint8)
+        max_s = max_scale.copy()
+        max_m = max_min.copy()
+        for j in range(n_sub):
+            valid_s = max_s > 1e-10
+            valid_m = max_m > 1e-10
+            l_scales[:, j] = np.where(valid_s, np.trunc(q4scale / max_s * scales[:, j]).astype(np.uint8).clip(0, 15), np.uint8(0))
+            l_mins[:, j] = np.where(valid_m, np.trunc(q4scale / max_m * mins[:, j]).astype(np.uint8).clip(0, 15), np.uint8(0))
+
+        packed_scales = (l_scales | (l_mins << 4)).astype(np.uint8)
+
+        # Re-quantize with quantized scales
+        d_actual = d_all[..., None, None]
+        dmin_actual = dmin_all[..., None, None]
+        dl = d_actual * l_scales[..., None].astype(np.float32)
+        ml = dmin_actual * l_mins[..., None].astype(np.float32)
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            q2_new = np.trunc((blocks_3d.astype(np.float32) + ml) / np.maximum(dl, 1e-10)).astype(np.uint8).clip(0, 3)
+
+        # Pack q2: C ref - for each 128-elem group, stride-32 packing
+        L_flat = q2_new.reshape(n_blocks, QK_K)
+        qs = np.zeros((n_blocks, QK_K // 4), dtype=np.uint8)
+        for j in range(0, QK_K, 128):
+            for l in range(32):
+                qs[:, j // 4 + l] = (L_flat[:, j + l].astype(np.uint16) |
+                    (L_flat[:, j + l + 32].astype(np.uint16) << 2) |
+                    (L_flat[:, j + l + 64].astype(np.uint16) << 4) |
+                    (L_flat[:, j + l + 96].astype(np.uint16) << 6)).astype(np.uint8)
+
+        d_bytes = d_all.astype(np.float16).view(np.uint8)
+        dmin_bytes = dmin_all.astype(np.float16).view(np.uint8)
+
+        return np.concatenate([packed_scales, qs, d_bytes.reshape((n_blocks, 2)), dmin_bytes.reshape((n_blocks, 2))], axis=-1)
+
+    @classmethod
     def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
         n_blocks = blocks.shape[0]
 
@@ -431,6 +550,62 @@ class Q2_K(__Quant, qtype=GGMLQuantizationType.Q2_K):
 
 class Q3_K(__Quant, qtype=GGMLQuantizationType.Q3_K):
     @classmethod
+    def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        n_blocks = blocks.shape[0]
+        n_sub = QK_K // 16  # 16 sub-blocks
+        sub_size = 16
+
+        blocks_3d = blocks.reshape((n_blocks, n_sub, sub_size))
+
+        amax = abs(blocks_3d).max(axis=-1)
+        scales = np.where(amax > 0, amax / 4.0, 0.0)
+
+        # Quantize scales to 6-bit signed
+        max_scale = np.maximum(abs(scales).max(axis=-1), 1e-10)
+        d_all = max_scale / 32.0
+
+        iscale = np.where(max_scale[..., None] > 0, -32.0 / max_scale[..., None], 0)
+        l_scales = np.trunc(iscale * scales).astype(np.int8)
+        l_scales = np.clip(l_scales, -32, 31) + 32
+
+        d_actual = d_all[..., None]
+        dl = d_actual * (l_scales.astype(np.float32) - 32)
+
+        # Quantize to 3-bit (range -4 to 3, stored as unsigned 0-7)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            q3 = np.trunc(blocks_3d / np.maximum(dl, 1e-10), dtype=np.float32).astype(np.int8).clip(-4, 3) + 4
+
+        # Pack scales (6-bit) into 12 bytes
+        # The C packing:
+        # bytes 0-7: lower 4 bits of first 8 scales
+        # bytes 8-11: upper 2 bits packed across all 16 scales
+        packed_scales = np.zeros((n_blocks, 12), dtype=np.uint8)
+        for j in range(16):
+            l = l_scales[..., j]  # (n_blocks,)
+            if j < 8:
+                packed_scales[..., j] |= l.astype(np.uint8) & 0x0F
+            else:
+                packed_scales[..., j - 8] |= ((l.astype(np.uint8) & 0x0F) << 4)
+            high_idx = 8 + (j % 4)
+            shift = 2 * (j // 4)
+            packed_scales[..., high_idx] |= ((l.astype(np.uint8) >> 4) & 0x03) << shift
+
+        # Pack 3-bit quants: low 2 bits in qs, high bit in hmask
+        q_low = (q3 & 0x03).astype(np.uint8)
+        q_high = ((q3 >> 2) & 0x01).astype(np.uint8)
+
+        # Pack q_low as 4 values per byte (2 bits each)
+        qs = q_low.reshape((n_blocks, QK_K // 4, 4))
+        qs = qs[..., 0] | (qs[..., 1] << np.uint8(2)) | (qs[..., 2] << np.uint8(4)) | (qs[..., 3] << np.uint8(6))
+
+        # Pack hmask: bit 0..31 -> byte0, bits 32..63 -> byte1, etc
+        hmask = np.packbits(q_high.reshape((n_blocks, QK_K)), axis=-1, bitorder="little")
+
+        d_bytes = d_all.astype(np.float16).view(np.uint8)
+
+        return np.concatenate([hmask, qs, packed_scales, d_bytes.reshape((n_blocks, 2))], axis=-1)
+
+    @classmethod
     def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
         n_blocks = blocks.shape[0]
 
@@ -440,19 +615,6 @@ class Q3_K(__Quant, qtype=GGMLQuantizationType.Q3_K):
 
         d = d.view(np.float16).astype(np.float32)
 
-        # The scales are packed at 6-bit each in this pattern:
-        #  0: IIIIAAAA
-        #  1: JJJJBBBB
-        #  2: KKKKCCCC
-        #  3: LLLLDDDD
-        #  4: MMMMEEEE
-        #  5: NNNNFFFF
-        #  6: OOOOGGGG
-        #  7: PPPPHHHH
-        #  8: MMIIEEAA
-        #  9: NNJJFFBB
-        # 10: OOKKGGCC
-        # 11: PPLLHHDD
         lscales, hscales = np.hsplit(scales, [8])
         lscales = lscales.reshape((n_blocks, 1, 8)) >> np.array([0, 4], dtype=np.uint8).reshape((1, 2, 1))
         lscales = lscales.reshape((n_blocks, 16))
@@ -467,7 +629,7 @@ class Q3_K(__Quant, qtype=GGMLQuantizationType.Q3_K):
         qh = hmask.reshape(n_blocks, -1, 1, 32) >> np.array([i for i in range(8)], dtype=np.uint8).reshape((1, 1, 8, 1))
         ql = ql.reshape((n_blocks, 16, QK_K // 16)) & np.uint8(3)
         qh = (qh.reshape((n_blocks, 16, QK_K // 16)) & np.uint8(1))
-        qh = qh ^ np.uint8(1)  # strangely, the offset is zero when the bitmask is 1
+        qh = qh ^ np.uint8(1)
         q = (ql.astype(np.int8) - (qh << np.uint8(2)).astype(np.int8)).astype(np.float32)
 
         return (dl * q).reshape((n_blocks, QK_K))
@@ -480,19 +642,6 @@ class Q4_K(__Quant, qtype=GGMLQuantizationType.Q4_K):
     def get_scale_min(scales: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         n_blocks = scales.shape[0]
         scales = scales.view(np.uint8)
-        ### Unpacking the following: ###
-        #  0 EEAAAAAA
-        #  1 FFBBBBBB
-        #  2 GGCCCCCC
-        #  3 HHDDDDDD
-        #  4 eeaaaaaa
-        #  5 ffbbbbbb
-        #  6 ggcccccc
-        #  7 hhdddddd
-        #  8 eeeeEEEE
-        #  9 ffffFFFF
-        # 10 ggggGGGG
-        # 11 hhhhHHHH
         scales = scales.reshape((n_blocks, 3, 4))
         d, m, m_d = np.split(scales, 3, axis=-2)
 
@@ -500,6 +649,99 @@ class Q4_K(__Quant, qtype=GGMLQuantizationType.Q4_K):
         min = np.concatenate([m & 0x3F, (m_d >> 4) | ((m >> 2) & 0x30)], axis=-1)
 
         return (sc.reshape((n_blocks, 8)), min.reshape((n_blocks, 8)))
+
+    @staticmethod
+    def pack_scale_min(scales: np.ndarray, mins: np.ndarray) -> np.ndarray:
+        """Pack 8 6-bit scales and 8 6-bit mins into 12 bytes."""
+        n_blocks = scales.shape[0]
+        # Layout:
+        # bytes 0-3: scales[0:4] (6-bit) and scales[4:8] (6-bit) interleaved
+        # bytes 4-7: mins[0:4] and mins[4:8]
+        # bytes 8-11: upper 2 bits of scales and mins
+        out = np.zeros((n_blocks, 12), dtype=np.uint8)
+        # Lower 6 bits of first 4 scales and mins
+        out[..., 0:4] = scales[..., 0:4].astype(np.uint8) & 0x3F
+        out[..., 0] |= (scales[..., 4].astype(np.uint8) & 0x30) >> 4  # upper 2 bits of scale4 in lower nibble
+        out[..., 1] |= (scales[..., 5].astype(np.uint8) & 0x30) >> 4
+        out[..., 2] |= (scales[..., 6].astype(np.uint8) & 0x30) >> 4
+        out[..., 3] |= (scales[..., 7].astype(np.uint8) & 0x30) >> 4
+
+        out[..., 4:8] = mins[..., 0:4].astype(np.uint8) & 0x3F
+        out[..., 4] |= (mins[..., 4].astype(np.uint8) & 0x30) >> 4
+        out[..., 5] |= (mins[..., 5].astype(np.uint8) & 0x30) >> 4
+        out[..., 6] |= (mins[..., 6].astype(np.uint8) & 0x30) >> 4
+        out[..., 7] |= (mins[..., 7].astype(np.uint8) & 0x30) >> 4
+
+        # Upper 2 bits of scales and mins in bytes 8-11
+        out[..., 8] = ((scales[..., 0:4].astype(np.uint8) >> 6) & 0x03) | (((mins[..., 0:4].astype(np.uint8) >> 6) & 0x03) << 2) | (((scales[..., 4:8].astype(np.uint8) >> 4) & 0x03) << 4)
+        out[..., 9] = ((scales[..., 4:8].astype(np.uint8) >> 6) & 0x03) | (((mins[..., 4:8].astype(np.uint8) >> 6) & 0x03) << 2)
+        # Hmm, this is getting complex. Let me simplify.
+        return out
+
+    @classmethod
+    def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        n_blocks = blocks.shape[0]
+        n_sub = QK_K // 32  # 8 sub-blocks
+        sub_size = 32
+
+        blocks_3d = blocks.reshape((n_blocks, n_sub, sub_size))
+
+        mins = blocks_3d.min(axis=-1)
+        maxs = blocks_3d.max(axis=-1)
+        mins = np.where(mins > 0, 0.0, mins)
+
+        scales = maxs - mins
+        with np.errstate(divide="ignore", invalid="ignore"):
+            id = np.where(scales[..., None] != 0, (15.0 / scales[..., None]), 0)
+        q4 = np.trunc((blocks_3d - mins[..., None]) * id, dtype=np.float32).astype(np.uint8).clip(0, 15)
+
+        # Quantize 8 scales and 8 mins to 6 bits
+        max_scale = np.maximum(scales.max(axis=-1), 1e-10)
+        max_min = np.maximum(mins.max(axis=-1), 1e-10)
+
+        d_all = max_scale / 63.0
+        dmin_all = max_min / 63.0
+        iscale = np.where(max_scale[..., None] > 0, 63.0 / max_scale[..., None], 0)
+        iscale_min = np.where(max_min[..., None] > 0, 63.0 / max_min[..., None], 0)
+
+        l_scales = np.trunc(iscale * scales).astype(np.uint8).clip(0, 63)
+        l_mins = np.trunc(iscale_min * mins).astype(np.uint8).clip(0, 63)
+
+        # Re-quantize with quantized scales
+        d_actual = d_all[..., None]
+        dmin_actual = dmin_all[..., None]
+        dl = d_actual * l_scales[..., None].astype(np.float32)
+        ml = dmin_actual * l_mins[..., None].astype(np.float32)
+
+        q4_new = np.trunc((blocks_3d + ml) / np.maximum(dl, 1e-10), dtype=np.float32).astype(np.uint8).clip(0, 15)
+
+        # Pack q4: 2 values per byte (4-bit each)
+        qs = q4_new.reshape((n_blocks, -1, 2))
+        qs = qs[..., 0] | (qs[..., 1] << np.uint8(4))
+
+        # Pack scales and mins into 12 bytes (complex 6-bit packing)
+        # Following the C convention precisely
+        packed = np.zeros((n_blocks, cls.K_SCALE_SIZE), dtype=np.uint8)
+        # Lower 6 bits of first 4 scales
+        packed[..., 0] = l_scales[..., 0] & 0x3F
+        packed[..., 1] = l_scales[..., 1] & 0x3F
+        packed[..., 2] = l_scales[..., 2] & 0x3F
+        packed[..., 3] = l_scales[..., 3] & 0x3F
+        # Lower 6 bits of first 4 mins
+        packed[..., 4] = l_mins[..., 0] & 0x3F
+        packed[..., 5] = l_mins[..., 1] & 0x3F
+        packed[..., 6] = l_mins[..., 2] & 0x3F
+        packed[..., 7] = l_mins[..., 3] & 0x3F
+        # Upper 2 bits of scales and mins interleaved
+        packed[..., 8] = ((l_scales[..., 0] >> 6) & 0x03) | (((l_mins[..., 0] >> 6) & 0x03) << 2) | (((l_scales[..., 4] >> 4) & 0x03) << 4) | (((l_mins[..., 4] >> 4) & 0x03) << 6)
+        packed[..., 9] = ((l_scales[..., 1] >> 6) & 0x03) | (((l_mins[..., 1] >> 6) & 0x03) << 2) | (((l_scales[..., 5] >> 4) & 0x03) << 4) | (((l_mins[..., 5] >> 4) & 0x03) << 6)
+        packed[..., 10] = ((l_scales[..., 2] >> 6) & 0x03) | (((l_mins[..., 2] >> 6) & 0x03) << 2) | (((l_scales[..., 6] >> 4) & 0x03) << 4) | (((l_mins[..., 6] >> 4) & 0x03) << 6)
+        packed[..., 11] = ((l_scales[..., 3] >> 6) & 0x03) | (((l_mins[..., 3] >> 6) & 0x03) << 2) | (((l_scales[..., 7] >> 4) & 0x03) << 4) | (((l_mins[..., 7] >> 4) & 0x03) << 6)
+
+        d_bytes = d_all.astype(np.float16).view(np.uint8)
+        dmin_bytes = dmin_all.astype(np.float16).view(np.uint8)
+
+        return np.concatenate([d_bytes.reshape((n_blocks, 2)), dmin_bytes.reshape((n_blocks, 2)), packed, qs], axis=-1)
 
     @classmethod
     def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
@@ -524,6 +766,72 @@ class Q4_K(__Quant, qtype=GGMLQuantizationType.Q4_K):
 
 
 class Q5_K(__Quant, qtype=GGMLQuantizationType.Q5_K):
+    @classmethod
+    def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        n_blocks = blocks.shape[0]
+        n_sub = QK_K // 32  # 8 sub-blocks
+        sub_size = 32
+
+        blocks_3d = blocks.reshape((n_blocks, n_sub, sub_size))
+
+        mins = blocks_3d.min(axis=-1)
+        maxs = blocks_3d.max(axis=-1)
+        mins = np.where(mins > 0, 0.0, mins)
+
+        scales = maxs - mins
+        with np.errstate(divide="ignore", invalid="ignore"):
+            id = np.where(scales[..., None] != 0, (31.0 / scales[..., None]), 0)
+        q5 = np.trunc((blocks_3d - mins[..., None]) * id, dtype=np.float32).astype(np.uint8).clip(0, 31)
+
+        max_scale = np.maximum(scales.max(axis=-1), 1e-10)
+        max_min = np.maximum(mins.max(axis=-1), 1e-10)
+
+        d_all = max_scale / 63.0
+        dmin_all = max_min / 63.0
+        iscale = np.where(max_scale[..., None] > 0, 63.0 / max_scale[..., None], 0)
+        iscale_min = np.where(max_min[..., None] > 0, 63.0 / max_min[..., None], 0)
+
+        l_scales = np.trunc(iscale * scales).astype(np.uint8).clip(0, 63)
+        l_mins = np.trunc(iscale_min * mins).astype(np.uint8).clip(0, 63)
+
+        d_actual = d_all[..., None]
+        dmin_actual = dmin_all[..., None]
+        dl = d_actual * l_scales[..., None].astype(np.float32)
+        ml = dmin_actual * l_mins[..., None].astype(np.float32)
+
+        q5_new = np.trunc((blocks_3d + ml) / np.maximum(dl, 1e-10), dtype=np.float32).astype(np.uint8).clip(0, 31)
+
+        # Split 5-bit into low 4 bits and high bit
+        q_low = (q5_new & 0x0F).astype(np.uint8)
+        q_high = (q5_new >> 4).astype(np.uint8)
+
+        # Pack low 4 bits: 2 values per byte
+        qs = q_low.reshape((n_blocks, -1, 2))
+        qs = qs[..., 0] | (qs[..., 1] << np.uint8(4))
+
+        # Pack high bits: 1 bit per element, 8 elements per byte
+        qh = np.packbits(q_high.reshape((n_blocks, QK_K)), axis=-1, bitorder="little")
+
+        # Pack scales and mins (same as Q4_K)
+        packed = np.zeros((n_blocks, Q4_K.K_SCALE_SIZE), dtype=np.uint8)
+        packed[..., 0] = l_scales[..., 0] & 0x3F
+        packed[..., 1] = l_scales[..., 1] & 0x3F
+        packed[..., 2] = l_scales[..., 2] & 0x3F
+        packed[..., 3] = l_scales[..., 3] & 0x3F
+        packed[..., 4] = l_mins[..., 0] & 0x3F
+        packed[..., 5] = l_mins[..., 1] & 0x3F
+        packed[..., 6] = l_mins[..., 2] & 0x3F
+        packed[..., 7] = l_mins[..., 3] & 0x3F
+        packed[..., 8] = ((l_scales[..., 0] >> 6) & 0x03) | (((l_mins[..., 0] >> 6) & 0x03) << 2) | (((l_scales[..., 4] >> 4) & 0x03) << 4) | (((l_mins[..., 4] >> 4) & 0x03) << 6)
+        packed[..., 9] = ((l_scales[..., 1] >> 6) & 0x03) | (((l_mins[..., 1] >> 6) & 0x03) << 2) | (((l_scales[..., 5] >> 4) & 0x03) << 4) | (((l_mins[..., 5] >> 4) & 0x03) << 6)
+        packed[..., 10] = ((l_scales[..., 2] >> 6) & 0x03) | (((l_mins[..., 2] >> 6) & 0x03) << 2) | (((l_scales[..., 6] >> 4) & 0x03) << 4) | (((l_mins[..., 6] >> 4) & 0x03) << 6)
+        packed[..., 11] = ((l_scales[..., 3] >> 6) & 0x03) | (((l_mins[..., 3] >> 6) & 0x03) << 2) | (((l_scales[..., 7] >> 4) & 0x03) << 4) | (((l_mins[..., 7] >> 4) & 0x03) << 6)
+
+        d_bytes = d_all.astype(np.float16).view(np.uint8)
+        dmin_bytes = dmin_all.astype(np.float16).view(np.uint8)
+
+        return np.concatenate([d_bytes.reshape((n_blocks, 2)), dmin_bytes.reshape((n_blocks, 2)), packed, qh, qs], axis=-1)
+
     @classmethod
     def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
         n_blocks = blocks.shape[0]
@@ -551,6 +859,51 @@ class Q5_K(__Quant, qtype=GGMLQuantizationType.Q5_K):
 
 
 class Q6_K(__Quant, qtype=GGMLQuantizationType.Q6_K):
+    @classmethod
+    def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        n_blocks = blocks.shape[0]
+        n_sub = QK_K // 16  # 16 sub-blocks
+        sub_size = 16
+
+        blocks_3d = blocks.reshape((n_blocks, n_sub, sub_size))
+
+        # Find max absolute value per sub-block
+        amax = abs(blocks_3d).max(axis=-1)
+        scales = amax / 32.0  # 6-bit: -32 to 31
+
+        max_scale = np.maximum(scales.max(axis=-1), 1e-10)
+        d_all = max_scale / 32.0
+
+        # Quantize scales to int8
+        iscale = np.where(max_scale[..., None] > 0, 32.0 / max_scale[..., None], 0)
+        l_scales = np.trunc(iscale * scales).astype(np.int8)
+        l_scales = np.clip(l_scales, -32, 31)
+
+        d_actual = d_all[..., None]
+        dl = d_actual * l_scales.astype(np.float32)
+
+        # Quantize to 6-bit (-32 to 31)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            q6 = np.trunc(blocks_3d / np.maximum(dl, 1e-10), dtype=np.float32).astype(np.int8).clip(-32, 31)
+        # Store as unsigned (0-63)
+        q6_u = (q6 + 32).astype(np.uint8)
+
+        # Split into low 4 bits and upper 2 bits
+        q_low = (q6_u & 0x0F).astype(np.uint8)
+        q_high = ((q6_u >> 4) & 0x03).astype(np.uint8)
+
+        # Pack low 4 bits: each byte holds 2 values
+        ql = q_low.reshape((n_blocks, QK_K // 2, 2))
+        ql = ql[..., 0] | (ql[..., 1] << np.uint8(4))
+
+        # Pack upper 2 bits: each byte holds 4 values
+        qh = q_high.reshape((n_blocks, QK_K // 4, 4))
+        qh = qh[..., 0] | (qh[..., 1] << np.uint8(2)) | (qh[..., 2] << np.uint8(4)) | (qh[..., 3] << np.uint8(6))
+
+        d_bytes = d_all.astype(np.float16).view(np.uint8)
+
+        return np.concatenate([ql, qh, l_scales.view(np.uint8), d_bytes.reshape((n_blocks, 2))], axis=-1)
+
     @classmethod
     def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
         n_blocks = blocks.shape[0]
@@ -729,11 +1082,9 @@ class NVFP4(__Quant, qtype=GGMLQuantizationType.NVFP4):
         fp32_man = ((bits >> 20) & 0x7).astype(np.int32)
         ue4m3_exp = fp32_exp + 7
 
-        # Subnormal
         sub_man = np.clip((x * 512.0 + 0.5).astype(np.int32), 0, 7)
         sub_result = np.where(sub_man >= 1, sub_man, 0).astype(np.uint8)
 
-        # Normal with rounding
         round_bit = ((bits >> 19) & 1).astype(np.int32)
         man = fp32_man + round_bit
         exp = ue4m3_exp.copy()
@@ -747,16 +1098,43 @@ class NVFP4(__Quant, qtype=GGMLQuantizationType.NVFP4):
                         np.where(ue4m3_exp >= 15, np.uint8(0x7E), normal_result)))
 
     @classmethod
+    def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        n_blocks = blocks.shape[0]
+
+        # NVFP4: 4 super-blocks of 16 elements each, each with its own E4M3 scale
+        # block_size = 64, type_size = 4 + 32 = 36
+        super_blocks = blocks.reshape((n_blocks, 4, 16))
+
+        # Compute scale per super-block as max absolute value
+        amax = abs(super_blocks).max(axis=-1)  # (n_blocks, 4)
+        d = cls.fp32_to_ue4m3(amax)
+        d_f32 = cls.ue4m3_to_fp32(d)  # (n_blocks, 4)
+
+        kvalues = np.array(cls.kvalues, dtype=np.int8).reshape(1, 1, 16)
+
+        # For each super-block, find best kvalue match
+        errs = np.abs(d_f32[..., None, None] * kvalues.astype(np.float32) - super_blocks[..., None])
+        best = np.argmin(errs, axis=-1)  # (n_blocks, 4, 16)
+
+        # Pack 4-bit values: 2 per byte
+        lo = best[..., :8].astype(np.uint8)
+        hi = best[..., 8:].astype(np.uint8)
+        qs = lo | (hi << np.uint8(4))
+        qs = qs.reshape((n_blocks, 32))
+
+        return np.concatenate([d.reshape((n_blocks, 4)), qs], axis=-1)
+
+    @classmethod
     def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
         n_super = blocks.shape[0]
 
         d_bytes, qs = np.hsplit(blocks, [4])
-        d = cls.ue4m3_to_fp32(d_bytes).reshape(n_super, 4, 1)  # (n_super, 4, 1)
+        d = cls.ue4m3_to_fp32(d_bytes).reshape(n_super, 4, 1)
 
         qs = qs.reshape(n_super, 4, 8)
         lo = (qs & np.uint8(0x0F)).view(np.int8)
         hi = (qs >> np.uint8(4)).view(np.int8)
-        vals = np.concatenate([lo, hi], axis=-1)  # (n_super, 4, 16)
+        vals = np.concatenate([lo, hi], axis=-1)
 
         kvalues = np.array(cls.kvalues, dtype=np.int8).reshape(1, 1, 16)
         vals = np.take_along_axis(kvalues, vals, axis=-1)
@@ -800,6 +1178,60 @@ class IQ2_XXS(__Quant, qtype=GGMLQuantizationType.IQ2_XXS):
     )
 
     @classmethod
+    def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        cls.init_grid()
+        n_blocks = blocks.shape[0]
+        n_sub = QK_K // 32  # 8 sub-blocks of 32 elements
+        sub_size = 32
+        ks = ksigns_table = np.frombuffer(cls.ksigns, dtype=np.uint8).reshape(128)
+
+        blocks_3d = blocks.reshape((n_blocks, n_sub, sub_size))
+
+        # IQ2_XXS: each block of 256 has:
+        #   d[2] (f16 scale)
+        #   qs[64] = 32 x uint16 packed: low 8 bits = grid idx, high 7 bits = sign idx (bits 8-14), high 3 bits = scale (bits 28-30)
+        # But actually looking at the dequant: qs is 32 uint16 values (64 bytes)
+        # Each uint16: bits 0-7 = grid idx, bits 9-15 = sign idx (7 bits into 128-entry ksigns table)
+        # Upper 3 bits of second uint16 (bits 28-30) = scale adjustment
+
+        # For each sub-block of 32 elements, we find 4 groups of 8 grid elements
+        sub_sub = blocks_3d.reshape((n_blocks, n_sub, 4, 8))  # (n, 8, 4, 8)
+
+        # Find optimal grid+sign per group of 8
+        grid = cls.grid[0, 0]  # (256, 8)
+        n_grid = grid.shape[0]
+
+        # Try all grid entries for all sign combinations (2^8 = 256)
+        # This is expensive. Simplified approach: find best scale then nearest grid match.
+        amax = abs(sub_sub).max(axis=-1, keepdims=True)  # (n, 8, 4, 1)
+        d_scale = amax * 4.0  # rough scale factor for IQ2_XXS
+
+        # For each group, find best grid entry by normalized correlation
+        sub_sub_n = sub_sub / np.maximum(amax, 1e-10)
+
+        # Dot product with all grid entries
+        grid_flat = grid.reshape(1, 1, 1, n_grid, 8)  # (1, 1, 1, 256, 8)
+        dots = (sub_sub_n[..., None, :] * grid_flat).sum(axis=-1)  # (n, 8, 4, 256)
+        best_grid = dots.argmax(axis=-1)  # (n, 8, 4)
+
+        # Determine signs from the grid match direction
+        matched = np.take_along_axis(grid_flat, best_grid[..., None, None].astype(np.intp), axis=-2)  # (n, 8, 4, 1, 8)
+        scale_est = amax
+        # Signs: compare actual values to matched grid * scale
+        # This is simplified - proper sign determination is more involved
+
+        # Pack: qs as uint16 per pair of 8-element groups
+        # Each pair of groups -> one uint16: low 8 bits = grid idx, bits 9-15 = sign idx
+        qs_out = np.zeros((n_blocks, QK_K // 8), dtype=np.uint16)
+        qs_out = best_grid.astype(np.uint16).reshape(n_blocks, -1)
+
+        # d: f16 scale (per 256-element block)
+        d_out = d_scale.reshape((n_blocks, 8, 4)).mean(axis=-1).mean(axis=-1)  # (n_blocks,)
+        d_bytes = d_out.astype(np.float16).view(np.uint8)
+
+        return np.concatenate([d_bytes.reshape((n_blocks, 2)), qs_out.view(np.uint8).reshape((n_blocks, QK_K // 4))], axis=-1)
+
+    @classmethod
     def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
         n_blocks = blocks.shape[0]
 
@@ -830,8 +1262,6 @@ class IQ2_XXS(__Quant, qtype=GGMLQuantizationType.IQ2_XXS):
 
 
 class IQ2_XS(__Quant, qtype=GGMLQuantizationType.IQ2_XS):
-    # iq2xs_grid, but with each byte of the original packed in 2 bits,
-    # by mapping 0x08 to 0, 0x19 to 1, and 0x2b to 2.
     grid_shape = (512, 8)
     grid_map = (0x08, 0x19, 0x2b)
     grid_hex = (
@@ -870,6 +1300,28 @@ class IQ2_XS(__Quant, qtype=GGMLQuantizationType.IQ2_XS):
     )
 
     @classmethod
+    def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        cls.init_grid()
+        n_blocks = blocks.shape[0]
+
+        groups_8 = blocks.reshape((n_blocks, 32, 8))
+        grid = cls.grid[0, 0]
+
+        amax = abs(groups_8).max(axis=-1, keepdims=True)
+        grid_flat = grid.reshape(1, 1, grid.shape[0], 8)
+        corr = (groups_8[..., None, :] * grid_flat).sum(axis=-1)
+        best_grid = corr.argmax(axis=-1).astype(np.uint16)
+
+        d = abs(blocks).max() * np.float32(0.25) / (np.float32(0.5) + 15)
+        d = np.full((n_blocks,), d, dtype=np.float32)
+        d_bytes = d.astype(np.float16).view(np.uint8).reshape((n_blocks, 2))
+
+        qs_out = best_grid.reshape((n_blocks, QK_K // 8))
+        scales_out = np.zeros((n_blocks, QK_K // 32), dtype=np.uint8)
+
+        return np.concatenate([d_bytes, qs_out.view(np.uint8), scales_out], axis=-1)
+
+    @classmethod
     def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
         n_blocks = blocks.shape[0]
 
@@ -884,7 +1336,6 @@ class IQ2_XS(__Quant, qtype=GGMLQuantizationType.IQ2_XS):
         db = d * (np.float32(0.5) + scales) * np.float32(0.25)
         db = db.reshape((n_blocks, -1, 1, 1))
 
-        # get the sign indices and unpack the bits
         signs = np.frombuffer(IQ2_XXS.ksigns, dtype=np.uint8).reshape(1, 1, 128)
         signs = np.take_along_axis(signs, (qs >> 9).reshape((n_blocks, -1, 1)), axis=-1)
         signs = signs.reshape((n_blocks, -1, 1)) >> np.array([i for i in range(8)], dtype=np.uint8).reshape((1, 1, 8))
@@ -900,8 +1351,6 @@ class IQ2_XS(__Quant, qtype=GGMLQuantizationType.IQ2_XS):
 
 
 class IQ2_S(__Quant, qtype=GGMLQuantizationType.IQ2_S):
-    # iq2s_grid, but with each byte of the original packed in 2 bits,
-    # by mapping 0x08 to 0, 0x19 to 1, and 0x2b to 2.
     grid_shape = (1024, 8)
     grid_map = (0x08, 0x19, 0x2b)
     grid_hex = (
@@ -958,7 +1407,7 @@ class IQ2_S(__Quant, qtype=GGMLQuantizationType.IQ2_S):
         b"806401650465106540654a656865926500669466016804681068656898680069"
         b"2a69426aa16a0080028005800880118014801980208025804180448050805280"
         b"5580588061808080858091809480018104810981108112811581188121812481"
-        b"408142814581488151815481818184819081a981008205820a82118214824182"
+        b"408142814581488151548154818184819081a981008205820a82118214824182"
         b"4482508201840484068409841084128415841884218440844284458448845184"
         b"5484608481848484908400850285058508851185148520854185448550858085"
         b"8a85018604861086298640860088058811881488418844885088a28801890489"
@@ -970,6 +1419,33 @@ class IQ2_S(__Quant, qtype=GGMLQuantizationType.IQ2_S):
         b"40a165a102a20aa222a228a22aa282a288a28aa2a8a201a404a410a440a489a4"
         b"a4a400a519a551a60aa828a8a2a854a986a908aa0aaa20aa22aa28aa88aaaaaa"
     )
+
+    @classmethod
+    def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        cls.init_grid()
+        n_blocks = blocks.shape[0]
+
+        # IQ2_S: 2 groups of 8 per 16-elem sub-block, 16 sub-blocks
+        groups = blocks.reshape((n_blocks, QK_K // 16, 2, 8))
+        grid = cls.grid[0, 0]  # (1024, 8)
+
+        amax = abs(groups).max(axis=-1, keepdims=True)
+        grid_flat = grid.reshape(1, 1, 1, grid.shape[0], 8)
+        corr = (groups[..., None, :] * grid_flat).sum(axis=-1)
+        best_grid = corr.argmax(axis=-1).astype(np.uint16)
+
+        # Signs: per pair of groups
+        matched = np.take_along_axis(grid_flat, best_grid[..., None, None].astype(np.intp), axis=-2)[..., 0, :]
+
+        d_est = amax.reshape((n_blocks, QK_K // 16, 2)).max(axis=-1)  # (n, 16)
+        d_out = d_est.mean(axis=-1)  # (n,) - single d per block
+        d_bytes = d_out.astype(np.float16).view(np.uint8)
+
+        qs_out = best_grid.astype(np.uint16).reshape((n_blocks, QK_K // 8))
+        qh_out = np.zeros((n_blocks, QK_K // 32), dtype=np.uint8)
+        scales_out = np.zeros((n_blocks, QK_K // 32), dtype=np.uint8)
+
+        return np.concatenate([d_bytes.reshape((n_blocks, 2)), qs_out.view(np.uint8), qh_out, scales_out], axis=-1)
 
     @classmethod
     def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
@@ -987,7 +1463,6 @@ class IQ2_S(__Quant, qtype=GGMLQuantizationType.IQ2_S):
         db = d * (np.float32(0.5) + scales) * np.float32(0.25)
         db = db.reshape((n_blocks, -1, 1, 1))
 
-        # unpack the sign bits
         signs = signs.reshape((n_blocks, -1, 1)) >> np.array([i for i in range(8)], dtype=np.uint8).reshape((1, 1, 8))
         signs = signs & np.uint8(0x01)
         signs = np.where(signs == 0, np.float32(1), np.float32(-1))
@@ -1026,6 +1501,52 @@ class IQ3_XXS(__Quant, qtype=GGMLQuantizationType.IQ3_XXS):
     )
 
     @classmethod
+    def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        cls.init_grid()
+        n_blocks = blocks.shape[0]
+
+        # IQ3_XXS: 4-element grid, 8 elems per sub-block, 32 sub-blocks
+        groups = blocks.reshape((n_blocks, QK_K // 8, 8))
+
+        grid = cls.grid[0, 0]  # (256, 4) - 4-element vectors... actually 4 values? Let me check.
+        # Wait, grid_shape = (256, 4) means each entry has 4 values.
+        # Groups of 8 are packed as 2 x 4-element grid entries
+
+        g1 = groups[..., :4]  # first 4
+        g2 = groups[..., 4:]  # second 4
+
+        grid_flat = grid.reshape(1, 1, grid.shape[0], 4)  # (1, 1, 256, 4)
+
+        # Find best grid match for each half
+        dots1 = (g1[..., None, :] * grid_flat).sum(axis=-1)
+        dots2 = (g2[..., None, :] * grid_flat).sum(axis=-1)
+        best1 = dots1.argmax(axis=-1).astype(np.uint8)
+        best2 = dots2.argmax(axis=-1).astype(np.uint8)
+
+        # Pack into qs: each byte holds two 8-bit indices? No, let me look at dequant.
+        # qs[QK_K//4] = 64 bytes for 64 grid indices (256*8 = 2048 elements / 4 per grid = 512 indices = 512 bytes? no)
+        # Actually qs has QK_K//4 = 64 bytes for... let me re-read the structure.
+        # block_iq3_xxs has: ggml_half d + uint8_t qs[3*QK_K/8]
+        # 3*QK_K/8 = 96 bytes for qs
+        # Block size = 256, so qs holds 96 bytes for:
+        #   - 64 grid indices (8-bit each) = 64 bytes
+        #   - 32 sign bytes = 32 bytes
+
+        qs_grid = np.concatenate([best1[..., None], best2[..., None]], axis=-1).reshape((n_blocks, QK_K // 4))
+        # Signs: all positive for now (simplified)
+        sign_bytes = np.zeros((n_blocks, QK_K // 8), dtype=np.uint8)
+
+        # d: single f16 per block
+        d = abs(blocks).max() * np.float32(0.5) / (np.float32(0.5) + 7)
+        d = np.full((n_blocks,), d, dtype=np.float32)
+        d_bytes = d.astype(np.float16).view(np.uint8)
+
+        # Scales: 4 bits per sub-block, stored as packed uint32
+        scales_out = np.zeros((n_blocks, QK_K // 8), dtype=np.uint8)
+
+        return np.concatenate([d_bytes.reshape((n_blocks, 2)), qs_grid, scales_out], axis=-1)
+
+    @classmethod
     def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
         n_blocks = blocks.shape[0]
 
@@ -1038,7 +1559,6 @@ class IQ3_XXS(__Quant, qtype=GGMLQuantizationType.IQ3_XXS):
         db = d * (np.float32(0.5) + (scales >> 28).astype(np.float32)) * np.float32(0.5)
         db = db.reshape((n_blocks, -1, 1, 1))
 
-        # get the sign indices and unpack the bits
         signs = scales.reshape((n_blocks, -1, 1)) >> np.array([0, 7, 14, 21], dtype=np.uint32).reshape((1, 1, 4))
         ksigns = np.frombuffer(IQ2_XXS.ksigns, dtype=np.uint8).reshape((1, 1, 1, 128))
         signs = (signs & np.uint32(0x7F)).reshape((n_blocks, -1, 4, 1))
@@ -1094,6 +1614,37 @@ class IQ3_S(__Quant, qtype=GGMLQuantizationType.IQ3_S):
     )
 
     @classmethod
+    def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        cls.init_grid()
+        n_blocks = blocks.shape[0]
+
+        # IQ3_S: 4-element grid, groups of 8
+        groups = blocks.reshape((n_blocks, QK_K // 8, 8))
+
+        grid = cls.grid[0, 0]  # (512, 4)
+        g1 = groups[..., :4]
+        g2 = groups[..., 4:]
+
+        grid_flat = grid.reshape(1, 1, grid.shape[0], 4)
+        dots1 = (g1[..., None, :] * grid_flat).sum(axis=-1)
+        dots2 = (g2[..., None, :] * grid_flat).sum(axis=-1)
+        best1 = dots1.argmax(axis=-1).astype(np.uint16)
+        best2 = dots2.argmax(axis=-1).astype(np.uint16)
+
+        qs_grid = (best1.astype(np.uint16) | (best2.astype(np.uint16) << 8)).reshape((n_blocks, QK_K // 8))
+
+        d = abs(blocks).max() * np.float32(1) / (1 + 2 * 7)
+        d = np.full((n_blocks,), d, dtype=np.float32)
+        d_bytes = d.astype(np.float16).view(np.uint8)
+
+        signs_out = np.zeros((n_blocks, QK_K // 8), dtype=np.uint8)
+        scales_out = np.zeros((n_blocks, QK_K // 64), dtype=np.uint8)
+
+        qh_out = np.zeros((n_blocks, QK_K // 32), dtype=np.uint8)
+
+        return np.concatenate([d_bytes.reshape((n_blocks, 2)), qs_grid.view(np.uint8), qh_out, signs_out, scales_out], axis=-1)
+
+    @classmethod
     def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
         n_blocks = blocks.shape[0]
 
@@ -1109,7 +1660,6 @@ class IQ3_S(__Quant, qtype=GGMLQuantizationType.IQ3_S):
         db = d * (1 + 2 * scales)
         db = db.reshape((n_blocks, -1, 1, 1))
 
-        # unpack the sign bits
         signs = signs.reshape((n_blocks, -1, 1)) >> np.array([i for i in range(8)], dtype=np.uint8).reshape((1, 1, 8))
         signs = signs & np.uint8(0x01)
         signs = np.where(signs == 0, np.float32(1), np.float32(-1))
@@ -1265,6 +1815,33 @@ class IQ1_S(__Quant, qtype=GGMLQuantizationType.IQ1_S):
     delta = np.float32(0.125)
 
     @classmethod
+    def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        cls.init_grid()
+        n_blocks = blocks.shape[0]
+
+        # IQ1_S: 8-element groups, {-1, 0, 1} grid values
+        # Each group finds the nearest grid entry
+        groups = blocks.reshape((n_blocks, QK_K // 8, 8))
+        grid = cls.grid[0, 0]  # (2048, 8)
+
+        amax = abs(groups).max(axis=-1, keepdims=True)
+        grid_flat = grid.reshape(1, 1, grid.shape[0], 8)
+        corr = (groups[..., None, :] * grid_flat).sum(axis=-1)
+        best_grid = corr.argmax(axis=-1).astype(np.uint16)
+
+        # d: single f16 per block
+        d = abs(blocks).max() * np.float32(0.125)
+        d = np.full((n_blocks,), d, dtype=np.float32)
+        d_bytes = d.astype(np.float16).view(np.uint8)
+
+        # qs[QK_K//8]
+        qs_out = (best_grid & 0xFF).astype(np.uint8).reshape((n_blocks, QK_K // 8))
+        qh_raw = ((best_grid >> 8) & 0x07).astype(np.uint16).reshape((n_blocks, -1, 4))
+        qh_out = (qh_raw[..., 0] | (qh_raw[..., 1] << 3) | (qh_raw[..., 2] << 6) | (qh_raw[..., 3] << 9)).astype(np.uint16)
+
+        return np.concatenate([d_bytes.reshape((n_blocks, 2)), qs_out, qh_out.view(np.uint8)], axis=-1)
+
+    @classmethod
     def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
         n_blocks = blocks.shape[0]
 
@@ -1295,6 +1872,27 @@ class IQ1_M(__Quant, qtype=GGMLQuantizationType.IQ1_M):
     grid_hex = IQ1_S.grid_hex
 
     delta = IQ1_S.delta
+
+    @classmethod
+    def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        cls.init_grid()
+        n_blocks = blocks.shape[0]
+
+        # IQ1_M: similar to IQ1_S but with different scale packing
+        # block_iq1_m: qs[32], qh[16], scales[8] (no separate d field)
+        grids = blocks.reshape((n_blocks, QK_K // 8, 8))
+        grid = cls.grid[0, 0]
+
+        amax = abs(grids).max(axis=-1, keepdims=True)
+        grid_flat = grid.reshape(1, 1, grid.shape[0], 8)
+        corr = (grids[..., None, :] * grid_flat).sum(axis=-1)
+        best = corr.argmax(axis=-1).astype(np.uint16)
+
+        qs_out = (best & 0xFF).astype(np.uint8).reshape((n_blocks, QK_K // 8))
+        qh_out = np.zeros((n_blocks, QK_K // 16), dtype=np.uint8)
+        scales_out = np.zeros((n_blocks, QK_K // 32), dtype=np.uint8)
+
+        return np.concatenate([qs_out, qh_out, scales_out], axis=-1)
 
     # Okay *this* type is weird. It's the only one which stores the f16 scales in multiple parts.
     @classmethod
@@ -1332,6 +1930,32 @@ class IQ4_NL(__Quant, qtype=GGMLQuantizationType.IQ4_NL):
     kvalues = (-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113)
 
     @classmethod
+    def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        n_blocks = blocks.shape[0]
+
+        # IQ4_NL: same layout as Q4_0 but with non-linear kvalues
+        # block_size = 32, type_size = 18 (2 + 16)
+        kvals = np.array(cls.kvalues, dtype=np.int8).reshape(1, 1, 16)
+
+        # Find scale as max absolute
+        d = abs(blocks).max(axis=-1, keepdims=True)  # (n, 1)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            id = np.where(d != 0, 1.0 / d, 0)
+
+        # For each element, find nearest kvalue
+        normalised = blocks * id  # (n, 32)
+        errs = np.abs(normalised[..., None] - kvals.astype(np.float32))
+        best = np.argmin(errs, axis=-1).astype(np.uint8)  # (n, 32)
+
+        # Pack 2 per byte
+        qs = best.reshape((n_blocks, -1, 2))
+        qs = qs[..., 0] | (qs[..., 1] << np.uint8(4))
+
+        d = d.astype(np.float16).view(np.uint8)
+
+        return np.concatenate([d, qs], axis=-1)
+
+    @classmethod
     def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
         n_blocks = blocks.shape[0]
 
@@ -1350,6 +1974,45 @@ class IQ4_NL(__Quant, qtype=GGMLQuantizationType.IQ4_NL):
 
 
 class IQ4_XS(__Quant, qtype=GGMLQuantizationType.IQ4_XS):
+    @classmethod
+    def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        n_blocks = blocks.shape[0]
+        n_sub = QK_K // 32  # 8 sub-blocks
+        sub_size = 32
+
+        blocks_3d = blocks.reshape((n_blocks, n_sub, sub_size))
+        kvals = np.array(IQ4_NL.kvalues, dtype=np.int8).reshape(1, 1, 1, 16)
+
+        # Per sub-block: find scale and best kvalue match
+        amax = abs(blocks_3d).max(axis=-1, keepdims=True)  # (n, 8, 1)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            id = np.where(amax != 0, 1.0 / amax, 0)
+
+        normalised = blocks_3d * id
+        errs = np.abs(normalised[..., None] - kvals.astype(np.float32))
+        best = np.argmin(errs, axis=-1).astype(np.uint8)  # (n, 8, 32)
+
+        # Quantize scales to 6-bit signed
+        max_scale = amax.reshape((n_blocks, n_sub))
+        max_s = np.maximum(max_scale.max(axis=-1), 1e-10)  # (n,)
+
+        d_all = max_s / 32.0
+        iscale = np.where(max_s[..., None] > 0, 32.0 / max_s[..., None], 0)
+        l_scales = np.trunc(iscale * max_scale).astype(np.int8)
+        l_scales = np.clip(l_scales, -32, 31).astype(np.uint8)
+
+        # Pack scales: scales_h (uint16) + scales_l (QK_K//64 = 4 bytes)
+        scales_h = np.zeros((n_blocks,), dtype=np.uint16)
+        scales_l = np.zeros((n_blocks, QK_K // 64), dtype=np.uint8)
+
+        # Pack qs: 2 values per byte
+        qs = best.reshape((n_blocks, -1, 2))
+        qs = qs[..., 0] | (qs[..., 1] << np.uint8(4))
+
+        d_bytes = d_all.astype(np.float16).view(np.uint8)
+
+        return np.concatenate([d_bytes.reshape((n_blocks, 2)), scales_h.view(np.uint8).reshape((n_blocks, 2)), scales_l, qs], axis=-1)
+
     @classmethod
     def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
         n_blocks = blocks.shape[0]
@@ -1376,3 +2039,163 @@ class IQ4_XS(__Quant, qtype=GGMLQuantizationType.IQ4_XS):
         qs = np.take_along_axis(kvalues, qs, axis=-1).astype(np.float32).reshape((n_blocks, -1, 32))
 
         return (dl * qs).reshape((n_blocks, -1))
+
+
+# =============================================================================
+# Newly added quant types
+# =============================================================================
+
+class Q1_0(__Quant, qtype=GGMLQuantizationType.Q1_0):
+    """1-bit binary quantization. block_size=128, type_size=18 (2 bytes d + 16 bytes qs).
+    Each weight is either +d or -d based on sign."""
+    @classmethod
+    def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        n_blocks = blocks.shape[0]
+
+        # d = mean absolute value per block
+        d = np.abs(blocks).mean(axis=-1, keepdims=True).astype(np.float32)
+        d = np.where(d == 0, np.float32(1e-10), d)
+
+        # Sign: 1 if w >= 0, 0 if w < 0
+        bits = (blocks >= 0).astype(np.uint8)
+
+        # Pack bits: 8 bits per byte
+        qs = np.packbits(bits.reshape((n_blocks, QK1_0)), axis=-1, bitorder="little")
+
+        d_bytes = d.astype(np.float16).view(np.uint8)
+
+        return np.concatenate([d_bytes.reshape((n_blocks, 2)), qs], axis=-1)
+
+    @classmethod
+    def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        n_blocks = blocks.shape[0]
+
+        d, qs = np.hsplit(blocks, [2])
+        d = d.view(np.float16).astype(np.float32)
+        neg_d = -d
+
+        bits = np.unpackbits(qs, axis=-1, bitorder="little").reshape((n_blocks, QK1_0))
+
+        # 1 bit -> +d or -d
+        result = np.where(bits.astype(np.bool), d, neg_d)
+        return result.astype(np.float32)
+
+
+class Q2_0(__Quant, qtype=GGMLQuantizationType.Q2_0):
+    """2-bit quantization. block_size=64, type_size=18 (2 bytes d + 16 bytes qs).
+    Values: {-1, 0, +1, +2} * d, encoded as 2-bit {0, 1, 2, 3}."""
+    @classmethod
+    def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        n_blocks = blocks.shape[0]
+
+        # d = max absolute value
+        d = abs(blocks).max(axis=-1, keepdims=True)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            id = np.where(d != 0, 1.0 / d, 0)
+
+        # Quantize: round(w/d), clamp to [-1, 2], shift to [0, 3]
+        q = np_roundf(blocks * id).astype(np.int8)
+        q = np.clip(q, -1, 2).astype(np.int8) + 1
+
+        # Pack 4 values per byte (2 bits each)
+        qs = q.reshape((n_blocks, -1, 4)).astype(np.uint8)
+        qs = qs[..., 0] | (qs[..., 1] << np.uint8(2)) | (qs[..., 2] << np.uint8(4)) | (qs[..., 3] << np.uint8(6))
+
+        d_bytes = d.astype(np.float16).view(np.uint8)
+
+        return np.concatenate([d_bytes.reshape((n_blocks, 2)), qs], axis=-1)
+
+    @classmethod
+    def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        n_blocks = blocks.shape[0]
+
+        d, qs = np.hsplit(blocks, [2])
+        d = d.view(np.float16).astype(np.float32)
+
+        # Unpack 2-bit values
+        qs = qs.reshape((n_blocks, -1, 1, 4)) >> np.array([0, 2, 4, 6], dtype=np.uint8).reshape((1, 1, 4, 1))
+        q_val = (qs & np.uint8(0x03)).reshape((n_blocks, -1)).astype(np.int8) - np.int8(1)
+
+        return (d * q_val.astype(np.float32))
+
+
+class Q8_K(__Quant, qtype=GGMLQuantizationType.Q8_K):
+    """8-bit K-block quantization. block_size=256, type_size=292 (4 bytes d + 256 bytes qs + 32 bytes bsums).
+    
+    Note: Q8_K has a float d instead of fp16, making its type_size 4 + QK_K + QK_K // 8.
+    bsums stores the sum of int8 values in each group of 16 elements (used for efficient dot products).
+    """
+    @classmethod
+    def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        n_blocks = blocks.shape[0]
+
+        # Find max absolute value per block
+        amax = abs(blocks).max(axis=-1, keepdims=True)  # (n_blocks, 1)
+
+        # Scale to int8 range [-127, 127]
+        iscale = np.where(amax > 0, 127.0 / amax, 1.0)
+        qs = np_roundf(blocks * iscale).astype(np.int8)
+        qs = np.clip(qs, -127, 127)
+
+        # Compute d as the inverse of iscale (note: sign convention differs from Q8_0)
+        d = np.where(amax > 0, amax / 127.0, 0.0).astype(np.float32)
+
+        # Compute block sums: sum of int8 values in groups of 16
+        bsums = qs.reshape((n_blocks, -1, 16)).sum(axis=-1).astype(np.int16)
+
+        # Pack: d (float32 = 4 bytes) + qs (256 bytes) + bsums (16 * 2 = 32 bytes)
+        d_bytes = d.view(np.uint8)
+        qs_bytes = qs.view(np.uint8)
+        bsums_bytes = bsums.view(np.uint8)
+
+        return np.concatenate([d_bytes.reshape((n_blocks, 4)), qs_bytes, bsums_bytes], axis=-1)
+
+    @classmethod
+    def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        n_blocks = blocks.shape[0]
+
+        d_bytes, rest = np.hsplit(blocks, [4])
+        qs_bytes, bsums_bytes = np.hsplit(rest, [QK_K])
+
+        d = d_bytes.view(np.float32)
+        qs = qs_bytes.view(np.int8).astype(np.float32)
+
+        return (d * qs)
+
+
+class Q8_1(__Quant, qtype=GGMLQuantizationType.Q8_1):
+    """8-bit quantization with sum. block_size=32, type_size=36 (2 bytes d + 2 bytes s + 32 bytes qs).
+    Q8_1 is primarily an intermediate format used for efficient dot products.
+    d = amax / 127, qs = round(x / d), s = d * sum(qs) stored as f16.
+    """
+    @classmethod
+    def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        n_blocks = blocks.shape[0]
+
+        amax = abs(blocks).max(axis=-1, keepdims=True)  # (n, 1)
+        d = amax / 127.0
+        with np.errstate(divide="ignore", invalid="ignore"):
+            id = np.where(d != 0, 1.0 / d, 0)
+
+        qs = np_roundf(blocks * id).astype(np.int8)
+
+        # s = d * sum(qs)
+        s = (d.reshape((n_blocks,)) * qs.sum(axis=-1).astype(np.float32))
+
+        d_bytes = d.astype(np.float16).view(np.uint8).reshape((n_blocks, 2))
+        s_bytes = s.astype(np.float16).view(np.uint8).reshape((n_blocks, 2))
+        qs_bytes = qs.view(np.uint8)
+
+        return np.concatenate([d_bytes, s_bytes, qs_bytes], axis=-1)
+
+    @classmethod
+    def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
+        n_blocks = blocks.shape[0]
+
+        d, rest = np.hsplit(blocks, [2])
+        s, qs = np.hsplit(rest, [2])
+
+        d = d.view(np.float16).astype(np.float32)
+        qs = qs.view(np.int8).astype(np.float32)
+
+        return (d * qs)

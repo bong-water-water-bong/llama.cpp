@@ -86,6 +86,40 @@ static __device__ __forceinline__ void dequantize_q5_1(const void * vx, const in
     v.y = (v.y * dm.x) + dm.y;
 }
 
+static __device__ __forceinline__ void dequantize_q2_0(const void * vx, const int64_t ib, const int iqs, float2 & v){
+    const block_q2_0 * x = (const block_q2_0 *) vx;
+
+    const float d = x[ib].d;
+
+    const int byte_0 = iqs / 4;
+    const int bit_off_0 = (iqs % 4) * 2;
+    const int val_0 = (x[ib].qs[byte_0] >> bit_off_0) & 0x03;
+
+    const int byte_1 = (iqs + 1) / 4;
+    const int bit_off_1 = ((iqs + 1) % 4) * 2;
+    const int val_1 = (x[ib].qs[byte_1] >> bit_off_1) & 0x03;
+
+    v.x = (val_0 - 1) * d;
+    v.y = (val_1 - 1) * d;
+}
+
+static __device__ __forceinline__ void dequantize_tq2_0(const void * vx, const int64_t ib, const int iqs, float2 & v){
+    const block_tq2_0 * x = (const block_tq2_0 *) vx;
+
+    const float d = x[ib].d;
+
+    const int byte_0 = iqs / 4;
+    const int bit_off_0 = (iqs % 4) * 2;
+    const int val_0 = (x[ib].qs[byte_0] >> bit_off_0) & 0x03;
+
+    const int byte_1 = (iqs + 1) / 4;
+    const int bit_off_1 = ((iqs + 1) % 4) * 2;
+    const int val_1 = (x[ib].qs[byte_1] >> bit_off_1) & 0x03;
+
+    v.x = (float)(val_0 - 1) * d;
+    v.y = (float)(val_1 - 1) * d;
+}
+
 static __device__ __forceinline__ void dequantize_q8_0(const void * vx, const int64_t ib, const int iqs, float2 & v){
     const block_q8_0 * x = (const block_q8_0 *) vx;
 

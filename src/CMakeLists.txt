@@ -34,6 +34,7 @@ add_library(llama
             llama-model-loader.cpp
             llama-model-saver.cpp
             llama-model.cpp
+            llama-onnx.cpp
             llama-quant.cpp
             llama-sampler.cpp
             llama-vocab.cpp
@@ -53,7 +54,17 @@ target_include_directories(llama PRIVATE .)
 target_include_directories(llama PUBLIC ../include)
 target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
 
-target_link_libraries(llama PUBLIC ggml)
+# ONNX Runtime integration
+find_package(onnxruntime QUIET)
+if (onnxruntime_FOUND)
+    message(STATUS "ONNX Runtime found: ${onnxruntime_VERSION}")
+    target_compile_definitions(llama PRIVATE LLAMA_ONNX=1)
+    target_include_directories(llama PRIVATE /usr/include/onnxruntime)
+    target_link_libraries(llama PUBLIC ggml onnxruntime::onnxruntime)
+else()
+    message(STATUS "ONNX Runtime not found - ONNX support disabled")
+    target_link_libraries(llama PUBLIC ggml)
+endif()
 
 if (BUILD_SHARED_LIBS)
     set_target_properties(llama PROPERTIES POSITION_INDEPENDENT_CODE ON)
