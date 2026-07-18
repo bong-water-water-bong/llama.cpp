@@ -348,6 +348,40 @@ def _iq2_build_tables(cls, nwant: int) -> tuple[np.ndarray, np.ndarray, np.ndarr
     return result
 
 
+def _iq1m_grid_lookup(u: np.ndarray, xval_g: np.ndarray, weight_g: np.ndarray, scale: np.ndarray,
+                       use_p: np.ndarray, x_p: np.ndarray, x_m: np.ndarray,
+                       pos: np.ndarray, kmap: np.ndarray, neigh_padded: np.ndarray, neigh_count: np.ndarray
+                       ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Port of iq1_find_best_neighbour2's dispatch (used by IQ1_M): like
+    _iq2_grid_lookup, but candidates are scored via the x_p/x_m
+    reconstruction-value table (selected per-group by `use_p`) instead of
+    raw pos values, and weight is used directly (not sqrt)."""
+    grid_idx = kmap[u]
+    on_grid = grid_idx >= 0
+    max_n = neigh_padded.shape[1]
+
+    safe_u = np.where(on_grid, 0, u)
+    cand = neigh_padded[safe_u]  # (..., max_n)
+    cand_cnt = neigh_count[safe_u]  # (...)
+    cand_valid = np.arange(max_n) < cand_cnt[..., None]
+    safe_cand = np.clip(cand, 0, pos.shape[0] - 1)
+    pg = pos[safe_cand]  # (..., max_n, 8) values in {1, 3, 5}
+    levels = (pg - 1) // 2  # (..., max_n, 8) in {0, 1, 2}
+    q_p = x_p[levels]
+    q_m = x_m[levels]
+    q = np.where(use_p[..., None, None], q_p, q_m)
+    diff = scale[..., None, None] * q - xval_g[..., None, :]
+    d2 = np.sum(weight_g[..., None, :] * diff * diff, axis=-1)  # (..., max_n)
+    d2 = np.where(cand_valid, d2, np.float32(np.inf))
+    best_n = np.argmin(d2, axis=-1)
+    neigh_grid_idx = np.take_along_axis(cand, best_n[..., None], axis=-1)[..., 0]
+
+    final_idx = np.where(on_grid, grid_idx, neigh_grid_idx)
+    final_pos = pos[np.clip(final_idx, 0, pos.shape[0] - 1)]  # (..., 8)
+    L = (final_pos - 1) // 2
+    return final_idx, L, on_grid
+
+
 _iq3_grid_cache: dict[type, tuple] = {}
 
 
@@ -2610,22 +2644,175 @@ class IQ1_M(__Quant, qtype=GGMLQuantizationType.IQ1_M):
     def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
         cls.init_grid()
         n_blocks = blocks.shape[0]
+        n_ib = QK_K // 16  # 16
+        block_size = 16
+        GROUP_MAX_EPS_IQ1_M = 1e-7
+        delta = np.float32(cls.delta)
 
-        # IQ1_M: similar to IQ1_S but with different scale packing
-        # block_iq1_m: qs[32], qh[16], scales[8] (no separate d field)
-        grids = blocks.reshape((n_blocks, QK_K // 8, 8))
-        grid = cls.grid[0, 0]
+        pos, kmap, neigh_padded, neigh_count = _iq2_build_tables(cls, nwant=3)
 
-        amax = abs(grids).max(axis=-1, keepdims=True)
-        grid_flat = grid.reshape(1, 1, grid.shape[0], 8)
-        corr = (grids[..., None, :] * grid_flat).sum(axis=-1)
-        best = corr.argmax(axis=-1).astype(np.uint16)
+        blocks_3d = blocks.reshape((n_blocks, n_ib, block_size)).astype(np.float32)
+        weight = blocks_3d * blocks_3d  # (n_blocks, n_ib, 16) -- no imatrix branch
+        xb = blocks_3d
 
-        qs_out = (best & 0xFF).astype(np.uint8).reshape((n_blocks, QK_K // 8))
-        qh_out = np.zeros((n_blocks, QK_K // 16), dtype=np.uint8)
-        scales_out = np.zeros((n_blocks, QK_K // 32), dtype=np.uint8)
+        x_p = np.array([-1 + delta, delta, 1 + delta], dtype=np.float32)
+        x_m = np.array([-1 - delta, -delta, 1 - delta], dtype=np.float32)
 
-        return np.concatenate([qs_out, qh_out, scales_out], axis=-1)
+        max_sub = np.abs(xb).max(axis=-1)  # (n_blocks, n_ib)
+        degenerate = max_sub < GROUP_MAX_EPS_IQ1_M
+
+        # Exact SSD search over the two split points (i1, i2) of the sorted
+        # values, with 4 candidate sign assignments (k) for the two halves
+        # (elements < 8 / >= 8). Uses prefix sums over the sorted order to
+        # avoid an O(block_size^3) search per subblock.
+        order = np.argsort(xb, axis=-1)  # ascending; ties are measure-zero for real data
+        xb_sorted = np.take_along_axis(xb, order, axis=-1)
+        w_sorted = np.take_along_axis(weight, order, axis=-1)
+        half0 = order < (block_size // 2)  # True: original index in first half
+
+        HALF0_PROFILE = np.array([True, True, False, False])
+        HALF1_PROFILE = np.array([True, False, True, False])
+        use_p_sorted = np.where(half0[..., None], HALF0_PROFILE, HALF1_PROFILE)  # (n_blocks, n_ib, 16, 4)
+
+        CumA = np.zeros((n_blocks, n_ib, 3, 4, block_size + 1), dtype=np.float32)
+        CumB = np.zeros((n_blocks, n_ib, 3, 4, block_size + 1), dtype=np.float32)
+        for j in range(3):
+            for k in range(4):
+                val = np.where(use_p_sorted[..., k], x_p[j], x_m[j])  # (n_blocks, n_ib, 16)
+                aj = w_sorted * val * xb_sorted
+                bj = w_sorted * val * val
+                CumA[:, :, j, k, 1:] = np.cumsum(aj, axis=-1)
+                CumB[:, :, j, k, 1:] = np.cumsum(bj, axis=-1)
+
+        best_score = np.full((n_blocks, n_ib), -np.inf, dtype=np.float32)
+        best_scale = np.zeros((n_blocks, n_ib), dtype=np.float32)
+        besti1 = np.full((n_blocks, n_ib), -1, dtype=np.int32)
+        besti2 = np.full((n_blocks, n_ib), -1, dtype=np.int32)
+        best_k = np.zeros((n_blocks, n_ib), dtype=np.int32)
+
+        for i1 in range(block_size + 1):
+            for i2 in range(i1, block_size + 1):
+                sumqx4 = (CumA[:, :, 0, :, i1] +
+                          (CumA[:, :, 1, :, i2] - CumA[:, :, 1, :, i1]) +
+                          (CumA[:, :, 2, :, block_size] - CumA[:, :, 2, :, i2]))  # (n_blocks, n_ib, 4)
+                sumq24 = (CumB[:, :, 0, :, i1] +
+                          (CumB[:, :, 1, :, i2] - CumB[:, :, 1, :, i1]) +
+                          (CumB[:, :, 2, :, block_size] - CumB[:, :, 2, :, i2]))
+                for k in range(4):
+                    sumqx = sumqx4[:, :, k]
+                    sumq2 = sumq24[:, :, k]
+                    improve = (sumq2 > 0) & (sumqx * sumqx > best_score * sumq2)
+                    new_scale = np.where(sumq2 != 0, sumqx / sumq2, np.float32(0.0))
+                    best_score = np.where(improve, new_scale * sumqx, best_score)
+                    best_scale = np.where(improve, new_scale, best_scale)
+                    besti1 = np.where(improve, i1, besti1)
+                    besti2 = np.where(improve, i2, besti2)
+                    best_k = np.where(improve, k, best_k)
+
+        not_found = besti1 < 0
+        use_default = degenerate | not_found
+
+        pos_idx = np.arange(block_size).reshape(1, 1, block_size)
+        level_sorted = np.where(pos_idx < besti1[..., None], 0,
+                                 np.where(pos_idx < besti2[..., None], 1, 2)).astype(np.int64)
+        L = np.zeros((n_blocks, n_ib, block_size), dtype=np.int64)
+        np.put_along_axis(L, order, level_sorted, axis=-1)
+
+        scale = best_scale
+        flip = scale < 0
+        L = np.where(flip[..., None], 2 - L, L)
+        scale = np.abs(scale)
+        best_k = np.where(flip, 3 - best_k, best_k)
+
+        L = np.where(use_default[..., None], 1, L)
+        scale = np.where(use_default, np.float32(0.0), scale)
+        best_k = np.where(use_default, 0, best_k)
+
+        use_p_kg0 = best_k < 2
+        use_p_kg1 = (best_k % 2) == 0
+
+        index_kg = np.zeros((n_blocks, n_ib, 2), dtype=np.int64)
+        on_grid_kg = np.zeros((n_blocks, n_ib, 2), dtype=bool)
+        L_final = L.copy()
+        for kg in range(2):
+            xg = xb[:, :, 8 * kg:8 * kg + 8]
+            wg = weight[:, :, 8 * kg:8 * kg + 8]
+            u = IQ2_S._pack_u(L_final[:, :, 8 * kg:8 * kg + 8])
+            use_p_this = use_p_kg0 if kg == 0 else use_p_kg1
+            idx, Lg, og = _iq1m_grid_lookup(u, xg, wg, scale, use_p_this, x_p, x_m,
+                                             pos, kmap, neigh_padded, neigh_count)
+            index_kg[:, :, kg] = idx
+            on_grid_kg[:, :, kg] = og
+            L_final[:, :, 8 * kg:8 * kg + 8] = Lg
+
+        need_rescan = ~on_grid_kg.all(axis=-1)  # (n_blocks, n_ib)
+        sumqx_f = np.zeros((n_blocks, n_ib), dtype=np.float32)
+        sumq2_f = np.zeros((n_blocks, n_ib), dtype=np.float32)
+        for kg in range(2):
+            use_p_this = use_p_kg0 if kg == 0 else use_p_kg1
+            Lg = L_final[:, :, 8 * kg:8 * kg + 8]
+            q_all = np.where(use_p_this[..., None], x_p[Lg], x_m[Lg])  # (n_blocks, n_ib, 8)
+            wg = weight[:, :, 8 * kg:8 * kg + 8]
+            xg = xb[:, :, 8 * kg:8 * kg + 8]
+            for j in range(8):
+                sumqx_f += wg[:, :, j] * q_all[:, :, j] * xg[:, :, j]
+                sumq2_f += wg[:, :, j] * q_all[:, :, j] * q_all[:, :, j]
+        rescan_valid = (sumqx_f > 0) & (sumq2_f > 0)
+        scale = np.where(need_rescan & rescan_valid, sumqx_f / sumq2_f, scale)
+
+        valid_ib = ~use_default
+        index_kg_masked = np.where(valid_ib[..., None], index_kg, 0)
+        qs_out = (index_kg_masked & 0xFF).astype(np.uint8).reshape(n_blocks, QK_K // 8)
+
+        qh_low = ((index_kg_masked[:, :, 0] >> 8) & 0x07).astype(np.uint8)
+        qh_high = ((index_kg_masked[:, :, 1] >> 8) & 0x07).astype(np.uint8)
+        qh_byte = qh_low | (qh_high << 4)  # (n_blocks, n_ib)
+
+        scales_masked = np.where(valid_ib, scale, np.float32(0.0))
+        max_scale = scales_masked.max(axis=-1)  # (n_blocks,)
+        has_block_scale = max_scale > 0
+        d0 = np.where(has_block_scale, max_scale / 15.0, np.float32(0.0))
+        id_d0 = np.where(d0 != 0, 1.0 / d0, np.float32(0.0))
+
+        l_level = np.clip(np_nearest_int(0.5 * (id_d0[:, None] * scales_masked - 1)), 0, 7).astype(np.int64)
+
+        mask_table = np.array([0x00, 0x80, 0x08, 0x88], dtype=np.uint8)
+        shift_mask = mask_table[best_k]  # (n_blocks, n_ib)
+        qh_byte_final = (qh_byte | shift_mask).astype(np.uint8)
+
+        sc = np.zeros((n_blocks, 4), dtype=np.uint16)
+        for ib in range(n_ib):
+            sc[:, ib // 4] |= (l_level[:, ib].astype(np.uint16) << np.uint16(3 * (ib % 4)))
+
+        sumqx_final = np.zeros((n_blocks,), dtype=np.float32)
+        sumq2_final = np.zeros((n_blocks,), dtype=np.float32)
+        for ib in range(n_ib):
+            lf = l_level[:, ib].astype(np.float32)
+            qmul = 2 * lf + 1
+            for kg in range(2):
+                use_p_this = use_p_kg0[:, ib] if kg == 0 else use_p_kg1[:, ib]
+                Lg = L_final[:, ib, 8 * kg:8 * kg + 8]
+                qx = np.where(use_p_this[:, None], x_p[Lg], x_m[Lg])  # (n_blocks, 8)
+                wg = weight[:, ib, 8 * kg:8 * kg + 8]
+                xg = xb[:, ib, 8 * kg:8 * kg + 8]
+                for j in range(8):
+                    q = qx[:, j] * qmul
+                    sumqx_final += wg[:, j] * q * xg[:, j]
+                    sumq2_final += wg[:, j] * q * q
+        d_refined = np.where(sumq2_final > 0, sumqx_final / sumq2_final, d0)
+        s_f16 = (d_refined * np.float32(1.1125)).astype(np.float16)
+        s_u16 = s_f16.view(np.uint16)
+        s_u16 = np.where(has_block_scale, s_u16, np.uint16(0))
+
+        sc[:, 0] |= ((s_u16 & np.uint16(0x000F)) << np.uint16(12))
+        sc[:, 1] |= ((s_u16 & np.uint16(0x00F0)) << np.uint16(8))
+        sc[:, 2] |= ((s_u16 & np.uint16(0x0F00)) << np.uint16(4))
+        sc[:, 3] |= (s_u16 & np.uint16(0xF000))
+
+        qh_out = qh_byte_final.reshape(n_blocks, QK_K // 16)
+        scales_bytes = sc.view(np.uint8).reshape(n_blocks, QK_K // 32)
+
+        return np.concatenate([qs_out, qh_out, scales_bytes], axis=-1)
 
     # Okay *this* type is weird. It's the only one which stores the f16 scales in multiple parts.
     @classmethod
