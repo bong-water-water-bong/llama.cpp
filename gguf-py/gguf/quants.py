@@ -43,13 +43,166 @@ def _apply_over_grouped_rows(func: Callable[[np.ndarray], np.ndarray], arr: np.n
     return out.reshape(oshape)
 
 
-# round away from zero
+# round away from zero — matches libc roundf(), used by the simple
+# (non-K-quant) formats below (Q4_0/Q5_0/Q8_0/TQ1_0/TQ2_0/...).
 # ref: https://stackoverflow.com/a/59143326/22827863
 def np_roundf(n: np.ndarray) -> np.ndarray:
     a = abs(n)
     floored = np.floor(a)
     b = floored + np.floor(2 * (a - floored))
     return np.sign(n) * b
+
+
+# round half to even — matches ggml-quants.c's `nearest_int()` bit-trick
+# (`fval + 1.5*2^23` then reinterpret), which inherits the FPU's default
+# IEEE-754 round-to-nearest-even rounding mode. Used by the K-quant family
+# (make_qkx2_quants, make_q3_quants, and the K-quant scale/element
+# requantization loops) — a genuinely different rounding rule from
+# np_roundf's round-away-from-zero, not just a style choice.
+def np_nearest_int(n: np.ndarray) -> np.ndarray:
+    return np.round(n)
+
+
+# Port of make_qkx2_quants from ggml-quants.c — shared by Q2_K, Q4_K, Q5_K.
+# x, weights: (..., n) float32, vectorized over the leading "..." batch dims
+# (independent sub-blocks). Returns (scale, min, L) with shapes (...,),
+# (...,), (..., n) — L already holds the final integer codes in [0, nmax].
+# All internal reductions use sequential left-to-right accumulation (a
+# Python loop over n, vectorized across the batch dims) rather than
+# np.sum's pairwise reduction — matching the C reference's plain `for`-loop
+# summation exactly avoids occasional last-bit rounding divergence that a
+# different summation order can introduce (see Q3_K's make_q3_quants port
+# for a case where this mattered in practice).
+def _make_qkx2_quants(x: np.ndarray, weights: np.ndarray, nmax: int,
+                       rmin: float, rdelta: float, nstep: int, use_mad: bool) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    n = x.shape[-1]
+
+    min_val = x.min(axis=-1)
+    max_val = x.max(axis=-1)
+    sum_w = np.zeros(x.shape[:-1], dtype=np.float32)
+    sum_x = np.zeros(x.shape[:-1], dtype=np.float32)
+    for i in range(n):
+        sum_w += weights[..., i]
+        sum_x += weights[..., i] * x[..., i]
+
+    min_val = np.where(min_val > 0, 0.0, min_val)
+    degenerate = max_val == min_val
+
+    scale_range = max_val - min_val
+    safe_range = np.where(degenerate, 1.0, scale_range)
+    iscale = nmax / safe_range
+    scale = 1.0 / iscale
+
+    L = np.clip(np_nearest_int(iscale[..., None] * (x - min_val[..., None])), 0, nmax)
+    best_error = np.zeros(x.shape[:-1], dtype=np.float32)
+    for i in range(n):
+        diff = scale * L[..., i] + min_val - x[..., i]
+        diff = np.abs(diff) if use_mad else diff * diff
+        best_error += weights[..., i] * diff
+
+    best_scale = scale.copy()
+    best_min = min_val.copy()
+    best_L = L.copy()
+
+    if nstep >= 1:
+        # C reassigns the *outer* `min` (not just the returned best) to
+        # `this_min` on every improvement, and the next iteration's iscale
+        # is computed against that evolving `(max - min)`, not the original
+        # data range. `best_min` tracks exactly that same variable — reuse
+        # it here instead of the fixed pre-loop `min_val`/`safe_range`.
+        for is_ in range(nstep + 1):
+            cur_range = np.where(degenerate, 1.0, max_val - best_min)
+            iscale_try = (rmin + rdelta * is_ + nmax) / cur_range
+            Laux = np.clip(np_nearest_int(iscale_try[..., None] * (x - best_min[..., None])), 0, nmax)
+
+            sum_l = np.zeros(x.shape[:-1], dtype=np.float32)
+            sum_l2 = np.zeros(x.shape[:-1], dtype=np.float32)
+            sum_xl = np.zeros(x.shape[:-1], dtype=np.float32)
+            for i in range(n):
+                li = Laux[..., i]
+                wi = weights[..., i]
+                sum_l += wi * li
+                sum_l2 += wi * li * li
+                sum_xl += wi * li * x[..., i]
+
+            D = sum_w * sum_l2 - sum_l * sum_l
+            valid = D > 0
+
+            safe_D = np.where(valid, D, 1.0)
+            this_scale = np.where(valid, (sum_w * sum_xl - sum_x * sum_l) / safe_D, 0.0)
+            this_min = np.where(valid, (sum_l2 * sum_x - sum_l * sum_xl) / safe_D, 0.0)
+
+            pos_min = this_min > 0
+            this_min = np.where(pos_min, 0.0, this_min)
+            safe_sum_l2 = np.where(sum_l2 > 0, sum_l2, 1.0)
+            this_scale = np.where(pos_min, np.where(sum_l2 > 0, sum_xl / safe_sum_l2, 0.0), this_scale)
+
+            cur_error = np.zeros(x.shape[:-1], dtype=np.float32)
+            for i in range(n):
+                diff = this_scale * Laux[..., i] + this_min - x[..., i]
+                diff = np.abs(diff) if use_mad else diff * diff
+                cur_error += weights[..., i] * diff
+
+            improve = valid & (cur_error < best_error)
+            best_L = np.where(improve[..., None], Laux, best_L)
+            best_error = np.where(improve, cur_error, best_error)
+            best_scale = np.where(improve, this_scale, best_scale)
+            best_min = np.where(improve, this_min, best_min)
+
+    best_L = np.where(degenerate[..., None], 0, best_L)
+    best_scale = np.where(degenerate, 0.0, best_scale)
+    the_min = np.where(degenerate, -min_val, -best_min)
+
+    return best_scale.astype(np.float32), the_min.astype(np.float32), best_L.astype(np.int32)
+
+
+# Port of make_qx_quants(n, nmax, x, L, rmse_type=1, qw=NULL) from
+# ggml-quants.c — used by Q6_K. Symmetric (no min offset), weight = x*x,
+# search over 19 fixed candidate iscale values around -nmax/max (unlike
+# make_qkx2_quants/make_q3_quants's per-element greedy refinement, this is
+# a much simpler "try N whole candidates, keep the best" search).
+def _make_qx_quants_rmse1(x: np.ndarray, nmax: int) -> tuple[np.ndarray, np.ndarray]:
+    n = x.shape[-1]
+    GROUP_MAX_EPS = 1e-15
+
+    abs_x = np.abs(x)
+    amax = abs_x.max(axis=-1)
+    idx = np.argmax(abs_x, axis=-1)
+    max_val = np.take_along_axis(x, idx[..., None], axis=-1)[..., 0]
+
+    all_zero = amax < GROUP_MAX_EPS
+    safe_max = np.where(all_zero, 1.0, max_val)
+    w = x * x
+
+    def sums_for(iscale: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        L = np.clip(np_nearest_int(iscale[..., None] * x), -nmax, nmax - 1)
+        sumlx = np.zeros(x.shape[:-1], dtype=np.float32)
+        suml2 = np.zeros(x.shape[:-1], dtype=np.float32)
+        for i in range(n):
+            li = L[..., i]
+            sumlx += w[..., i] * x[..., i] * li
+            suml2 += w[..., i] * li * li
+        return L, sumlx, suml2
+
+    iscale0 = -nmax / safe_max
+    best_L, sumlx, suml2 = sums_for(iscale0)
+    best_scale = np.where(suml2 > 0, sumlx / suml2, 0.0)
+    best = best_scale * sumlx
+
+    for is_ in range(-9, 10):
+        if is_ == 0:
+            continue
+        iscale = -(nmax + 0.1 * is_) / safe_max
+        Laux, sumlx2, suml22 = sums_for(iscale)
+        improve = (suml22 > 0) & (sumlx2 * sumlx2 > best * suml22)
+        new_scale = np.where(suml22 > 0, sumlx2 / suml22, 0.0)
+        best_L = np.where(improve[..., None], Laux, best_L)
+        best = np.where(improve, new_scale * sumlx2, best)
+        best_scale = np.where(improve, new_scale, best_scale)
+
+    best_L = np.where(all_zero[..., None], 0, best_L + nmax)
+    best_scale = np.where(all_zero, 0.0, best_scale)
+    return best_scale.astype(np.float32), best_L.astype(np.int32)
 
 
 class QuantError(Exception): ...
@@ -408,114 +561,50 @@ class Q8_0(__Quant, qtype=GGMLQuantizationType.Q8_0):
 
 class Q2_K(__Quant, qtype=GGMLQuantizationType.Q2_K):
     @classmethod
-    def _make_qkx2(cls, x: np.ndarray, nmax: int, nstep: int = 15, rmin: float = -0.5, rdelta: float = 0.1) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Port of make_qkx2_quants from ggml-quants.c."""
-        min_val = x.min(axis=-1, keepdims=True)
-        max_val = x.max(axis=-1, keepdims=True)
-        min_val = np.where(min_val > 0, 0.0, min_val)
-        scale_range = max_val - min_val
-
-        weights = np.abs(x)
-        sum_w = weights.sum(axis=-1, keepdims=True)
-        sum_x = (weights * x).sum(axis=-1, keepdims=True)
-
-        iscale = np.where(scale_range > 1e-10, nmax / scale_range, 0.0)
-        scale = np.where(iscale > 0, 1.0 / iscale, 0.0)
-
-        L = np.trunc(iscale * (x - min_val)).astype(np.int32)
-        L = np.clip(L, 0, nmax)
-
-        diff = scale * L + min_val - x
-        best_error = (weights * np.abs(diff)).sum(axis=-1)
-
-        best_scale = scale.copy()
-        best_min = min_val.copy()
-        best_L = L.copy()
-
-        for istep in range(nstep + 1):
-            iscale_try = (rmin + rdelta * istep + nmax) / np.maximum(scale_range, 1e-10)
-            Laux = np.trunc(iscale_try * (x - min_val)).astype(np.int32)
-            Laux = np.clip(Laux, 0, nmax)
-
-            sum_l = (weights * Laux).sum(axis=-1, keepdims=True)
-            sum_l2 = (weights * Laux * Laux).sum(axis=-1, keepdims=True)
-            sum_xl = (weights * Laux * x).sum(axis=-1, keepdims=True)
-
-            D = sum_w * sum_l2 - sum_l * sum_l
-            valid = D > 1e-10
-
-            this_scale = np.where(valid, (sum_w * sum_xl - sum_x * sum_l) / D, 0.0)
-            this_min = np.where(valid, (sum_l2 * sum_x - sum_l * sum_xl) / D, 0.0)
-
-            pos_min = this_min > 0
-            this_min = np.where(pos_min, 0.0, this_min)
-            this_scale = np.where(pos_min & valid, sum_xl / np.maximum(sum_l2, 1e-10), this_scale)
-
-            diff = this_scale * Laux + this_min - x
-            cur_error = (weights * np.abs(diff)).sum(axis=-1)
-
-            improve = cur_error < best_error
-            best_L = np.where(improve[..., None], Laux, best_L)
-            best_error = np.where(improve, cur_error, best_error)
-            best_scale = np.where(improve, this_scale[..., 0], best_scale[..., 0])
-            best_min = np.where(improve[..., None], this_min, best_min)
-
-        return best_scale, -best_min[..., 0], best_L.astype(np.uint8)
-
-    @classmethod
     def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
         n_blocks = blocks.shape[0]
         n_sub = QK_K // 16
         sub_size = 16
         q4scale = 15.0
 
-        blocks_3d = blocks.reshape((n_blocks, n_sub, sub_size))
+        blocks_3d = blocks.reshape((n_blocks, n_sub, sub_size)).astype(np.float32)
+        weights = np.abs(blocks_3d)
 
-        scales = np.zeros((n_blocks, n_sub), dtype=np.float32)
-        mins = np.zeros((n_blocks, n_sub), dtype=np.float32)
-        L = np.zeros((n_blocks, n_sub, sub_size), dtype=np.uint8)
-        for j in range(n_sub):
-            s, m, l = cls._make_qkx2(blocks_3d[:, j, :], 3, 15)
-            scales[:, j] = s
-            mins[:, j] = m
-            L[:, j, :] = l
+        # Port of quantize_row_q2_K_ref.
+        scales, mins, _ = _make_qkx2_quants(blocks_3d, weights, nmax=3, rmin=-0.5, rdelta=0.1, nstep=15, use_mad=True)
 
-        # Quantize scales to 4-bit
-        max_scale = np.maximum(scales.max(axis=-1), 1e-10)
-        max_min = np.maximum(mins.max(axis=-1), 1e-10)
-        d_all = np.where(max_scale > 0, max_scale / q4scale, 0.0)
-        dmin_all = np.where(max_min > 0, max_min / q4scale, 0.0)
+        max_scale = scales.max(axis=-1)
+        max_min = mins.max(axis=-1)
 
-        l_scales = np.zeros_like(scales, dtype=np.uint8)
-        l_mins = np.zeros_like(mins, dtype=np.uint8)
-        max_s = max_scale.copy()
-        max_m = max_min.copy()
-        for j in range(n_sub):
-            valid_s = max_s > 1e-10
-            valid_m = max_m > 1e-10
-            l_scales[:, j] = np.where(valid_s, np.trunc(q4scale / max_s * scales[:, j]).astype(np.uint8).clip(0, 15), np.uint8(0))
-            l_mins[:, j] = np.where(valid_m, np.trunc(q4scale / max_m * mins[:, j]).astype(np.uint8).clip(0, 15), np.uint8(0))
+        has_scale = max_scale > 0
+        d_all = np.where(has_scale, max_scale / q4scale, 0.0).astype(np.float16).astype(np.float32)
+        l_scales = np.where(has_scale[:, None],
+                             np.clip(np_nearest_int(np.where(has_scale, q4scale / np.where(has_scale, max_scale, 1.0), 0.0)[:, None] * scales), 0, 15),
+                             0).astype(np.uint8)
 
-        packed_scales = (l_scales | (l_mins << 4)).astype(np.uint8)
+        has_min = max_min > 0
+        dmin_all = np.where(has_min, max_min / q4scale, 0.0).astype(np.float16).astype(np.float32)
+        l_mins = np.where(has_min[:, None],
+                           np.clip(np_nearest_int(np.where(has_min, q4scale / np.where(has_min, max_min, 1.0), 0.0)[:, None] * mins), 0, 15),
+                           0).astype(np.uint8)
 
-        # Re-quantize with quantized scales
-        d_actual = d_all[..., None, None]
-        dmin_actual = dmin_all[..., None, None]
-        dl = d_actual * l_scales[..., None].astype(np.float32)
-        ml = dmin_actual * l_mins[..., None].astype(np.float32)
+        packed_scales = (l_scales | (l_mins << 4)).astype(np.uint8)  # (n_blocks, 16)
 
-        with np.errstate(divide="ignore", invalid="ignore"):
-            q2_new = np.trunc((blocks_3d.astype(np.float32) + ml) / np.maximum(dl, 1e-10)).astype(np.uint8).clip(0, 3)
+        dl = (d_all[:, None] * l_scales.astype(np.float32))[..., None]  # (n_blocks,16,1)
+        ml = (dmin_all[:, None] * l_mins.astype(np.float32))[..., None]
+        dl_nz = dl != 0
+        safe_dl = np.where(dl_nz, dl, 1.0)
 
-        # Pack q2: C ref - for each 128-elem group, stride-32 packing
-        L_flat = q2_new.reshape(n_blocks, QK_K)
+        L = np.clip(np_nearest_int((blocks_3d + ml) / safe_dl), 0, 3).astype(np.uint8)
+        L = np.where(dl_nz, L, 0).reshape(n_blocks, QK_K)
+
         qs = np.zeros((n_blocks, QK_K // 4), dtype=np.uint8)
         for j in range(0, QK_K, 128):
             for l in range(32):
-                qs[:, j // 4 + l] = (L_flat[:, j + l].astype(np.uint16) |
-                    (L_flat[:, j + l + 32].astype(np.uint16) << 2) |
-                    (L_flat[:, j + l + 64].astype(np.uint16) << 4) |
-                    (L_flat[:, j + l + 96].astype(np.uint16) << 6)).astype(np.uint8)
+                qs[:, j // 4 + l] = (L[:, j + l].astype(np.uint16) |
+                    (L[:, j + l + 32].astype(np.uint16) << 2) |
+                    (L[:, j + l + 64].astype(np.uint16) << 4) |
+                    (L[:, j + l + 96].astype(np.uint16) << 6)).astype(np.uint8)
 
         d_bytes = d_all.astype(np.float16).view(np.uint8)
         dmin_bytes = dmin_all.astype(np.float16).view(np.uint8)
@@ -549,61 +638,134 @@ class Q2_K(__Quant, qtype=GGMLQuantizationType.Q2_K):
 
 
 class Q3_K(__Quant, qtype=GGMLQuantizationType.Q3_K):
+    GROUP_MAX_EPS = 1e-15  # matches ggml-quants.c's #define GROUP_MAX_EPS 1e-15f
+
+    # Port of make_q3_quants(n, nmax, x, L, do_rmse=true) from ggml-quants.c.
+    # x: (..., n) float32. Returns per-row scale (...,) — matches the C
+    # function's own return value (sumlx/suml2 from the RMSE-refined fit,
+    # NOT the naive max/nmax estimate) — callers only need this scale for
+    # the outer max-scale search; the actual per-element L codes get
+    # recomputed later from the final 6-bit-quantized scale, exactly like
+    # the C reference does in its own second pass.
+    @classmethod
+    def _make_q3_quants(cls, x: np.ndarray, nmax: int = 4) -> np.ndarray:
+        n = x.shape[-1]
+        abs_x = np.abs(x)
+        amax = abs_x.max(axis=-1)
+        idx = np.argmax(abs_x, axis=-1)
+        max_val = np.take_along_axis(x, idx[..., None], axis=-1)[..., 0]
+
+        all_zero = amax < cls.GROUP_MAX_EPS
+        safe_max = np.where(all_zero, 1.0, max_val)
+        iscale = -nmax / safe_max
+
+        L = np.clip(np_nearest_int(iscale[..., None] * x), -nmax, nmax - 1)
+        w = x * x
+        # Sequential left-to-right accumulation (matches the C reference's
+        # `for i: sumlx += w*x[i]*l` loop exactly) rather than np.sum's
+        # pairwise reduction, which can round differently in the last bit
+        # and occasionally flip a borderline element's rounded code.
+        sumlx = np.zeros(x.shape[:-1], dtype=np.float32)
+        suml2 = np.zeros(x.shape[:-1], dtype=np.float32)
+        for i in range(n):
+            sumlx += w[..., i] * x[..., i] * L[..., i]
+            suml2 += w[..., i] * L[..., i] * L[..., i]
+
+        for _ in range(5):
+            for i in range(n):
+                wi = w[..., i]
+                xi = x[..., i]
+                Li = L[..., i]
+                slx = sumlx - wi * xi * Li
+                pos = slx > 0
+                sl2 = suml2 - wi * Li * Li
+                safe_slx = np.where(pos, slx, 1.0)
+                new_l = np.clip(np_nearest_int(xi * sl2 / safe_slx), -nmax, nmax - 1)
+                changed = new_l != Li
+                new_slx = slx + wi * xi * new_l
+                new_sl2 = sl2 + wi * new_l * new_l
+                improves = (new_sl2 > 0) & (new_slx * new_slx * suml2 > sumlx * sumlx * new_sl2)
+                apply = pos & changed & improves
+                L[..., i] = np.where(apply, new_l, Li)
+                sumlx = np.where(apply, new_slx, sumlx)
+                suml2 = np.where(apply, new_sl2, suml2)
+
+        scale = np.where(all_zero, 0.0, np.where(suml2 > 0, sumlx / suml2, 0.0))
+        return scale.astype(np.float32)
+
     @classmethod
     def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
         n_blocks = blocks.shape[0]
         n_sub = QK_K // 16  # 16 sub-blocks
         sub_size = 16
 
-        blocks_3d = blocks.reshape((n_blocks, n_sub, sub_size))
+        blocks_3d = blocks.reshape((n_blocks, n_sub, sub_size)).astype(np.float32)
 
-        amax = abs(blocks_3d).max(axis=-1)
-        scales = np.where(amax > 0, amax / 4.0, 0.0)
+        # Pass 1 (matches quantize_row_q3_K_ref): per-subblock RMSE-optimal
+        # scale estimate, used only to find the block's overall max |scale|.
+        scales = cls._make_q3_quants(blocks_3d, nmax=4)  # (n_blocks, 16)
 
-        # Quantize scales to 6-bit signed
-        max_scale = np.maximum(abs(scales).max(axis=-1), 1e-10)
-        d_all = max_scale / 32.0
+        abs_scales = np.abs(scales)
+        amax_idx = np.argmax(abs_scales, axis=-1)
+        max_scale = np.take_along_axis(scales, amax_idx[:, None], axis=-1)[:, 0]  # (n_blocks,) signed
 
-        iscale = np.where(max_scale[..., None] > 0, -32.0 / max_scale[..., None], 0)
-        l_scales = np.trunc(iscale * scales).astype(np.int8)
-        l_scales = np.clip(l_scales, -32, 31) + 32
+        has_scale = max_scale != 0
+        safe_max_scale = np.where(has_scale, max_scale, 1.0)
+        iscale = np.where(has_scale, -32.0 / safe_max_scale, 0.0)
+        d_all = np.where(has_scale, 1.0 / np.where(has_scale, iscale, 1.0), 0.0)  # 1/iscale, 0 where no scale
+        # C stores y.d as fp16 THEN reads it back (already-rounded) for pass
+        # 3's element requantization — match that precision loss exactly,
+        # not the full fp32 d_all, or borderline elements round differently.
+        d_all = d_all.astype(np.float16).astype(np.float32)
 
-        d_actual = d_all[..., None]
-        dl = d_actual * (l_scales.astype(np.float32) - 32)
+        l_scales = np.clip(np_nearest_int(iscale[:, None] * scales), -32, 31).astype(np.int32) + 32  # (n_blocks,16) in [0,63]
+        l_scales = np.where(has_scale[:, None], l_scales, 0)  # C: memset(scales,0,12) when max_scale==0
 
-        # Quantize to 3-bit (range -4 to 3, stored as unsigned 0-7)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            q3 = np.trunc(blocks_3d / np.maximum(dl, 1e-10), dtype=np.float32).astype(np.int8).clip(-4, 3) + 4
-
-        # Pack scales (6-bit) into 12 bytes
-        # The C packing:
-        # bytes 0-7: lower 4 bits of first 8 scales
-        # bytes 8-11: upper 2 bits packed across all 16 scales
+        # Pack 6-bit scales into 12 bytes exactly like the C reference.
         packed_scales = np.zeros((n_blocks, 12), dtype=np.uint8)
         for j in range(16):
-            l = l_scales[..., j]  # (n_blocks,)
+            l = l_scales[:, j].astype(np.uint8)
             if j < 8:
-                packed_scales[..., j] |= l.astype(np.uint8) & 0x0F
+                packed_scales[:, j] |= (l & 0x0F)
             else:
-                packed_scales[..., j - 8] |= ((l.astype(np.uint8) & 0x0F) << 4)
-            high_idx = 8 + (j % 4)
-            shift = 2 * (j // 4)
-            packed_scales[..., high_idx] |= ((l.astype(np.uint8) >> 4) & 0x03) << shift
+                packed_scales[:, j - 8] |= ((l & 0x0F) << 4)
+            packed_scales[:, 8 + (j % 4)] |= (((l >> 4) & 0x03) << (2 * (j // 4)))
 
-        # Pack 3-bit quants: low 2 bits in qs, high bit in hmask
-        q_low = (q3 & 0x03).astype(np.uint8)
-        q_high = ((q3 >> 2) & 0x01).astype(np.uint8)
+        # Pass 3 (matches C): decode the just-packed 6-bit scales back out
+        # and re-quantize every element against that FINAL rounded scale
+        # (not the raw make_q3_quants scale from pass 1).
+        sc = np.zeros((n_blocks, 16), dtype=np.float32)
+        for j in range(16):
+            if j < 8:
+                lo = packed_scales[:, j] & 0x0F
+            else:
+                lo = (packed_scales[:, j - 8] >> 4) & 0x0F
+            hi = (packed_scales[:, 8 + (j % 4)] >> (2 * (j // 4))) & 0x03
+            sc[:, j] = ((lo | (hi << 4)).astype(np.int32) - 32).astype(np.float32)
 
-        # Pack q_low as 4 values per byte (2 bits each)
-        qs = q_low.reshape((n_blocks, QK_K // 4, 4))
-        qs = qs[..., 0] | (qs[..., 1] << np.uint8(2)) | (qs[..., 2] << np.uint8(4)) | (qs[..., 3] << np.uint8(6))
+        dl = (d_all[:, None] * sc)  # (n_blocks, 16)
+        dl_nz = dl != 0
+        safe_dl = np.where(dl_nz, dl, 1.0)[..., None]  # (n_blocks, 16, 1)
 
-        # Pack hmask: bit 0..31 -> byte0, bits 32..63 -> byte1, etc
-        hmask = np.packbits(q_high.reshape((n_blocks, QK_K)), axis=-1, bitorder="little")
+        L = np.clip(np_nearest_int(blocks_3d / safe_dl), -4, 3).astype(np.int32) + 4  # (n_blocks,16,16) in [0,7]
+        L = np.where(dl_nz[..., None], L, 0)
+        L = L.reshape(n_blocks, QK_K)  # flat element order matches C's `j` index (0..255)
 
-        d_bytes = d_all.astype(np.float16).view(np.uint8)
+        high = L > 3
+        L = np.where(high, L - 4, L).astype(np.uint8)  # now in [0,3]
 
-        return np.concatenate([hmask, qs, packed_scales, d_bytes.reshape((n_blocks, 2))], axis=-1)
+        # hmask: element (bitplane*32 + byte) -> hmask[byte] bit `bitplane`.
+        hmask = np.packbits(high.reshape(n_blocks, 8, 32), axis=1, bitorder="little").reshape(n_blocks, 32)
+
+        # qs: for each 128-element half, 4 elements 32 apart share a byte
+        # (2 bits each): qs[half*32+l] = L[half*128+l] | L[+32]<<2 | L[+64]<<4 | L[+96]<<6.
+        Lg = L.reshape(n_blocks, 2, 4, 32)
+        qs = (Lg[:, :, 0, :] | (Lg[:, :, 1, :] << 2) | (Lg[:, :, 2, :] << 4) | (Lg[:, :, 3, :] << 6))
+        qs = qs.astype(np.uint8).reshape(n_blocks, 64)
+
+        d_bytes = d_all.astype(np.float16).view(np.uint8).reshape(n_blocks, 2)
+
+        return np.concatenate([hmask, qs, packed_scales, d_bytes], axis=-1)
 
     @classmethod
     def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
@@ -650,93 +812,79 @@ class Q4_K(__Quant, qtype=GGMLQuantizationType.Q4_K):
 
         return (sc.reshape((n_blocks, 8)), min.reshape((n_blocks, 8)))
 
-    @staticmethod
-    def pack_scale_min(scales: np.ndarray, mins: np.ndarray) -> np.ndarray:
-        """Pack 8 6-bit scales and 8 6-bit mins into 12 bytes."""
-        n_blocks = scales.shape[0]
-        # Layout:
-        # bytes 0-3: scales[0:4] (6-bit) and scales[4:8] (6-bit) interleaved
-        # bytes 4-7: mins[0:4] and mins[4:8]
-        # bytes 8-11: upper 2 bits of scales and mins
-        out = np.zeros((n_blocks, 12), dtype=np.uint8)
-        # Lower 6 bits of first 4 scales and mins
-        out[..., 0:4] = scales[..., 0:4].astype(np.uint8) & 0x3F
-        out[..., 0] |= (scales[..., 4].astype(np.uint8) & 0x30) >> 4  # upper 2 bits of scale4 in lower nibble
-        out[..., 1] |= (scales[..., 5].astype(np.uint8) & 0x30) >> 4
-        out[..., 2] |= (scales[..., 6].astype(np.uint8) & 0x30) >> 4
-        out[..., 3] |= (scales[..., 7].astype(np.uint8) & 0x30) >> 4
-
-        out[..., 4:8] = mins[..., 0:4].astype(np.uint8) & 0x3F
-        out[..., 4] |= (mins[..., 4].astype(np.uint8) & 0x30) >> 4
-        out[..., 5] |= (mins[..., 5].astype(np.uint8) & 0x30) >> 4
-        out[..., 6] |= (mins[..., 6].astype(np.uint8) & 0x30) >> 4
-        out[..., 7] |= (mins[..., 7].astype(np.uint8) & 0x30) >> 4
-
-        # Upper 2 bits of scales and mins in bytes 8-11
-        out[..., 8] = ((scales[..., 0:4].astype(np.uint8) >> 6) & 0x03) | (((mins[..., 0:4].astype(np.uint8) >> 6) & 0x03) << 2) | (((scales[..., 4:8].astype(np.uint8) >> 4) & 0x03) << 4)
-        out[..., 9] = ((scales[..., 4:8].astype(np.uint8) >> 6) & 0x03) | (((mins[..., 4:8].astype(np.uint8) >> 6) & 0x03) << 2)
-        # Hmm, this is getting complex. Let me simplify.
-        return out
-
     @classmethod
     def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
         n_blocks = blocks.shape[0]
         n_sub = QK_K // 32  # 8 sub-blocks
         sub_size = 32
 
-        blocks_3d = blocks.reshape((n_blocks, n_sub, sub_size))
+        blocks_3d = blocks.reshape((n_blocks, n_sub, sub_size)).astype(np.float32)
 
-        mins = blocks_3d.min(axis=-1)
-        maxs = blocks_3d.max(axis=-1)
-        mins = np.where(mins > 0, 0.0, mins)
+        # weights[l] = av_x + |x[l]|, av_x = sqrt(mean(x^2)) per sub-block —
+        # matches quantize_row_q4_K_ref's weighting exactly (different from
+        # Q2_K's plain |x| weights).
+        sum_x2 = np.zeros((n_blocks, n_sub), dtype=np.float32)
+        for l in range(sub_size):
+            sum_x2 += blocks_3d[..., l] * blocks_3d[..., l]
+        av_x = np.sqrt(sum_x2 / sub_size)
+        weights = av_x[..., None] + np.abs(blocks_3d)
 
-        scales = maxs - mins
-        with np.errstate(divide="ignore", invalid="ignore"):
-            id = np.where(scales[..., None] != 0, (15.0 / scales[..., None]), 0)
-        q4 = np.trunc((blocks_3d - mins[..., None]) * id, dtype=np.float32).astype(np.uint8).clip(0, 15)
+        scales, mins, _ = _make_qkx2_quants(blocks_3d, weights, nmax=15, rmin=-1.0, rdelta=0.1, nstep=20, use_mad=False)
 
-        # Quantize 8 scales and 8 mins to 6 bits
-        max_scale = np.maximum(scales.max(axis=-1), 1e-10)
-        max_min = np.maximum(mins.max(axis=-1), 1e-10)
+        max_scale = scales.max(axis=-1)
+        max_min = mins.max(axis=-1)
 
-        d_all = max_scale / 63.0
-        dmin_all = max_min / 63.0
-        iscale = np.where(max_scale[..., None] > 0, 63.0 / max_scale[..., None], 0)
-        iscale_min = np.where(max_min[..., None] > 0, 63.0 / max_min[..., None], 0)
+        has_scale = max_scale > 0
+        inv_scale = np.where(has_scale, 63.0 / np.where(has_scale, max_scale, 1.0), 0.0)
+        has_min = max_min > 0
+        inv_min = np.where(has_min, 63.0 / np.where(has_min, max_min, 1.0), 0.0)
 
-        l_scales = np.trunc(iscale * scales).astype(np.uint8).clip(0, 63)
-        l_mins = np.trunc(iscale_min * mins).astype(np.uint8).clip(0, 63)
+        ls = np.clip(np_nearest_int(inv_scale[:, None] * scales), 0, 63).astype(np.uint8)
+        lm = np.clip(np_nearest_int(inv_min[:, None] * mins), 0, 63).astype(np.uint8)
 
-        # Re-quantize with quantized scales
-        d_actual = d_all[..., None]
-        dmin_actual = dmin_all[..., None]
-        dl = d_actual * l_scales[..., None].astype(np.float32)
-        ml = dmin_actual * l_mins[..., None].astype(np.float32)
+        d_all = np.where(has_scale, max_scale / 63.0, 0.0).astype(np.float16).astype(np.float32)
+        dmin_all = np.where(has_min, max_min / 63.0, 0.0).astype(np.float16).astype(np.float32)
 
-        q4_new = np.trunc((blocks_3d + ml) / np.maximum(dl, 1e-10), dtype=np.float32).astype(np.uint8).clip(0, 15)
-
-        # Pack q4: 2 values per byte (4-bit each)
-        qs = q4_new.reshape((n_blocks, -1, 2))
-        qs = qs[..., 0] | (qs[..., 1] << np.uint8(4))
-
-        # Pack scales and mins into 12 bytes (complex 6-bit packing)
-        # Following the C convention precisely
+        # Port of quantize_row_q4_K_ref's scale-packing loop (j=0..7):
+        #   j<4:  scales[j]=ls[j];  scales[j+4]=lm[j]
+        #   j>=4: scales[j+4] = (ls[j]&0xF)|((lm[j]&0xF)<<4)
+        #         scales[j-4] |= (ls[j]>>4)<<6;  scales[j] |= (lm[j]>>4)<<6
+        # (here "scales[j-4]"/"scales[j]" for j>=4 mean bytes 0-3/4-7, already
+        # written by the j<4 iterations — vectorized directly below instead
+        # of replaying the loop's incremental OR-ing.)
         packed = np.zeros((n_blocks, cls.K_SCALE_SIZE), dtype=np.uint8)
-        # Lower 6 bits of first 4 scales
-        packed[..., 0] = l_scales[..., 0] & 0x3F
-        packed[..., 1] = l_scales[..., 1] & 0x3F
-        packed[..., 2] = l_scales[..., 2] & 0x3F
-        packed[..., 3] = l_scales[..., 3] & 0x3F
-        # Lower 6 bits of first 4 mins
-        packed[..., 4] = l_mins[..., 0] & 0x3F
-        packed[..., 5] = l_mins[..., 1] & 0x3F
-        packed[..., 6] = l_mins[..., 2] & 0x3F
-        packed[..., 7] = l_mins[..., 3] & 0x3F
-        # Upper 2 bits of scales and mins interleaved
-        packed[..., 8] = ((l_scales[..., 0] >> 6) & 0x03) | (((l_mins[..., 0] >> 6) & 0x03) << 2) | (((l_scales[..., 4] >> 4) & 0x03) << 4) | (((l_mins[..., 4] >> 4) & 0x03) << 6)
-        packed[..., 9] = ((l_scales[..., 1] >> 6) & 0x03) | (((l_mins[..., 1] >> 6) & 0x03) << 2) | (((l_scales[..., 5] >> 4) & 0x03) << 4) | (((l_mins[..., 5] >> 4) & 0x03) << 6)
-        packed[..., 10] = ((l_scales[..., 2] >> 6) & 0x03) | (((l_mins[..., 2] >> 6) & 0x03) << 2) | (((l_scales[..., 6] >> 4) & 0x03) << 4) | (((l_mins[..., 6] >> 4) & 0x03) << 6)
-        packed[..., 11] = ((l_scales[..., 3] >> 6) & 0x03) | (((l_mins[..., 3] >> 6) & 0x03) << 2) | (((l_scales[..., 7] >> 4) & 0x03) << 4) | (((l_mins[..., 7] >> 4) & 0x03) << 6)
+        for j in range(4):
+            packed[:, j]     = (ls[:, j] & 0x3F) | (((ls[:, j + 4] >> 4) & 0x3) << 6)
+            packed[:, j + 4] = (lm[:, j] & 0x3F) | (((lm[:, j + 4] >> 4) & 0x3) << 6)
+            packed[:, j + 8] = (ls[:, j + 4] & 0xF) | ((lm[:, j + 4] & 0xF) << 4)
+
+        # Pass 3 (matches C): decode sc/m for each of the 8 sub-blocks back
+        # out of the just-packed bytes (get_scale_min_k4) and re-quantize
+        # every element against those final rounded values.
+        sc = np.zeros((n_blocks, n_sub), dtype=np.float32)
+        m = np.zeros((n_blocks, n_sub), dtype=np.float32)
+        for j in range(n_sub):
+            if j < 4:
+                sc[:, j] = (packed[:, j] & 0x3F).astype(np.float32)
+                m[:, j] = (packed[:, j + 4] & 0x3F).astype(np.float32)
+            else:
+                sc[:, j] = ((packed[:, j + 4] & 0xF) | (((packed[:, j - 4] >> 6) & 0x3) << 4)).astype(np.float32)
+                m[:, j] = ((packed[:, j + 4] >> 4) | (((packed[:, j] >> 6) & 0x3) << 4)).astype(np.float32)
+
+        dl = (d_all[:, None] * sc)[..., None]  # (n_blocks, 8, 1)
+        ml = (dmin_all[:, None] * m)[..., None]
+        dl_nz = dl != 0
+        safe_dl = np.where(dl_nz, dl, 1.0)
+
+        L = np.clip(np_nearest_int((blocks_3d + ml) / safe_dl), 0, 15).astype(np.uint8)
+        L = np.where(dl_nz, L, 0).reshape(n_blocks, QK_K)
+
+        # qs: for each 64-element half, low/high nibble = elements l and l+32.
+        qs = np.zeros((n_blocks, QK_K // 2), dtype=np.uint8)
+        idx = 0
+        for j in range(0, QK_K, 64):
+            qs[:, idx:idx + 32] = L[:, j:j + 32] | (L[:, j + 32:j + 64] << 4)
+            idx += 32
 
         d_bytes = d_all.astype(np.float16).view(np.uint8)
         dmin_bytes = dmin_all.astype(np.float16).view(np.uint8)
@@ -772,60 +920,67 @@ class Q5_K(__Quant, qtype=GGMLQuantizationType.Q5_K):
         n_sub = QK_K // 32  # 8 sub-blocks
         sub_size = 32
 
-        blocks_3d = blocks.reshape((n_blocks, n_sub, sub_size))
+        blocks_3d = blocks.reshape((n_blocks, n_sub, sub_size)).astype(np.float32)
 
-        mins = blocks_3d.min(axis=-1)
-        maxs = blocks_3d.max(axis=-1)
-        mins = np.where(mins > 0, 0.0, mins)
+        sum_x2 = np.zeros((n_blocks, n_sub), dtype=np.float32)
+        for l in range(sub_size):
+            sum_x2 += blocks_3d[..., l] * blocks_3d[..., l]
+        av_x = np.sqrt(sum_x2 / sub_size)
+        weights = av_x[..., None] + np.abs(blocks_3d)
 
-        scales = maxs - mins
-        with np.errstate(divide="ignore", invalid="ignore"):
-            id = np.where(scales[..., None] != 0, (31.0 / scales[..., None]), 0)
-        q5 = np.trunc((blocks_3d - mins[..., None]) * id, dtype=np.float32).astype(np.uint8).clip(0, 31)
+        scales, mins, _ = _make_qkx2_quants(blocks_3d, weights, nmax=31, rmin=-0.5, rdelta=0.1, nstep=15, use_mad=False)
 
-        max_scale = np.maximum(scales.max(axis=-1), 1e-10)
-        max_min = np.maximum(mins.max(axis=-1), 1e-10)
+        max_scale = scales.max(axis=-1)
+        max_min = mins.max(axis=-1)
 
-        d_all = max_scale / 63.0
-        dmin_all = max_min / 63.0
-        iscale = np.where(max_scale[..., None] > 0, 63.0 / max_scale[..., None], 0)
-        iscale_min = np.where(max_min[..., None] > 0, 63.0 / max_min[..., None], 0)
+        has_scale = max_scale > 0
+        inv_scale = np.where(has_scale, 63.0 / np.where(has_scale, max_scale, 1.0), 0.0)
+        has_min = max_min > 0
+        inv_min = np.where(has_min, 63.0 / np.where(has_min, max_min, 1.0), 0.0)
 
-        l_scales = np.trunc(iscale * scales).astype(np.uint8).clip(0, 63)
-        l_mins = np.trunc(iscale_min * mins).astype(np.uint8).clip(0, 63)
+        ls = np.clip(np_nearest_int(inv_scale[:, None] * scales), 0, 63).astype(np.uint8)
+        lm = np.clip(np_nearest_int(inv_min[:, None] * mins), 0, 63).astype(np.uint8)
 
-        d_actual = d_all[..., None]
-        dmin_actual = dmin_all[..., None]
-        dl = d_actual * l_scales[..., None].astype(np.float32)
-        ml = dmin_actual * l_mins[..., None].astype(np.float32)
+        d_all = np.where(has_scale, max_scale / 63.0, 0.0).astype(np.float16).astype(np.float32)
+        dmin_all = np.where(has_min, max_min / 63.0, 0.0).astype(np.float16).astype(np.float32)
 
-        q5_new = np.trunc((blocks_3d + ml) / np.maximum(dl, 1e-10), dtype=np.float32).astype(np.uint8).clip(0, 31)
-
-        # Split 5-bit into low 4 bits and high bit
-        q_low = (q5_new & 0x0F).astype(np.uint8)
-        q_high = (q5_new >> 4).astype(np.uint8)
-
-        # Pack low 4 bits: 2 values per byte
-        qs = q_low.reshape((n_blocks, -1, 2))
-        qs = qs[..., 0] | (qs[..., 1] << np.uint8(4))
-
-        # Pack high bits: 1 bit per element, 8 elements per byte
-        qh = np.packbits(q_high.reshape((n_blocks, QK_K)), axis=-1, bitorder="little")
-
-        # Pack scales and mins (same as Q4_K)
+        # Same scale/min packing as Q4_K (see the comment there).
         packed = np.zeros((n_blocks, Q4_K.K_SCALE_SIZE), dtype=np.uint8)
-        packed[..., 0] = l_scales[..., 0] & 0x3F
-        packed[..., 1] = l_scales[..., 1] & 0x3F
-        packed[..., 2] = l_scales[..., 2] & 0x3F
-        packed[..., 3] = l_scales[..., 3] & 0x3F
-        packed[..., 4] = l_mins[..., 0] & 0x3F
-        packed[..., 5] = l_mins[..., 1] & 0x3F
-        packed[..., 6] = l_mins[..., 2] & 0x3F
-        packed[..., 7] = l_mins[..., 3] & 0x3F
-        packed[..., 8] = ((l_scales[..., 0] >> 6) & 0x03) | (((l_mins[..., 0] >> 6) & 0x03) << 2) | (((l_scales[..., 4] >> 4) & 0x03) << 4) | (((l_mins[..., 4] >> 4) & 0x03) << 6)
-        packed[..., 9] = ((l_scales[..., 1] >> 6) & 0x03) | (((l_mins[..., 1] >> 6) & 0x03) << 2) | (((l_scales[..., 5] >> 4) & 0x03) << 4) | (((l_mins[..., 5] >> 4) & 0x03) << 6)
-        packed[..., 10] = ((l_scales[..., 2] >> 6) & 0x03) | (((l_mins[..., 2] >> 6) & 0x03) << 2) | (((l_scales[..., 6] >> 4) & 0x03) << 4) | (((l_mins[..., 6] >> 4) & 0x03) << 6)
-        packed[..., 11] = ((l_scales[..., 3] >> 6) & 0x03) | (((l_mins[..., 3] >> 6) & 0x03) << 2) | (((l_scales[..., 7] >> 4) & 0x03) << 4) | (((l_mins[..., 7] >> 4) & 0x03) << 6)
+        for j in range(4):
+            packed[:, j]     = (ls[:, j] & 0x3F) | (((ls[:, j + 4] >> 4) & 0x3) << 6)
+            packed[:, j + 4] = (lm[:, j] & 0x3F) | (((lm[:, j + 4] >> 4) & 0x3) << 6)
+            packed[:, j + 8] = (ls[:, j + 4] & 0xF) | ((lm[:, j + 4] & 0xF) << 4)
+
+        sc = np.zeros((n_blocks, n_sub), dtype=np.float32)
+        m = np.zeros((n_blocks, n_sub), dtype=np.float32)
+        for j in range(n_sub):
+            if j < 4:
+                sc[:, j] = (packed[:, j] & 0x3F).astype(np.float32)
+                m[:, j] = (packed[:, j + 4] & 0x3F).astype(np.float32)
+            else:
+                sc[:, j] = ((packed[:, j + 4] & 0xF) | (((packed[:, j - 4] >> 6) & 0x3) << 4)).astype(np.float32)
+                m[:, j] = ((packed[:, j + 4] >> 4) | (((packed[:, j] >> 6) & 0x3) << 4)).astype(np.float32)
+
+        dl = (d_all[:, None] * sc)[..., None]
+        ml = (dmin_all[:, None] * m)[..., None]
+        dl_nz = dl != 0
+        safe_dl = np.where(dl_nz, dl, 1.0)
+
+        L = np.clip(np_nearest_int((blocks_3d + ml) / safe_dl), 0, 31).astype(np.uint8)
+        L = np.where(dl_nz, L, 0).reshape(n_blocks, QK_K)
+
+        # qh: element (k*32 + j), k=0..7 -> qh[j] bit k. For 64-element group
+        # g (n=g*64), (l1,l2) = (L[n+j], L[n+j+32]) map to k=2g,2g+1 — i.e.
+        # exactly the natural (8,32) row-major reshape of the flat 256 array
+        # (same bit-plane trick as Q3_K's hmask).
+        hi = L > 15
+        L_low = np.where(hi, L - 16, L).astype(np.uint8)
+        qh = np.packbits(hi.reshape(n_blocks, 8, 32), axis=1, bitorder="little").reshape(n_blocks, 32)
+
+        # qs: for each 64-element group g, byte j = low-nibble(L[g*64+j]) |
+        # high-nibble(L[g*64+32+j]).
+        Lg = L_low.reshape(n_blocks, 4, 2, 32)
+        qs = (Lg[:, :, 0, :] | (Lg[:, :, 1, :] << 4)).astype(np.uint8).reshape(n_blocks, 128)
 
         d_bytes = d_all.astype(np.float16).view(np.uint8)
         dmin_bytes = dmin_all.astype(np.float16).view(np.uint8)
@@ -864,41 +1019,47 @@ class Q6_K(__Quant, qtype=GGMLQuantizationType.Q6_K):
         n_blocks = blocks.shape[0]
         n_sub = QK_K // 16  # 16 sub-blocks
         sub_size = 16
+        GROUP_MAX_EPS = 1e-15
 
-        blocks_3d = blocks.reshape((n_blocks, n_sub, sub_size))
+        blocks_3d = blocks.reshape((n_blocks, n_sub, sub_size)).astype(np.float32)
 
-        # Find max absolute value per sub-block
-        amax = abs(blocks_3d).max(axis=-1)
-        scales = amax / 32.0  # 6-bit: -32 to 31
+        # Port of quantize_row_q6_K_ref: per-subblock symmetric scale search
+        # via make_qx_quants(rmse_type=1), then pick the sub-block with max
+        # |scale| (keeping its sign) for the block-level d.
+        scales, _ = _make_qx_quants_rmse1(blocks_3d, nmax=32)  # (n_blocks, 16)
 
-        max_scale = np.maximum(scales.max(axis=-1), 1e-10)
-        d_all = max_scale / 32.0
+        abs_scales = np.abs(scales)
+        amax_idx = np.argmax(abs_scales, axis=-1)
+        max_scale = np.take_along_axis(scales, amax_idx[:, None], axis=-1)[:, 0]  # signed
+        has_scale = np.abs(max_scale) >= GROUP_MAX_EPS
 
-        # Quantize scales to int8
-        iscale = np.where(max_scale[..., None] > 0, 32.0 / max_scale[..., None], 0)
-        l_scales = np.trunc(iscale * scales).astype(np.int8)
-        l_scales = np.clip(l_scales, -32, 31)
+        iscale = np.where(has_scale, -128.0 / np.where(has_scale, max_scale, 1.0), 0.0)
+        d_all = np.where(has_scale, 1.0 / np.where(has_scale, iscale, 1.0), 0.0).astype(np.float16).astype(np.float32)
 
-        d_actual = d_all[..., None]
-        dl = d_actual * l_scales.astype(np.float32)
+        l_scales = np.clip(np_nearest_int(iscale[:, None] * scales), None, 127).astype(np.int32)
+        l_scales = np.where(has_scale[:, None], np.clip(l_scales, -128, 127), 0).astype(np.int8)
 
-        # Quantize to 6-bit (-32 to 31)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            q6 = np.trunc(blocks_3d / np.maximum(dl, 1e-10), dtype=np.float32).astype(np.int8).clip(-32, 31)
-        # Store as unsigned (0-63)
-        q6_u = (q6 + 32).astype(np.uint8)
+        dl = (d_all[:, None] * l_scales.astype(np.float32))[..., None]  # (n_blocks, 16, 1)
+        dl_nz = dl != 0
+        safe_dl = np.where(dl_nz, dl, 1.0)
 
-        # Split into low 4 bits and upper 2 bits
-        q_low = (q6_u & 0x0F).astype(np.uint8)
-        q_high = ((q6_u >> 4) & 0x03).astype(np.uint8)
+        L = np.clip(np_nearest_int(blocks_3d / safe_dl), -32, 31).astype(np.int32) + 32  # [0,63]
+        L = np.where(dl_nz, L, 0).astype(np.uint8).reshape(n_blocks, QK_K)
 
-        # Pack low 4 bits: each byte holds 2 values
-        ql = q_low.reshape((n_blocks, QK_K // 2, 2))
-        ql = ql[..., 0] | (ql[..., 1] << np.uint8(4))
+        # 128-element groups; within each, 4 "quarters" 32 apart pack into
+        # ql (4-bit low nibbles, 2 quarters/byte) and qh (2-bit high bits,
+        # 4 quarters/byte).
+        Lg = L.reshape(n_blocks, 2, 4, 32)
+        q_low = Lg & 0x0F
+        q_high = (Lg >> 4) & 0x03
 
-        # Pack upper 2 bits: each byte holds 4 values
-        qh = q_high.reshape((n_blocks, QK_K // 4, 4))
-        qh = qh[..., 0] | (qh[..., 1] << np.uint8(2)) | (qh[..., 2] << np.uint8(4)) | (qh[..., 3] << np.uint8(6))
+        ql = np.zeros((n_blocks, 2, 64), dtype=np.uint8)
+        ql[:, :, 0:32] = q_low[:, :, 0, :] | (q_low[:, :, 2, :] << 4)
+        ql[:, :, 32:64] = q_low[:, :, 1, :] | (q_low[:, :, 3, :] << 4)
+        ql = ql.reshape(n_blocks, QK_K // 2)
+
+        qh = (q_high[:, :, 0, :] | (q_high[:, :, 1, :] << 2) | (q_high[:, :, 2, :] << 4) | (q_high[:, :, 3, :] << 6))
+        qh = qh.astype(np.uint8).reshape(n_blocks, QK_K // 4)
 
         d_bytes = d_all.astype(np.float16).view(np.uint8)
 
