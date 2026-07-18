@@ -205,6 +205,63 @@ def _make_qx_quants_rmse1(x: np.ndarray, nmax: int) -> tuple[np.ndarray, np.ndar
     return best_scale.astype(np.float32), best_L.astype(np.int32)
 
 
+# Port of quantize_row_iq4_nl_impl's per-sub-block scale search (the
+# weight[j]=x[j]^2, quant_weights=NULL path) from ggml-quants.c — shared by
+# IQ4_NL and IQ4_XS. `values` is the sorted 16-entry int8 codebook. Returns
+# only the per-sub-block scale (matching the C `scales[ib]` array); callers
+# do their own final requantization pass against the (possibly fp16-rounded)
+# scale, same "Pass 3" pattern as the K-quants. Degenerate sub-blocks
+# (amax < EPS) get scale 0 — deliberately NOT specially handled beyond that,
+# since with scale 0 the caller's `id = 1/d` naturally becomes 0 and
+# `best_index(0)` reproduces the C reference's actual degenerate behavior
+# (every element maps to whichever codebook entry is closest to zero, not
+# necessarily index 0) instead of guessing "leave everything zeroed".
+def _make_iq4_quants(x: np.ndarray, values: np.ndarray, ntry: int) -> np.ndarray:
+    n = x.shape[-1]
+    GROUP_MAX_EPS = 1e-15
+    values_f = values.astype(np.float32)
+
+    abs_x = np.abs(x)
+    amax = abs_x.max(axis=-1)
+    idx = np.argmax(abs_x, axis=-1)
+    max_val = np.take_along_axis(x, idx[..., None], axis=-1)[..., 0]
+
+    degenerate = amax < GROUP_MAX_EPS
+    safe_max = np.where(degenerate, 1.0, max_val)
+    w = x * x
+
+    def best_index(al: np.ndarray) -> np.ndarray:
+        diffs = np.abs(al[..., None] - values_f)
+        return np.argmin(diffs, axis=-1)
+
+    def sums_for(id_: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        al = id_[..., None] * x
+        q = values_f[best_index(al)]
+        sumqx = np.zeros(x.shape[:-1], dtype=np.float32)
+        sumq2 = np.zeros(x.shape[:-1], dtype=np.float32)
+        for j in range(n):
+            sumqx += w[..., j] * q[..., j] * x[..., j]
+            sumq2 += w[..., j] * q[..., j] * q[..., j]
+        return sumqx, sumq2
+
+    d0 = (-safe_max if ntry > 0 else safe_max) / values_f[0]
+    id0 = np.where(d0 != 0, 1.0 / d0, 0.0)
+    sumqx, sumq2 = sums_for(id0)
+    d = np.where(sumq2 > 0, sumqx / sumq2, 0.0)
+    best = d * sumqx
+    best_d = d.copy()
+
+    for itry in range(-ntry, ntry + 1):
+        id_try = (itry + values_f[0]) / safe_max
+        sumqx2, sumq22 = sums_for(id_try)
+        improve = (sumq22 > 0) & (sumqx2 * sumqx2 > best * sumq22)
+        new_d = np.where(sumq22 > 0, sumqx2 / sumq22, 0.0)
+        best = np.where(improve, new_d * sumqx2, best)
+        best_d = np.where(improve, new_d, best_d)
+
+    return np.where(degenerate, 0.0, best_d).astype(np.float32)
+
+
 class QuantError(Exception): ...
 
 
@@ -1266,9 +1323,12 @@ class NVFP4(__Quant, qtype=GGMLQuantizationType.NVFP4):
         # block_size = 64, type_size = 4 + 32 = 36
         super_blocks = blocks.reshape((n_blocks, 4, 16))
 
-        # Compute scale per super-block as max absolute value
+        # Compute scale per super-block as max absolute value. kvalues are
+        # 2x the true E2M1 values (max magnitude 6.0, stored doubled as 12)
+        # — the UE4M3 scale maps amax to the *undoubled* max (6.0), matching
+        # quantize_row_nvfp4_ref's `amax / 6.0f`.
         amax = abs(super_blocks).max(axis=-1)  # (n_blocks, 4)
-        d = cls.fp32_to_ue4m3(amax)
+        d = cls.fp32_to_ue4m3(amax / 6.0)
         d_f32 = cls.ue4m3_to_fp32(d)  # (n_blocks, 4)
 
         kvalues = np.array(cls.kvalues, dtype=np.int8).reshape(1, 1, 16)
@@ -2093,26 +2153,31 @@ class IQ4_NL(__Quant, qtype=GGMLQuantizationType.IQ4_NL):
     @classmethod
     def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
         n_blocks = blocks.shape[0]
+        block_size = cls.block_size  # 32
 
-        # IQ4_NL: same layout as Q4_0 but with non-linear kvalues
-        # block_size = 32, type_size = 18 (2 + 16)
-        kvals = np.array(cls.kvalues, dtype=np.int8).reshape(1, 1, 16)
+        # Port of quantize_row_iq4_nl_impl called with
+        # (super_block_size=block_size=32, ntry=7) — matches quantize_iq4_nl,
+        # the function ggml_quantize_chunk actually dispatches to (NOT
+        # quantize_row_iq4_nl_ref, which uses ntry=-1 and is unused by the
+        # normal quantize path).
+        blocks_f = blocks.astype(np.float32).reshape(n_blocks, 1, block_size)
+        kvals = np.array(cls.kvalues, dtype=np.int8)
 
-        # Find scale as max absolute
-        d = abs(blocks).max(axis=-1, keepdims=True)  # (n, 1)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            id = np.where(d != 0, 1.0 / d, 0)
+        scale = _make_iq4_quants(blocks_f, kvals, ntry=7)[:, 0]  # (n_blocks,)
 
-        # For each element, find nearest kvalue
-        normalised = blocks * id  # (n, 32)
-        errs = np.abs(normalised[..., None] - kvals.astype(np.float32))
-        best = np.argmin(errs, axis=-1).astype(np.uint8)  # (n, 32)
+        # Final requant uses the *full-precision* scale directly (verified
+        # against the C source — unlike the K-quants, no fp16 round-trip
+        # before this pass).
+        kvals_f = kvals.astype(np.float32)
+        id_ = np.where(scale != 0, 1.0 / scale, 0.0)
+        al = id_[:, None] * blocks.astype(np.float32)
+        best = np.argmin(np.abs(al[..., None] - kvals_f), axis=-1).astype(np.uint8)  # (n_blocks, 32)
 
-        # Pack 2 per byte
-        qs = best.reshape((n_blocks, -1, 2))
-        qs = qs[..., 0] | (qs[..., 1] << np.uint8(4))
+        # C: q4[j] = L[j] | (L[16+j] << 4) — split-half pairing, not adjacent.
+        half = block_size // 2
+        qs = best[:, :half] | (best[:, half:] << np.uint8(4))
 
-        d = d.astype(np.float16).view(np.uint8)
+        d = scale.astype(np.float16).reshape(n_blocks, 1).view(np.uint8)
 
         return np.concatenate([d, qs], axis=-1)
 
@@ -2141,36 +2206,46 @@ class IQ4_XS(__Quant, qtype=GGMLQuantizationType.IQ4_XS):
         n_sub = QK_K // 32  # 8 sub-blocks
         sub_size = 32
 
-        blocks_3d = blocks.reshape((n_blocks, n_sub, sub_size))
-        kvals = np.array(IQ4_NL.kvalues, dtype=np.int8).reshape(1, 1, 1, 16)
+        blocks_3d = blocks.reshape((n_blocks, n_sub, sub_size)).astype(np.float32)
+        kvals = np.array(IQ4_NL.kvalues, dtype=np.int8)
+        kvals_f = kvals.astype(np.float32)
 
-        # Per sub-block: find scale and best kvalue match
-        amax = abs(blocks_3d).max(axis=-1, keepdims=True)  # (n, 8, 1)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            id = np.where(amax != 0, 1.0 / amax, 0)
+        # Port of quantize_row_iq4_nl_impl(super_block_size=QK_K, block_size=32,
+        # ntry=7) — matches quantize_iq4_xs.
+        scales = _make_iq4_quants(blocks_3d, kvals, ntry=7)  # (n_blocks, 8)
 
-        normalised = blocks_3d * id
-        errs = np.abs(normalised[..., None] - kvals.astype(np.float32))
-        best = np.argmin(errs, axis=-1).astype(np.uint8)  # (n, 8, 32)
+        abs_scales = np.abs(scales)
+        amax_idx = np.argmax(abs_scales, axis=-1)
+        max_scale = np.take_along_axis(scales, amax_idx[:, None], axis=-1)[:, 0]  # signed
 
-        # Quantize scales to 6-bit signed
-        max_scale = amax.reshape((n_blocks, n_sub))
-        max_s = np.maximum(max_scale.max(axis=-1), 1e-10)  # (n,)
+        d = -max_scale / 32.0
+        d_all = d.astype(np.float16)
+        id_ = np.where(d != 0, 1.0 / d, 0.0)  # full precision, no fp16 round-trip (verified vs C)
 
-        d_all = max_s / 32.0
-        iscale = np.where(max_s[..., None] > 0, 32.0 / max_s[..., None], 0)
-        l_scales = np.trunc(iscale * max_scale).astype(np.int8)
-        l_scales = np.clip(l_scales, -32, 31).astype(np.uint8)
+        l = np.clip(np_nearest_int(id_[:, None] * scales), -32, 31).astype(np.int32)  # (n_blocks, 8)
+        dl = d[:, None] * l.astype(np.float32)
+        idl = np.where(dl != 0, 1.0 / dl, 0.0)[..., None]  # (n_blocks, 8, 1)
 
-        # Pack scales: scales_h (uint16) + scales_l (QK_K//64 = 4 bytes)
+        al = idl * blocks_3d
+        best = np.argmin(np.abs(al[..., None] - kvals_f), axis=-1).astype(np.uint8)  # (n_blocks, 8, 32)
+
+        l6 = (l + 32).astype(np.uint8)  # (n_blocks, 8), 6-bit in [0,63]
+        l_l = l6 & 0x0F
+        l_h = l6 >> 4
+
+        scales_l = np.zeros((n_blocks, n_sub // 2), dtype=np.uint8)
+        for ib in range(0, n_sub, 2):
+            scales_l[:, ib // 2] = l_l[:, ib] | (l_l[:, ib + 1] << 4)
         scales_h = np.zeros((n_blocks,), dtype=np.uint16)
-        scales_l = np.zeros((n_blocks, QK_K // 64), dtype=np.uint8)
+        for ib in range(n_sub):
+            scales_h |= (l_h[:, ib].astype(np.uint16) << np.uint16(2 * ib))
 
-        # Pack qs: 2 values per byte
-        qs = best.reshape((n_blocks, -1, 2))
-        qs = qs[..., 0] | (qs[..., 1] << np.uint8(4))
+        # qs: within each 32-element sub-block, split-half pairing (element j
+        # with element 16+j), same as IQ4_NL.
+        Bg = best.reshape(n_blocks, n_sub, 2, sub_size // 2)
+        qs = (Bg[:, :, 0, :] | (Bg[:, :, 1, :] << 4)).astype(np.uint8).reshape(n_blocks, QK_K // 2)
 
-        d_bytes = d_all.astype(np.float16).view(np.uint8)
+        d_bytes = d_all.view(np.uint8)
 
         return np.concatenate([d_bytes.reshape((n_blocks, 2)), scales_h.view(np.uint8).reshape((n_blocks, 2)), scales_l, qs], axis=-1)
 
