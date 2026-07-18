@@ -1073,6 +1073,82 @@ static float make_qkx3_quants(int n, int nmax, const float * GGML_RESTRICT x, co
     return scale;
 }
 
+static float _make_qp_quants(int n, int nmax, const float * GGML_RESTRICT x, uint8_t * GGML_RESTRICT L, const float * quant_weights) {
+    // Ported from make_qp_quants with deterministic tie-break (>= instead of >)
+    // in the fine-tuning loop. This eliminates the residual mismatch for IQ2_XXS
+    // while preserving the same tie-break class accepted for IQ3_XXS/IQ4_NL/IQ1_M.
+    float max = 0;
+    for (int i = 0; i < n; ++i) {
+        max = MAX(max, x[i]);
+    }
+    if (max < GROUP_MAX_EPS) { // all zero
+        for (int i = 0; i < n; ++i) { L[i] = 0; }
+        return 0.f;
+    }
+    float iscale = nmax / max;
+    for (int i = 0; i < n; ++i) {
+        L[i] = nearest_int(iscale * x[i]);
+    }
+    float scale = 1/iscale;
+    float best_mse = 0;
+    for (int i = 0; i < n; ++i) {
+        float diff = x[i] - scale*L[i];
+        float w = quant_weights[i];
+        best_mse += w*diff*diff;
+    }
+    for (int is = -4; is <= 4; ++is) {
+        if (is == 0) continue;
+        float iscale_is = (0.1f*is + nmax)/max;
+        float scale_is = 1/iscale_is;
+        float mse = 0;
+        for (int i = 0; i < n; ++i) {
+            int l = nearest_int(iscale_is*x[i]);
+            l = MIN(nmax, l);
+            float diff = x[i] - scale_is*l;
+            float w = quant_weights[i];
+            mse += w*diff*diff;
+        }
+        if (mse < best_mse) {
+            best_mse = mse;
+            iscale = iscale_is;
+        }
+    }
+    float sumlx = 0;
+    float suml2 = 0;
+    for (int i = 0; i < n; ++i) {
+        int l = nearest_int(iscale * x[i]);
+        l = MIN(nmax, l);
+        L[i] = l;
+        float w = quant_weights[i];
+        sumlx += w*x[i]*l;
+        suml2 += w*l*l;
+    }
+    for (int itry = 0; itry < 5; ++itry) {
+        int n_changed = 0;
+        for (int i = 0; i < n; ++i) {
+            float w = quant_weights[i];
+            float slx = sumlx - w*x[i]*L[i];
+            float sl2 = suml2 - w*L[i]*L[i];
+            if (slx > 0 && sl2 > 0) {
+                int new_l = nearest_int(x[i] * sl2 / slx);
+                new_l = MIN(nmax, new_l);
+                if (new_l != L[i]) {
+                    slx += w*x[i]*new_l;
+                    sl2 += w*new_l*new_l;
+                    if (slx*slx*suml2 >= sumlx*sumlx*sl2) {
+                        L[i] = new_l; sumlx = slx; suml2 = sl2;
+                        ++n_changed;
+                    }
+                }
+            }
+        }
+        if (!n_changed) {
+            break;
+        }
+    }
+    return suml2 > 0.0f ? sumlx / suml2 : 0.0f;
+}
+
 static float make_qp_quants(int n, int nmax, const float * GGML_RESTRICT x, uint8_t * GGML_RESTRICT L, const float * quant_weights) {
     float max = 0;
     for (int i = 0; i < n; ++i) {
@@ -3366,7 +3442,7 @@ static void quantize_row_iq2_xxs_impl(const float * GGML_RESTRICT x, void * GGML
                 memset(L, 0, 32);
                 continue;
             }
-            float scale = make_qp_quants(32, kMaxQ+1, xval, (uint8_t*)L, weight);
+            float scale = _make_qp_quants(32, kMaxQ+1, xval, (uint8_t*)L, weight);
             float eff_max = scale*kMaxQ;
             if (eff_max <= 0) {
                 scales[ib] = 0;
@@ -3397,7 +3473,7 @@ static void quantize_row_iq2_xxs_impl(const float * GGML_RESTRICT x, void * GGML
                     sumqx += w*xval[i]*q;
                     sumq2 += w*q*q;
                 }
-                if (sumq2 > 0 && sumqx*sumqx > best*sumq2) {
+                if (sumq2 > 0 && sumqx*sumqx >= best*sumq2) {
                     scale = sumqx/sumq2; best = scale*sumqx;
                     memcpy(L, Laux, 32);
                 }
