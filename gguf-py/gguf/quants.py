@@ -262,6 +262,92 @@ def _make_iq4_quants(x: np.ndarray, values: np.ndarray, ntry: int) -> np.ndarray
     return np.where(degenerate, 0.0, best_d).astype(np.float32)
 
 
+_iq2_grid_cache: dict[type, tuple] = {}
+
+
+def _iq2_raw_grid_codes(cls) -> np.ndarray:
+    """Decode grid_hex into raw l-codes (0..len(grid_map)-1), shape
+    (grid_size, 8) — bypasses the grid_map value lookup __Quant.init_grid()
+    does, since the C reference's map/neighbour-search construction and
+    quantization search both operate on these raw codes (internally
+    rescaled to pos=2*l+1), not on grid_map's decoded output magnitudes."""
+    bits_per_elem = ceil(log2(len(cls.grid_map)))
+    elems_per_byte = 8 // bits_per_elem
+    grid = np.frombuffer(cls.grid_hex, dtype=np.uint8)
+    grid = grid.reshape((-1, 2))
+    grid = (np.where(grid > 0x40, grid + 9, grid) & 0x0F) << np.array([4, 0], dtype=np.uint8).reshape((1, 2))
+    grid = grid[..., 0] | grid[..., 1]
+    grid = grid.reshape((-1, 1)) >> np.array([i for i in range(0, 8, 8 // elems_per_byte)], dtype=np.uint8).reshape((1, elems_per_byte))
+    grid = (grid & ((1 << bits_per_elem) - 1)).reshape((-1, cls.grid_shape[1]))
+    return grid.astype(np.int64)
+
+
+def _iq2_build_tables(cls, nwant: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Port of iq2xs_init_impl (the map/neighbours half — grid construction
+    is just _iq2_raw_grid_codes). Returns (pos, kmap, neigh_padded, neigh_count):
+      pos:  (grid_size, 8) int32, the C's internal 2*l+1 representation.
+      kmap: (65536,) int64, codepoint -> grid row index, or -1.
+      neigh_padded: (65536, max_neighbours) int32, candidate grid row
+        indices for codepoints with no direct grid match (-1 padding past
+        neigh_count[code]); rows for codes that ARE in kmap are unused.
+      neigh_count: (65536,) int32, valid entry count per row of neigh_padded.
+    Built once per class and cached (mirrors ggml_quantize_init()'s
+    one-time table construction, not something done per quantize() call)."""
+    cached = _iq2_grid_cache.get(cls)
+    if cached is not None:
+        return cached
+
+    codes = _iq2_raw_grid_codes(cls)  # (grid_size, 8)
+    grid_size = codes.shape[0]
+    pos = (2 * codes + 1).astype(np.int32)  # (grid_size, 8)
+
+    idx = np.zeros(grid_size, dtype=np.int64)
+    for k in range(8):
+        idx |= (codes[:, k] << (2 * k))
+    kmap = -np.ones(65536, dtype=np.int64)
+    kmap[idx] = np.arange(grid_size)
+
+    invalid = np.where(kmap < 0)[0]
+    inv_codes = np.zeros((invalid.shape[0], 8), dtype=np.int64)
+    for k in range(8):
+        inv_codes[:, k] = (invalid >> (2 * k)) & 0x3
+    inv_pos = (2 * inv_codes + 1).astype(np.int32)  # (n_invalid, 8)
+
+    neighbours: dict[int, np.ndarray] = {}
+    batch = 1024
+    for start in range(0, invalid.shape[0], batch):
+        end = min(start + batch, invalid.shape[0])
+        diff = inv_pos[start:end, None, :].astype(np.int32) - pos[None, :, :]
+        d2 = np.sum(diff * diff, axis=-1)  # (b, grid_size)
+        order = np.argsort(d2, axis=-1, kind="stable")
+        d2_sorted = np.take_along_axis(d2, order, axis=-1)
+        # Vectorized tie-inclusive top-`nwant`-distinct-distance-level cut:
+        # rank[j] = number of distinct distance values strictly less than
+        # d2_sorted[j] (0-based) via a "new value" marker + cumulative sum.
+        is_new = np.empty_like(d2_sorted, dtype=bool)
+        is_new[:, 0] = True
+        is_new[:, 1:] = d2_sorted[:, 1:] != d2_sorted[:, :-1]
+        level = np.cumsum(is_new, axis=-1) - 1  # 0-based distinct-value rank
+        keep = level < nwant
+        counts = keep.sum(axis=-1)
+        for bi in range(end - start):
+            i = int(invalid[start + bi])
+            n = int(counts[bi])
+            neighbours[i] = order[bi, :n].astype(np.int32)
+
+    max_n = max((len(v) for v in neighbours.values()), default=0)
+    neigh_padded = np.full((65536, max(max_n, 1)), -1, dtype=np.int32)
+    for code, cands in neighbours.items():
+        neigh_padded[code, :len(cands)] = cands
+    neigh_count = np.zeros((65536,), dtype=np.int32)
+    for code, cands in neighbours.items():
+        neigh_count[code] = len(cands)
+
+    result = (pos, kmap, neigh_padded, neigh_count)
+    _iq2_grid_cache[cls] = result
+    return result
+
+
 class QuantError(Exception): ...
 
 
@@ -1628,7 +1714,7 @@ class IQ2_S(__Quant, qtype=GGMLQuantizationType.IQ2_S):
         b"806401650465106540654a656865926500669466016804681068656898680069"
         b"2a69426aa16a0080028005800880118014801980208025804180448050805280"
         b"5580588061808080858091809480018104810981108112811581188121812481"
-        b"408142814581488151548154818184819081a981008205820a82118214824182"
+        b"408142814581488151815481818184819081a981008205820a82118214824182"
         b"4482508201840484068409841084128415841884218440844284458448845184"
         b"5484608481848484908400850285058508851185148520854185448550858085"
         b"8a85018604861086298640860088058811881488418844885088a28801890489"
@@ -1641,32 +1727,178 @@ class IQ2_S(__Quant, qtype=GGMLQuantizationType.IQ2_S):
         b"a4a400a519a551a60aa828a8a2a854a986a908aa0aaa20aa22aa28aa88aaaaaa"
     )
 
+    @staticmethod
+    def _pack_u(codes8: np.ndarray) -> np.ndarray:
+        """codes8: (..., 8) int, values 0..3 -> (...,) packed 16-bit code."""
+        u = np.zeros(codes8.shape[:-1], dtype=np.int64)
+        for i in range(8):
+            u |= (codes8[..., i].astype(np.int64) << (2 * i))
+        return u
+
+    @classmethod
+    def _grid_lookup(cls, u: np.ndarray, xval_g: np.ndarray, weight_g: np.ndarray, scale: np.ndarray,
+                      pos: np.ndarray, kmap: np.ndarray, neigh_padded: np.ndarray, neigh_count: np.ndarray
+                      ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """u, scale: (...); xval_g, weight_g: (..., 8). Returns (grid_index,
+        L (..., 8) int, on_grid bool (...)) — port of the direct-kmap-hit /
+        iq2_find_best_neighbour fallback dispatch."""
+        grid_idx = kmap[u]
+        on_grid = grid_idx >= 0
+        max_n = neigh_padded.shape[1]
+
+        safe_u = np.where(on_grid, 0, u)
+        cand = neigh_padded[safe_u]  # (..., max_n)
+        cand_cnt = neigh_count[safe_u]  # (...)
+        cand_valid = np.arange(max_n) < cand_cnt[..., None]
+        safe_cand = np.clip(cand, 0, pos.shape[0] - 1)
+        pg = pos[safe_cand]  # (..., max_n, 8)
+        diff = scale[..., None, None] * pg - xval_g[..., None, :]
+        d2 = np.sum(weight_g[..., None, :] * diff * diff, axis=-1)  # (..., max_n)
+        d2 = np.where(cand_valid, d2, np.float32(np.inf))
+        best_n = np.argmin(d2, axis=-1)
+        neigh_grid_idx = np.take_along_axis(cand, best_n[..., None], axis=-1)[..., 0]
+
+        final_idx = np.where(on_grid, grid_idx, neigh_grid_idx)
+        final_pos = pos[np.clip(final_idx, 0, pos.shape[0] - 1)]  # (..., 8)
+        L = (final_pos - 1) // 2
+        return final_idx, L, on_grid
+
     @classmethod
     def quantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
         cls.init_grid()
         n_blocks = blocks.shape[0]
+        n_sub = QK_K // 16  # 16
+        kMaxQ = 3
+        GROUP_MAX_EPS_IQ2_S = 1e-8
 
-        # IQ2_S: 2 groups of 8 per 16-elem sub-block, 16 sub-blocks
-        groups = blocks.reshape((n_blocks, QK_K // 16, 2, 8))
-        grid = cls.grid[0, 0]  # (1024, 8)
+        pos, kmap, neigh_padded, neigh_count = _iq2_build_tables(cls, nwant=1)
 
-        amax = abs(groups).max(axis=-1, keepdims=True)
-        grid_flat = grid.reshape(1, 1, 1, grid.shape[0], 8)
-        corr = (groups[..., None, :] * grid_flat).sum(axis=-1)
-        best_grid = corr.argmax(axis=-1).astype(np.uint16)
+        blocks_3d = blocks.reshape((n_blocks, n_sub, 16)).astype(np.float32)
 
-        # Signs: per pair of groups
-        matched = np.take_along_axis(grid_flat, best_grid[..., None, None].astype(np.intp), axis=-2)[..., 0, :]
+        sum_x2 = np.zeros((n_blocks,), dtype=np.float32)
+        for j in range(QK_K):
+            sum_x2 += blocks[:, j].astype(np.float32) ** 2
+        sigma2 = 2.0 * sum_x2 / QK_K
 
-        d_est = amax.reshape((n_blocks, QK_K // 16, 2)).max(axis=-1)  # (n, 16)
-        d_out = d_est.mean(axis=-1)  # (n,) - single d per block
-        d_bytes = d_out.astype(np.float16).view(np.uint8)
+        weight = 0.25 * sigma2[:, None, None] + blocks_3d * blocks_3d  # (n_blocks, 16, 16)
+        waux = np.sqrt(weight)
 
-        qs_out = best_grid.astype(np.uint16).reshape((n_blocks, QK_K // 8))
+        xval = np.abs(blocks_3d)
+        neg = blocks_3d < 0
+        block_signs = np.zeros((n_blocks, n_sub, 2), dtype=np.uint8)
+        for k in range(2):
+            s = np.zeros((n_blocks, n_sub), dtype=np.uint8)
+            for i in range(8):
+                s |= np.where(neg[:, :, 8 * k + i], np.uint8(1 << i), np.uint8(0))
+            block_signs[:, :, k] = s
+
+        max_sub = xval.max(axis=-1)  # (n_blocks, 16)
+        degenerate = max_sub < GROUP_MAX_EPS_IQ2_S
+        safe_max = np.where(degenerate, 1.0, max_sub)
+
+        best_scale = np.zeros((n_blocks, n_sub), dtype=np.float32)
+        best = np.zeros((n_blocks, n_sub), dtype=np.float32)
+        best_L = np.zeros((n_blocks, n_sub, 16), dtype=np.int64)
+        best_on_grid = np.zeros((n_blocks, n_sub, 2), dtype=bool)
+
+        for is_ in range(-9, 10):
+            id_ = (2 * kMaxQ - 1 + is_ * 0.1) / safe_max  # (n_blocks, 16)
+            this_scale = 1.0 / id_
+            Laux = np.clip(np_nearest_int(0.5 * (id_[..., None] * xval - 1)), 0, kMaxQ - 1).astype(np.int64)
+
+            L_groups = []
+            on_grid_groups = []
+            for k in range(2):
+                xg = xval[:, :, 8 * k:8 * k + 8]
+                wg = waux[:, :, 8 * k:8 * k + 8]
+                u = cls._pack_u(Laux[:, :, 8 * k:8 * k + 8])
+                _, Lg, og = cls._grid_lookup(u, xg, wg, this_scale, pos, kmap, neigh_padded, neigh_count)
+                L_groups.append(Lg)
+                on_grid_groups.append(og)
+            Laux_final = np.concatenate(L_groups, axis=-1)  # (n_blocks, 16, 16)
+            on_grid = np.stack(on_grid_groups, axis=-1)  # (n_blocks, 16, 2)
+
+            q = (2 * Laux_final + 1).astype(np.float32)
+            sumqx = np.zeros((n_blocks, n_sub), dtype=np.float32)
+            sumq2 = np.zeros((n_blocks, n_sub), dtype=np.float32)
+            for i in range(16):
+                sumqx += weight[:, :, i] * xval[:, :, i] * q[:, :, i]
+                sumq2 += weight[:, :, i] * q[:, :, i] * q[:, :, i]
+
+            improve = (sumq2 > 0) & (sumqx * sumqx > best * sumq2)
+            new_scale = np.where(sumq2 > 0, sumqx / sumq2, 0.0)
+            best_L = np.where(improve[..., None], Laux_final, best_L)
+            best = np.where(improve, new_scale * sumqx, best)
+            best_scale = np.where(improve, new_scale, best_scale)
+            best_on_grid = np.where(improve[..., None], on_grid, best_on_grid)
+
+        # Requant pass for groups that never landed on-grid across the search.
+        n_not_ongrid = (~best_on_grid).sum(axis=-1)  # (n_blocks, 16)
+        need_requant = (n_not_ongrid > 0) & (best_scale > 0)
+        id_final = np.where(best_scale != 0, 1.0 / best_scale, 0.0)
+
+        L_final = best_L.copy()
+        for k in range(2):
+            redo = need_requant & (~best_on_grid[:, :, k])
+            xg = xval[:, :, 8 * k:8 * k + 8]
+            wg = waux[:, :, 8 * k:8 * k + 8]
+            Laux_k = np.clip(np_nearest_int(0.5 * (id_final[..., None] * xg - 1)), 0, kMaxQ - 1).astype(np.int64)
+            u = cls._pack_u(Laux_k)
+            _, Lg, _ = cls._grid_lookup(u, xg, wg, best_scale, pos, kmap, neigh_padded, neigh_count)
+            L_final[:, :, 8 * k:8 * k + 8] = np.where(redo[..., None], Lg, L_final[:, :, 8 * k:8 * k + 8])
+
+        q = (2 * L_final + 1).astype(np.float32)
+        sumqx = np.zeros((n_blocks, n_sub), dtype=np.float32)
+        sumq2 = np.zeros((n_blocks, n_sub), dtype=np.float32)
+        for i in range(16):
+            sumqx += weight[:, :, i] * xval[:, :, i] * q[:, :, i]
+            sumq2 += weight[:, :, i] * q[:, :, i] * q[:, :, i]
+        rescaled = np.where(sumq2 > 0, sumqx / sumq2, best_scale)
+        best_scale = np.where(need_requant, rescaled, best_scale)
+
+        flip = best_scale < 0
+        best_scale = np.abs(best_scale)
+        block_signs = np.where(flip[..., None], (~block_signs) & np.uint8(0xFF), block_signs)
+
+        scales = np.where(degenerate, 0.0, best_scale)
+        L_final = np.where(degenerate[..., None], 0, L_final)
+
+        max_scale = scales.max(axis=-1)  # (n_blocks,)
+        has_scale = max_scale > 0
+        d = np.where(has_scale, max_scale / 31.0, 0.0)
+        d_all = (d * 0.9875).astype(np.float16).astype(np.float32)
+        id_d = np.where(d != 0, 1.0 / d, 0.0)
+
+        l6 = np.clip(np_nearest_int(0.5 * (id_d[:, None] * scales - 1)), 0, 15).astype(np.uint8)
+        l6 = np.where(has_scale[:, None], l6, 0)
+        scale_bytes = np.zeros((n_blocks, n_sub // 2), dtype=np.uint8)
+        for ib in range(0, n_sub, 2):
+            scale_bytes[:, ib // 2] = l6[:, ib] | (l6[:, ib + 1] << 4)
+
+        u_final = np.zeros((n_blocks, n_sub, 2), dtype=np.int64)
+        for k in range(2):
+            u_final[:, :, k] = cls._pack_u(L_final[:, :, 8 * k:8 * k + 8])
+        grid_idx_final = kmap[u_final]  # (n_blocks, 16, 2)
+        grid_idx_final = np.where(has_scale[:, None, None], grid_idx_final, 0)
+
+        qs_low = (grid_idx_final & 0xFF).astype(np.uint8).reshape(n_blocks, QK_K // 8)
+        qh_bits = ((grid_idx_final >> 8) & 0x03).astype(np.uint8)  # (n_blocks, 16, 2)
+        qh_bits_flat = qh_bits.reshape(n_blocks, QK_K // 8)  # index i8 = 2*ib+k
         qh_out = np.zeros((n_blocks, QK_K // 32), dtype=np.uint8)
-        scales_out = np.zeros((n_blocks, QK_K // 32), dtype=np.uint8)
+        for i8 in range(QK_K // 8):
+            qh_out[:, i8 // 4] |= (qh_bits_flat[:, i8] << (2 * (i8 % 4)))
 
-        return np.concatenate([d_bytes.reshape((n_blocks, 2)), qs_out.view(np.uint8), qh_out, scales_out], axis=-1)
+        signs_out = np.where(has_scale[:, None, None], block_signs, 0).reshape(n_blocks, QK_K // 8).astype(np.uint8)
+
+        d_bytes = d_all.astype(np.float16).view(np.uint8)
+
+        return np.concatenate([
+            d_bytes.reshape((n_blocks, 2)),
+            qs_low,
+            signs_out,
+            qh_out,
+            scale_bytes,
+        ], axis=-1)
 
     @classmethod
     def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
