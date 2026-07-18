@@ -185,9 +185,12 @@ def do_test(libggml_path: Path, quick: bool = False, user_type: GGMLQuantization
         pyq = None
         ggq = None
 
+        needs_imatrix = ggml_quants.libggml.ggml_quantize_requires_imatrix(qtype.value)
+        imatrix = np.sum((rc * rc).reshape((-1, rc.shape[-1])), axis=0).astype(np.float32) if needs_imatrix else None
+
         if has_quantize:
             logger.debug(f"Quantizing to {qtype.name} with Python")
-            pyq = gguf.quants.quantize(rc, qtype)
+            pyq = gguf.quants.quantize(rc, qtype, imatrix=imatrix)
 
             logger.debug(f"Quantizing to {qtype.name} with C")
             ggq = ggml_quants.quantize(rc, qtype)
