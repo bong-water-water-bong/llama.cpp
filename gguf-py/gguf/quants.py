@@ -2988,7 +2988,13 @@ class Q1_0(__Quant, qtype=GGMLQuantizationType.Q1_0):
         n_blocks = blocks.shape[0]
 
         # d = mean absolute value per block
-        d = np.abs(blocks).mean(axis=-1, keepdims=True).astype(np.float32)
+        # Sequential left-to-right accumulation to match C's plain for-loop
+        n = blocks.shape[-1]
+        sum_abs = np.zeros(blocks.shape[:-1], dtype=np.float32)
+        for i in range(n):
+            sum_abs += np.abs(blocks[..., i])
+        d = (sum_abs / n).astype(np.float32)
+        d = d.reshape((-1, 1))
         d = np.where(d == 0, np.float32(1e-10), d)
 
         # Sign: 1 if w >= 0, 0 if w < 0
@@ -3047,8 +3053,9 @@ class Q2_0(__Quant, qtype=GGMLQuantizationType.Q2_0):
         d, qs = np.hsplit(blocks, [2])
         d = d.view(np.float16).astype(np.float32)
 
-        # Unpack 2-bit values
-        qs = qs.reshape((n_blocks, -1, 1, 4)) >> np.array([0, 2, 4, 6], dtype=np.uint8).reshape((1, 1, 4, 1))
+        # Unpack 2-bit values: 16 bytes × 4 values each → 64 values
+        # C order: for byte_idx in 0..15, for bit_offset in (0,2,4,6)
+        qs = qs.reshape((n_blocks, QK2_0 // 4, 1)) >> np.array([0, 2, 4, 6], dtype=np.uint8).reshape((1, 1, 4))
         q_val = (qs & np.uint8(0x03)).reshape((n_blocks, -1)).astype(np.int8) - np.int8(1)
 
         return (d * q_val.astype(np.float32))
