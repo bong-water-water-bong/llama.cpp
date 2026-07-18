@@ -206,10 +206,22 @@ def _make_qx_quants_rmse1(x: np.ndarray, nmax: int) -> tuple[np.ndarray, np.ndar
 
 
 def _make_qp_quants(x: np.ndarray, quant_weights: np.ndarray, nmax: int) -> tuple[np.ndarray, np.ndarray]:
-    """Port of make_qp_quants: single-sided quantization of x (assumed >= 0)
-    to integer levels in [0, nmax], weighted by an external quant_weights
-    array (always required by the caller, unlike _make_qx_quants_rmse1's
-    internal x*x weighting). Returns (L, scale)."""
+    """Port of make_qp_quants: single-sided quantization of x to integer
+    levels in [0, nmax], weighted by an external quant_weights array
+    (always required by the caller, unlike _make_qx_quants_rmse1's internal
+    x*x weighting). Returns (L, scale).
+
+    x is documented as >= 0, but IQ2_XXS's caller actually passes xval,
+    which (via the per-8-group sign-parity correction) can have exactly one
+    *negative* element per group. C's L array is uint8_t*: nearest_int() on
+    a negative element wraps around on store (e.g. -1 -> 255), and that
+    wrapped value is what later reads of L[i] see -- notably in the
+    refinement loop's "remove element i's contribution" step. sumlx/suml2
+    themselves are only ever updated from the correctly-signed *local* int
+    (never re-derived from the array), so they stay accurate; the wrapping
+    only corrupts the removal/re-add bookkeeping for negative-x indices.
+    This must be replicated exactly (not just clamped to nmax) to match the
+    reference bit-for-bit."""
     n = x.shape[-1]
     GROUP_MAX_EPS = 1e-15
 
@@ -218,9 +230,10 @@ def _make_qp_quants(x: np.ndarray, quant_weights: np.ndarray, nmax: int) -> tupl
     safe_max = np.where(degenerate, 1.0, max_val)
 
     iscale0 = nmax / safe_max
-    L0 = np_nearest_int(iscale0[..., None] * x)
+    L0_true = np_nearest_int(iscale0[..., None] * x)  # unclamped, as in C
+    L0_wrapped = np.mod(L0_true, 256).astype(np.float32)  # uint8_t store
     scale0 = 1.0 / iscale0
-    diff0 = x - scale0[..., None] * L0
+    diff0 = x - scale0[..., None] * L0_wrapped  # C reads L[i] back (wrapped)
     best_mse = np.sum(quant_weights * diff0 * diff0, axis=-1)
     iscale = iscale0.copy()
 
@@ -229,37 +242,39 @@ def _make_qp_quants(x: np.ndarray, quant_weights: np.ndarray, nmax: int) -> tupl
             continue
         iscale_is = (0.1 * is_ + nmax) / safe_max
         scale_is = 1.0 / iscale_is
-        l = np.minimum(np_nearest_int(iscale_is[..., None] * x), nmax)
+        l = np.minimum(np_nearest_int(iscale_is[..., None] * x), nmax)  # local, not stored to L
         diff = x - scale_is[..., None] * l
         mse = np.sum(quant_weights * diff * diff, axis=-1)
         improve = mse < best_mse
         best_mse = np.where(improve, mse, best_mse)
         iscale = np.where(improve, iscale_is, iscale)
 
-    L = np.minimum(np_nearest_int(iscale[..., None] * x), nmax).astype(np.float32)
+    l_true = np.minimum(np_nearest_int(iscale[..., None] * x), nmax)  # local, unwrapped (can be negative)
+    L = np.mod(l_true, 256).astype(np.float32)  # array storage: wrapped
     sumlx = np.zeros(x.shape[:-1], dtype=np.float32)
     suml2 = np.zeros(x.shape[:-1], dtype=np.float32)
     for i in range(n):
-        li = L[..., i]
-        sumlx += quant_weights[..., i] * x[..., i] * li
-        suml2 += quant_weights[..., i] * li * li
+        li_true = l_true[..., i]  # unwrapped local, matches C's sumlx/suml2 accumulation
+        sumlx += quant_weights[..., i] * x[..., i] * li_true
+        suml2 += quant_weights[..., i] * li_true * li_true
 
     for _itry in range(5):
         n_changed = np.zeros(x.shape[:-1], dtype=np.int64)
         for i in range(n):
             w = quant_weights[..., i]
             xi = x[..., i]
-            li = L[..., i]
-            slx = sumlx - w * xi * li
-            sl2 = suml2 - w * li * li
+            li_wrapped = L[..., i]  # read wrapped uint8_t, matches C's L[i] read
+            slx = sumlx - w * xi * li_wrapped
+            sl2 = suml2 - w * li_wrapped * li_wrapped
             pos = (slx > 0) & (sl2 > 0)
             safe_slx = np.where(pos, slx, 1.0)
-            new_l = np.minimum(np_nearest_int(xi * sl2 / safe_slx), nmax).astype(np.float32)
-            differ = pos & (new_l != li)
-            new_slx = slx + w * xi * new_l
-            new_sl2 = sl2 + w * new_l * new_l
+            new_l_true = np.minimum(np_nearest_int(xi * sl2 / safe_slx), nmax)  # local, unwrapped
+            differ = pos & (new_l_true != li_wrapped)  # C: int(new_l) != promoted uint8_t L[i]
+            new_slx = slx + w * xi * new_l_true  # local unwrapped new_l
+            new_sl2 = sl2 + w * new_l_true * new_l_true
             accept = differ & (new_slx * new_slx * suml2 > sumlx * sumlx * new_sl2)
-            L[..., i] = np.where(accept, new_l, li)
+            new_l_wrapped = np.mod(new_l_true, 256).astype(np.float32)
+            L[..., i] = np.where(accept, new_l_wrapped, li_wrapped)
             sumlx = np.where(accept, new_slx, sumlx)
             suml2 = np.where(accept, new_sl2, suml2)
             n_changed += accept.astype(np.int64)
@@ -267,9 +282,11 @@ def _make_qp_quants(x: np.ndarray, quant_weights: np.ndarray, nmax: int) -> tupl
             break
 
     scale = np.where(suml2 > 0, sumlx / suml2, np.float32(0.0))
-    L = np.where(degenerate[..., None], 0, L)
+    # L is never read back by the caller (only scale is used) -- return
+    # something sane rather than raw wrapped bytes.
+    L_out = np.where(degenerate[..., None], 0, L)
     scale = np.where(degenerate, np.float32(0.0), scale)
-    return L.astype(np.int64), scale.astype(np.float32)
+    return L_out.astype(np.int64), scale.astype(np.float32)
 
 
 # Port of quantize_row_iq4_nl_impl's per-sub-block scale search (the
