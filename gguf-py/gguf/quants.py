@@ -455,7 +455,9 @@ def _iq1m_grid_lookup(u: np.ndarray, xval_g: np.ndarray, weight_g: np.ndarray, s
     q_m = x_m[levels]
     q = np.where(use_p[..., None, None], q_p, q_m)
     diff = scale[..., None, None] * q - xval_g[..., None, :]
-    d2 = np.sum(weight_g[..., None, :] * diff * diff, axis=-1)  # (..., max_n)
+    d2 = np.zeros(diff.shape[:-1], dtype=np.float32)
+    for _j in range(8):
+        d2 += weight_g[..., None, _j] * diff[..., _j] * diff[..., _j]
     d2 = np.where(cand_valid, d2, np.float32(np.inf))
     best_n = np.argmin(d2, axis=-1)
     neigh_grid_idx = np.take_along_axis(cand, best_n[..., None], axis=-1)[..., 0]
@@ -546,9 +548,11 @@ def _iq3_grid_lookup(u: np.ndarray, xval_g: np.ndarray, weight_g: np.ndarray, sc
     cand_cnt = neigh_count[safe_u]  # (...)
     cand_valid = np.arange(max_n) < cand_cnt[..., None]
     safe_cand = np.clip(cand, 0, pos.shape[0] - 1)
-    pg = pos[safe_cand]  # (..., max_n, 4)
+    pg = pos[safe_cand].astype(np.float32)  # (..., max_n, 4); avoid int32*float32->float64 promotion
     diff = scale[..., None, None] * pg - xval_g[..., None, :]
-    d2 = np.sum(weight_g[..., None, :] * diff * diff, axis=-1)  # (..., max_n)
+    d2 = np.zeros(diff.shape[:-1], dtype=np.float32)
+    for _j in range(4):
+        d2 += weight_g[..., None, _j] * diff[..., _j] * diff[..., _j]
     d2 = np.where(cand_valid, d2, np.float32(np.inf))
     best_n = np.argmin(d2, axis=-1)
     neigh_grid_idx = np.take_along_axis(cand, best_n[..., None], axis=-1)[..., 0]
@@ -1728,9 +1732,11 @@ class IQ2_XXS(__Quant, qtype=GGMLQuantizationType.IQ2_XXS):
         cand_cnt = neigh_count[safe_u]
         cand_valid = np.arange(max_n) < cand_cnt[..., None]
         safe_cand = np.clip(cand, 0, pos.shape[0] - 1)
-        pg = pos[safe_cand]
+        pg = pos[safe_cand].astype(np.float32)  # avoid int32*float32->float64 promotion
         diff = scale[..., None, None] * pg - xval_g[..., None, :]
-        d2 = np.sum(weight_g[..., None, :] * diff * diff, axis=-1)
+        d2 = np.zeros(diff.shape[:-1], dtype=np.float32)
+        for _j in range(8):
+            d2 += weight_g[..., None, _j] * diff[..., _j] * diff[..., _j]
         d2 = np.where(cand_valid, d2, np.float32(np.inf))
         best_n = np.argmin(d2, axis=-1)
         neigh_grid_idx = np.take_along_axis(cand, best_n[..., None], axis=-1)[..., 0]
@@ -1972,9 +1978,11 @@ class IQ2_XS(__Quant, qtype=GGMLQuantizationType.IQ2_XS):
         cand_cnt = neigh_count[safe_u]
         cand_valid = np.arange(max_n) < cand_cnt[..., None]
         safe_cand = np.clip(cand, 0, pos.shape[0] - 1)
-        pg = pos[safe_cand]
+        pg = pos[safe_cand].astype(np.float32)  # avoid int32*float32->float64 promotion
         diff = scale[..., None, None] * pg - xval_g[..., None, :]
-        d2 = np.sum(weight_g[..., None, :] * diff * diff, axis=-1)
+        d2 = np.zeros(diff.shape[:-1], dtype=np.float32)
+        for _j in range(8):
+            d2 += weight_g[..., None, _j] * diff[..., _j] * diff[..., _j]
         d2 = np.where(cand_valid, d2, np.float32(np.inf))
         best_n = np.argmin(d2, axis=-1)
         neigh_grid_idx = np.take_along_axis(cand, best_n[..., None], axis=-1)[..., 0]
@@ -2252,9 +2260,11 @@ class IQ2_S(__Quant, qtype=GGMLQuantizationType.IQ2_S):
         cand_cnt = neigh_count[safe_u]  # (...)
         cand_valid = np.arange(max_n) < cand_cnt[..., None]
         safe_cand = np.clip(cand, 0, pos.shape[0] - 1)
-        pg = pos[safe_cand]  # (..., max_n, 8)
+        pg = pos[safe_cand].astype(np.float32)  # (..., max_n, 8); avoid int32*float32->float64 promotion
         diff = scale[..., None, None] * pg - xval_g[..., None, :]
-        d2 = np.sum(weight_g[..., None, :] * diff * diff, axis=-1)  # (..., max_n)
+        d2 = np.zeros(diff.shape[:-1], dtype=np.float32)
+        for _j in range(8):
+            d2 += weight_g[..., None, _j] * diff[..., _j] * diff[..., _j]
         d2 = np.where(cand_valid, d2, np.float32(np.inf))
         best_n = np.argmin(d2, axis=-1)
         neigh_grid_idx = np.take_along_axis(cand, best_n[..., None], axis=-1)[..., 0]
