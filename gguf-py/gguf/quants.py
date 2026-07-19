@@ -3167,8 +3167,16 @@ class IQ1_M(__Quant, qtype=GGMLQuantizationType.IQ1_M):
 
         # Exact SSD search over the two split points (i1, i2) of the sorted
         # values, with 4 candidate sign assignments (k) for the two halves
-        # (elements < 8 / >= 8). Uses prefix sums over the sorted order to
-        # avoid an O(block_size^3) search per subblock.
+        # (elements < 8 / >= 8). The C reference recomputes sumqx/sumq2
+        # completely from scratch (three fresh loops in sequence, one
+        # continuous accumulator) for EVERY (i1, i2) pair -- it does not
+        # reuse partial sums. A prefix-sum-and-subtract reformulation is
+        # mathematically equivalent but not bit-identical (float addition
+        # isn't associative), so this does the same from-scratch style
+        # accumulation C does: for each (i1, i2), select each sorted
+        # position's per-level reconstruction value via exact 0/1 masking
+        # (introduces no rounding) and then sum sequentially in sorted
+        # order, matching C's left-to-right single accumulator exactly.
         order = np.argsort(xb, axis=-1)  # ascending; ties are measure-zero for real data
         xb_sorted = np.take_along_axis(xb, order, axis=-1)
         w_sorted = np.take_along_axis(weight, order, axis=-1)
@@ -3178,15 +3186,15 @@ class IQ1_M(__Quant, qtype=GGMLQuantizationType.IQ1_M):
         HALF1_PROFILE = np.array([True, False, True, False])
         use_p_sorted = np.where(half0[..., None], HALF0_PROFILE, HALF1_PROFILE)  # (n_blocks, n_ib, 16, 4)
 
-        CumA = np.zeros((n_blocks, n_ib, 3, 4, block_size + 1), dtype=np.float32)
-        CumB = np.zeros((n_blocks, n_ib, 3, 4, block_size + 1), dtype=np.float32)
-        for j in range(3):
+        # aj_by_level[..., lvl, k, pos]: this sorted position's contribution
+        # to sumqx/sumq2 IF it were assigned level lvl under sign-choice k.
+        aj_by_level = np.zeros((n_blocks, n_ib, 3, 4, block_size), dtype=np.float32)
+        bj_by_level = np.zeros((n_blocks, n_ib, 3, 4, block_size), dtype=np.float32)
+        for lvl in range(3):
             for k in range(4):
-                val = np.where(use_p_sorted[..., k], x_p[j], x_m[j])  # (n_blocks, n_ib, 16)
-                aj = w_sorted * val * xb_sorted
-                bj = w_sorted * val * val
-                CumA[:, :, j, k, 1:] = np.cumsum(aj, axis=-1)
-                CumB[:, :, j, k, 1:] = np.cumsum(bj, axis=-1)
+                val = np.where(use_p_sorted[..., k], x_p[lvl], x_m[lvl])  # (n_blocks, n_ib, 16)
+                aj_by_level[:, :, lvl, k, :] = w_sorted * val * xb_sorted
+                bj_by_level[:, :, lvl, k, :] = w_sorted * val * val
 
         best_score = np.full((n_blocks, n_ib), -np.inf, dtype=np.float32)
         best_scale = np.zeros((n_blocks, n_ib), dtype=np.float32)
@@ -3194,14 +3202,23 @@ class IQ1_M(__Quant, qtype=GGMLQuantizationType.IQ1_M):
         besti2 = np.full((n_blocks, n_ib), -1, dtype=np.int32)
         best_k = np.zeros((n_blocks, n_ib), dtype=np.int32)
 
+        pos_idx = np.arange(block_size)
         for i1 in range(block_size + 1):
             for i2 in range(i1, block_size + 1):
-                sumqx4 = (CumA[:, :, 0, :, i1] +
-                          (CumA[:, :, 1, :, i2] - CumA[:, :, 1, :, i1]) +
-                          (CumA[:, :, 2, :, block_size] - CumA[:, :, 2, :, i2]))  # (n_blocks, n_ib, 4)
-                sumq24 = (CumB[:, :, 0, :, i1] +
-                          (CumB[:, :, 1, :, i2] - CumB[:, :, 1, :, i1]) +
-                          (CumB[:, :, 2, :, block_size] - CumB[:, :, 2, :, i2]))
+                level_j = np.where(pos_idx < i1, 0, np.where(pos_idx < i2, 1, 2))  # (16,)
+                mask0 = (level_j == 0).astype(np.float32)
+                mask1 = (level_j == 1).astype(np.float32)
+                mask2 = (level_j == 2).astype(np.float32)
+                # exact (no rounding): at most one mask is 1 per position
+                aj_sel = (aj_by_level[:, :, 0] * mask0 + aj_by_level[:, :, 1] * mask1 +
+                          aj_by_level[:, :, 2] * mask2)  # (n_blocks, n_ib, 4, 16)
+                bj_sel = (bj_by_level[:, :, 0] * mask0 + bj_by_level[:, :, 1] * mask1 +
+                          bj_by_level[:, :, 2] * mask2)
+                sumqx4 = np.zeros((n_blocks, n_ib, 4), dtype=np.float32)
+                sumq24 = np.zeros((n_blocks, n_ib, 4), dtype=np.float32)
+                for elem_pos in range(block_size):
+                    sumqx4 += aj_sel[..., elem_pos]
+                    sumq24 += bj_sel[..., elem_pos]
                 for k in range(4):
                     sumqx = sumqx4[:, :, k]
                     sumq2 = sumq24[:, :, k]
