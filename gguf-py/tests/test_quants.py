@@ -156,7 +156,17 @@ def do_test(libggml_path: Path, quick: bool = False, user_type: GGMLQuantization
     # r[0, 3, 0] = np.inf
     # r[0, 3, 1] = -np.inf
 
+    # Q8_1 and Q8_K are intermediate/activation formats produced only by
+    # dedicated vec_dot code paths during matmul -- they have no entry in
+    # ggml_quantize_chunk's dispatch switch (falls through to `default:
+    # assert(false)`, then aborts on the following GGML_ASSERT) and Q8_1
+    # doesn't even export a dequantize_row_ symbol. Neither is a real
+    # user-facing quantization target, so there's nothing to compare here.
+    _no_c_api = {GGMLQuantizationType.Q8_1, GGMLQuantizationType.Q8_K}
+
     for qtype in ((GGMLQuantizationType.F16, *gguf.quants._type_traits.keys()) if user_type is None else (user_type,)):
+        if qtype in _no_c_api and user_type is None:
+            continue
         has_dequantize = False
         has_quantize = False
 
