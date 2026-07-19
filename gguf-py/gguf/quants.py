@@ -300,6 +300,17 @@ def _make_qp_quants(x: np.ndarray, quant_weights: np.ndarray, nmax: int) -> tupl
 # `best_index(0)` reproduces the C reference's actual degenerate behavior
 # (every element maps to whichever codebook entry is closest to zero, not
 # necessarily index 0) instead of guessing "leave everything zeroed".
+def _argmin_tie_high(diffs: np.ndarray) -> np.ndarray:
+    """Port of best_index_int8's tie-break: `x - val[mu-1] < val[mu] - x ?
+    mu-1 : mu` (strict <) means an exact tie resolves to the HIGHER index.
+    np.argmin resolves ties to the first (lowest) occurrence, the opposite —
+    reverse the last axis before argmin so its first-occurrence tie-break
+    lands on the original higher index instead."""
+    n = diffs.shape[-1]
+    idx_rev = np.argmin(diffs[..., ::-1], axis=-1)
+    return (n - 1) - idx_rev
+
+
 def _make_iq4_quants(x: np.ndarray, values: np.ndarray, ntry: int) -> np.ndarray:
     n = x.shape[-1]
     GROUP_MAX_EPS = 1e-15
@@ -316,7 +327,7 @@ def _make_iq4_quants(x: np.ndarray, values: np.ndarray, ntry: int) -> np.ndarray
 
     def best_index(al: np.ndarray) -> np.ndarray:
         diffs = np.abs(al[..., None] - values_f)
-        return np.argmin(diffs, axis=-1)
+        return _argmin_tie_high(diffs)
 
     def sums_for(id_: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         al = id_[..., None] * x
@@ -3391,7 +3402,7 @@ class IQ4_NL(__Quant, qtype=GGMLQuantizationType.IQ4_NL):
         kvals_f = kvals.astype(np.float32)
         id_ = np.where(scale != 0, 1.0 / scale, 0.0)
         al = id_[:, None] * blocks.astype(np.float32)
-        best = np.argmin(np.abs(al[..., None] - kvals_f), axis=-1).astype(np.uint8)  # (n_blocks, 32)
+        best = _argmin_tie_high(np.abs(al[..., None] - kvals_f)).astype(np.uint8)  # (n_blocks, 32)
 
         # C: q4[j] = L[j] | (L[16+j] << 4) — split-half pairing, not adjacent.
         half = block_size // 2
@@ -3447,7 +3458,7 @@ class IQ4_XS(__Quant, qtype=GGMLQuantizationType.IQ4_XS):
         idl = np.where(dl != 0, 1.0 / dl, 0.0)[..., None]  # (n_blocks, 8, 1)
 
         al = idl * blocks_3d
-        best = np.argmin(np.abs(al[..., None] - kvals_f), axis=-1).astype(np.uint8)  # (n_blocks, 8, 32)
+        best = _argmin_tie_high(np.abs(al[..., None] - kvals_f)).astype(np.uint8)  # (n_blocks, 8, 32)
 
         l6 = (l + 32).astype(np.uint8)  # (n_blocks, 8), 6-bit in [0,63]
         l_l = l6 & 0x0F
