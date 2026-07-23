@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <algorithm>
+#include <mutex>
 #include <vector>
 
 #ifdef __APPLE__
@@ -772,6 +773,11 @@ struct ggml_backend_sched_split {
 };
 
 struct ggml_backend_sched {
+    // Mutex protecting all mutable state. Concurrent requests MUST use
+    // separate scheduler instances OR lock around compute()/reset() calls.
+    // See issue #730: concurrent requests corrupt buffers without this.
+    std::mutex mtx;
+
     bool is_reset; // true if the scheduler has been reset since the last graph split
     bool is_alloc;
 
@@ -932,8 +938,10 @@ static int ggml_backend_sched_backend_id_from_cur(ggml_backend_sched_t sched, st
     return -1;
 }
 
-static char * fmt_size(size_t size) {
-    static char buffer[128];
+static const char * fmt_size(size_t size) {
+    // Thread-safe: use thread_local buffer so concurrent callers don't
+    // clobber each other's results (issue #730).
+    static thread_local char buffer[128];
     if (size >= 1024*1024) {
         snprintf(buffer, sizeof(buffer), "%zuM", size/1024/1024);
     } else {
@@ -1820,6 +1828,7 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
 
 void ggml_backend_sched_reset(ggml_backend_sched_t sched) {
     GGML_ASSERT(sched);
+    std::lock_guard<std::mutex> lock(sched->mtx);
     // reset state for the next run
     if (!sched->is_reset) {
         ggml_hash_set_reset(&sched->hash_set);
@@ -1863,6 +1872,7 @@ bool ggml_backend_sched_reserve(ggml_backend_sched_t sched, struct ggml_cgraph *
 
 bool ggml_backend_sched_alloc_graph(ggml_backend_sched_t sched, struct ggml_cgraph * graph) {
     GGML_ASSERT(sched);
+    std::lock_guard<std::mutex> lock(sched->mtx);
     GGML_ASSERT((int)sched->hash_set.size >= graph->n_nodes + graph->n_leafs);
     GGML_ASSERT(!sched->is_alloc);
 
@@ -1888,6 +1898,7 @@ enum ggml_status ggml_backend_sched_graph_compute(ggml_backend_sched_t sched, st
 
 enum ggml_status ggml_backend_sched_graph_compute_async(ggml_backend_sched_t sched, struct ggml_cgraph * graph) {
     GGML_ASSERT(sched);
+    std::lock_guard<std::mutex> lock(sched->mtx);
     if (!sched->is_reset && !sched->is_alloc) {
         ggml_backend_sched_reset(sched);
     }
