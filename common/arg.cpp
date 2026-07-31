@@ -2204,6 +2204,24 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_CACHE_TYPE_V"));
     add_opt(common_arg(
+        {"--kv-pool-size"}, "N",
+        string_format(
+            "paged KV cache pool slot count (default: %u, 0 = disabled)\n"
+            "use 'auto' to auto-detect from GPU free VRAM.\n"
+            "when set, the KV cache allocates pool-sized tensors on GPU and\n"
+            "pages cold chunks to a CPU backing store, reducing VRAM usage\n"
+            "while keeping hot chunks accessible. 64-token chunk granularity.",
+            params.kv_pool_size
+        ),
+        [](common_params & params, const std::string & value) {
+            if (value == "auto") {
+                params.kv_pool_size = UINT32_MAX; // sentinel for auto-detect
+            } else {
+                params.kv_pool_size = (uint32_t)std::max(0, std::stoi(value));
+            }
+        }
+    ).set_env("LLAMA_ARG_KV_POOL_SIZE"));
+    add_opt(common_arg(
         {"--hellaswag"},
         "compute HellaSwag score over random tasks from datafile supplied with -f",
         [](common_params & params) {

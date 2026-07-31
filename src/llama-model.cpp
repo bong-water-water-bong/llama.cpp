@@ -1,5 +1,7 @@
 #include "llama-model.h"
 
+#include <cstdlib>
+
 #include "llama-arch.h"
 #include "llama-ext.h"
 #include "llama-hparams.h"
@@ -9,6 +11,8 @@
 #include "llama-model-loader.h"
 
 #include "llama-kv-cache.h"
+#include "llama-kv-cache-paged.h"
+#include "llama-kv-cache-paged-scorer.h"
 #include "llama-kv-cache-iswa.h"
 #include "llama-kv-cache-dsa.h"
 #include "llama-kv-cache-dsv4.h"
@@ -2254,23 +2258,59 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                     } else {
                         GGML_ASSERT(!hparams.is_swa_any());
 
-                        res = new llama_kv_cache(
-                                *this,
-                                hparams,
-                                params.type_k,
-                                params.type_v,
-                                !cparams.flash_attn,
-                                cparams.offload_kqv,
-                                cparams.kv_unified,
-                                cparams.n_ctx_seq,
-                                cparams.n_seq_max,
-                                1,
-                                hparams.n_swa,
-                                hparams.swa_type,
-                                nullptr,
-                                filter,
-                                nullptr,
-                                nullptr);
+                        // Paged KV cache (--kv-pool-size, LLAMA_KV_POOL_SIZE env, or "auto")
+                        const char * env_pool = getenv("LLAMA_KV_POOL_SIZE");
+                        uint32_t pool_size = cparams.kv_pool_size;
+                        if (pool_size == UINT32_MAX) {
+                            pool_size = llama_kv_cache_paged::auto_detect_pool_size(*this, cparams.n_ctx_seq);
+                        } else if (pool_size == 0 && env_pool) {
+                            if (strcmp(env_pool, "auto") == 0) {
+                                pool_size = llama_kv_cache_paged::auto_detect_pool_size(*this, cparams.n_ctx_seq);
+                            } else {
+                                pool_size = (uint32_t)std::max(64, atoi(env_pool));
+                            }
+                        }
+                        const bool use_paged = pool_size > 0 && pool_size < cparams.n_ctx_seq;
+
+                        if (use_paged && pool_size < cparams.n_ctx_seq) {
+                            auto * paged = new llama_kv_cache_paged(
+                                    *this, hparams,
+                                    params.type_k, params.type_v,
+                                    !cparams.flash_attn,
+                                    cparams.offload_kqv,
+                                    cparams.kv_unified,
+                                    cparams.n_ctx_seq,
+                                    pool_size,
+                                    cparams.n_seq_max,
+                                    cparams.n_ubatch,
+                                    hparams.n_swa,
+                                    hparams.swa_type,
+                                    1,
+                                    filter,
+                                    nullptr,
+                                    nullptr);
+                            // Attach heuristic scorer for chunk relevance
+                            paged->set_scorer(llama_kv_paged_scorer_create());
+                            res = paged;
+                        } else {
+                            res = new llama_kv_cache(
+                                    *this,
+                                    hparams,
+                                    params.type_k,
+                                    params.type_v,
+                                    !cparams.flash_attn,
+                                    cparams.offload_kqv,
+                                    cparams.kv_unified,
+                                    cparams.n_ctx_seq,
+                                    cparams.n_seq_max,
+                                    1,
+                                    hparams.n_swa,
+                                    hparams.swa_type,
+                                    nullptr,
+                                    filter,
+                                    nullptr,
+                                    nullptr);
+                        }
                     }
                 }
             }

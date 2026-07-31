@@ -1224,6 +1224,18 @@ ggml_tensor * llama_kv_cache::get_k_storage(int32_t il) const {
     return layers[ikv].k;
 }
 
+ggml_tensor * llama_kv_cache::get_v_storage(int32_t il) const {
+    const int32_t ikv = map_layer_ids.at(il);
+
+    return layers[ikv].v;
+}
+
+void llama_kv_cache::release_cell(uint32_t cell_idx, uint32_t stream) {
+    if (cell_idx < v_cells[stream].size()) {
+        v_cells[stream].rm(cell_idx);
+    }
+}
+
 uint32_t llama_kv_cache::get_n_kv(const slot_info & sinfo) const {
     uint32_t result = 0;
 
