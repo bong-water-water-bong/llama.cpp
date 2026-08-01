@@ -1,5 +1,7 @@
 #include "llama-model.h"
 
+#include <cstdlib>
+
 #include "llama-arch.h"
 #include "llama-ext.h"
 #include "llama-hparams.h"
@@ -9,6 +11,8 @@
 #include "llama-model-loader.h"
 
 #include "llama-kv-cache.h"
+#include "llama-kv-cache-paged.h"
+#include "llama-kv-cache-paged-scorer.h"
 #include "llama-kv-cache-iswa.h"
 #include "llama-kv-cache-dsa.h"
 #include "llama-kv-cache-dsv4.h"
@@ -302,6 +306,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_mimo2(params);
         case LLM_ARCH_KIMI_LINEAR:
             return new llama_model_kimi_linear(params);
+        case LLM_ARCH_ZAYA:
+            return new llama_model_zaya(params);
         case LLM_ARCH_STEP35:
             return new llama_model_step35(params);
         default:
@@ -1489,7 +1495,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             }
         }
     }
-    ml.done_getting_tensors();
+    ml.done_getting_tensors(arch == LLM_ARCH_ZAYA);
 
     // Tied NVFP4 output is valid when no separate LM-head scale tensors are present.
     // If sidecar scales exist, the output weight must be an actual output tensor.
@@ -2094,6 +2100,10 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                     if (arch == LLM_ARCH_FALCON_H1) {
                         filter_attn = [&](uint32_t) { return true; };
                         filter_recr = [&](uint32_t) { return true; };
+                    } else if (arch == LLM_ARCH_ZAYA) {
+                        // Every ZayaDecoderLayer has both CCA attention (recurrent) and standard attention
+                        filter_attn = [&](uint32_t) { return true; };
+                        filter_recr = [&](uint32_t) { return true; };
                     } else if (arch == LLM_ARCH_NEMOTRON_H || arch == LLM_ARCH_NEMOTRON_H_MOE) {
                         filter_attn = [&](uint32_t il) {
                             return !hparams.is_recr(il) && hparams.n_ff(il) == 0;
@@ -2249,23 +2259,59 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                     } else {
                         GGML_ASSERT(!hparams.is_swa_any());
 
-                        res = new llama_kv_cache(
-                                *this,
-                                hparams,
-                                params.type_k,
-                                params.type_v,
-                                !cparams.flash_attn,
-                                cparams.offload_kqv,
-                                cparams.kv_unified,
-                                cparams.n_ctx_seq,
-                                cparams.n_seq_max,
-                                1,
-                                hparams.n_swa,
-                                hparams.swa_type,
-                                nullptr,
-                                filter,
-                                nullptr,
-                                nullptr);
+                        // Paged KV cache (--kv-pool-size, LLAMA_KV_POOL_SIZE env, or "auto")
+                        const char * env_pool = getenv("LLAMA_KV_POOL_SIZE");
+                        uint32_t pool_size = cparams.kv_pool_size;
+                        if (pool_size == UINT32_MAX) {
+                            pool_size = llama_kv_cache_paged::auto_detect_pool_size(*this, cparams.n_ctx_seq);
+                        } else if (pool_size == 0 && env_pool) {
+                            if (strcmp(env_pool, "auto") == 0) {
+                                pool_size = llama_kv_cache_paged::auto_detect_pool_size(*this, cparams.n_ctx_seq);
+                            } else {
+                                pool_size = (uint32_t)std::max(64, atoi(env_pool));
+                            }
+                        }
+                        const bool use_paged = pool_size > 0 && pool_size < cparams.n_ctx_seq;
+
+                        if (use_paged && pool_size < cparams.n_ctx_seq) {
+                            auto * paged = new llama_kv_cache_paged(
+                                    *this, hparams,
+                                    params.type_k, params.type_v,
+                                    !cparams.flash_attn,
+                                    cparams.offload_kqv,
+                                    cparams.kv_unified,
+                                    cparams.n_ctx_seq,
+                                    pool_size,
+                                    cparams.n_seq_max,
+                                    cparams.n_ubatch,
+                                    hparams.n_swa,
+                                    hparams.swa_type,
+                                    1,
+                                    filter,
+                                    nullptr,
+                                    nullptr);
+                            // Attach heuristic scorer for chunk relevance
+                            paged->set_scorer(llama_kv_paged_scorer_create());
+                            res = paged;
+                        } else {
+                            res = new llama_kv_cache(
+                                    *this,
+                                    hparams,
+                                    params.type_k,
+                                    params.type_v,
+                                    !cparams.flash_attn,
+                                    cparams.offload_kqv,
+                                    cparams.kv_unified,
+                                    cparams.n_ctx_seq,
+                                    cparams.n_seq_max,
+                                    1,
+                                    hparams.n_swa,
+                                    hparams.swa_type,
+                                    nullptr,
+                                    filter,
+                                    nullptr,
+                                    nullptr);
+                        }
                     }
                 }
             }
@@ -2541,6 +2587,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_QWEN3NEXT:
         case LLM_ARCH_MIMO2:
         case LLM_ARCH_STEP35:
+        case LLM_ARCH_ZAYA:
         case LLM_ARCH_TALKIE:
         case LLM_ARCH_MELLUM:
         case LLM_ARCH_DFLASH:

@@ -2059,6 +2059,21 @@ extern "C" {
             int                   s0,  // stride
             int                   d0); // dilation
 
+    // grouped 1D convolution
+    // a: [K, IC/G, OC]   convolution kernel
+    // b: [L, IC,   N]    data
+    // groups must divide both IC and OC evenly
+    // when groups == 1, equivalent to ggml_conv_1d
+    // when groups == IC, equivalent to ggml_conv_1d_dw
+    GGML_API struct ggml_tensor * ggml_conv_1d_grouped(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,      // convolution kernel
+            struct ggml_tensor  * b,      // data
+            int                   s0,     // stride
+            int                   p0,     // padding
+            int                   d0,     // dilation
+            int                   groups); // number of groups
+
     GGML_API struct ggml_tensor * ggml_conv_transpose_1d(
             struct ggml_context * ctx,
             struct ggml_tensor  * a,   // convolution kernel
@@ -2778,6 +2793,8 @@ extern "C" {
 
     // dump the graph into a file using the dot format
     GGML_API void ggml_graph_dump_dot(const struct ggml_cgraph * gb, const struct ggml_cgraph * cgraph, const char * filename);
+GGML_API void ggml_graph_dump_json(const struct ggml_cgraph * gf, const char * filename);
+GGML_API void ggml_graph_dump_txt(const struct ggml_cgraph * gf, const char * filename);
 
     // TODO these functions were sandwiched in the old optimization interface, is there a better place for them?
     typedef void (*ggml_log_callback)(enum ggml_log_level level, const char * text, void * user_data);

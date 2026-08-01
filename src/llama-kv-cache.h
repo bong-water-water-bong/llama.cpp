@@ -163,6 +163,11 @@ public:
 
     std::vector<uint32_t> get_layer_ids() const;
     ggml_tensor * get_k_storage(int32_t il) const;
+    ggml_tensor * get_v_storage(int32_t il) const;
+
+    // Release a cell (mark it empty) for the given stream.
+    // This is used by the paged cache to evict cells from the pool.
+    void release_cell(uint32_t cell_idx, uint32_t stream = 0);
 
     //
     // graph_build API

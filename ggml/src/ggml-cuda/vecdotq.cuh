@@ -672,6 +672,166 @@ static __device__ __forceinline__ float vec_dot_q6_K_q8_1_impl_mmq(
     return d6 * sumf_d;
 }
 
+static __device__ __forceinline__ float vec_dot_q2_0_q8_1(
+    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+
+    const block_q2_0 * bq2_0 = (const block_q2_0 *) vbq + kbx;
+
+    // Q2_0: 64 elements with ONE scale, 4 values per byte (2-bit each)
+    // Q8_1: 32 elements per block with individual scales
+    // iqs selects which of the 2 chunks of 32 elements to process (0 or 1)
+
+    const float d1 = bq2_0->d;
+    const block_q8_1 * bq8_1_chunk = bq8_1 + iqs;
+
+    // Load 8 bytes from Q2_0 for this 32-element chunk (at iqs * 8)
+    const int offset = iqs * 4; // 4 uint32 = 16 bytes = 64 values for full block
+                                   // But we only need 32 values = 8 bytes = 2 uint32
+    const int v_lo = get_int_b1(bq2_0->qs, offset + 0);
+    const int v_hi = get_int_b1(bq2_0->qs, offset + 1);
+
+    // Expand 8 bytes of 2-bit values into 8 x uint32 for dp4a
+    // Each input byte has 4 values at 2 bits each
+    // Each output uint32 has 4 expanded int8 values
+    int vi_bytes[8];
+    int vals[2] = {v_lo, v_hi};
+#pragma unroll
+    for (int i = 0; i < 2; ++i) {
+        int v = vals[i];
+        for (int j = 0; j < 4; ++j) {
+            int byte_j = (v >> (j * 8)) & 0xFF;
+            int v0 = ((byte_j >> 0) & 0x03) - 1;
+            int v1 = ((byte_j >> 2) & 0x03) - 1;
+            int v2 = ((byte_j >> 4) & 0x03) - 1;
+            int v3 = ((byte_j >> 6) & 0x03) - 1;
+            vi_bytes[i * 4 + j] = (v0 & 0xFF) | ((v1 & 0xFF) << 8) | ((v2 & 0xFF) << 16) | ((v3 & 0xFF) << 24);
+        }
+    }
+
+    // Compute dot product for this 32-element chunk
+    int sumi = 0;
+#pragma unroll
+    for (int j = 0; j < 8; ++j) {
+        const int u = get_int_b4(bq8_1_chunk->qs, j);
+        sumi = ggml_cuda_dp4a(vi_bytes[j], u, sumi);
+    }
+
+    // Apply Q2_0's single scale and this chunk's Q8_1 scale
+    const float d8 = __low2float(bq8_1_chunk->ds);
+    return d1 * d8 * sumi;
+}
+
+#define VDR_Q2_0_Q8_1_MMVQ 1
+#define VDR_Q2_0_Q8_1_MMQ  4
+
+// TQ1_0 base-3 decoding: byte encodes 5 ternary values
+// Decode with: ((byte * pow3[n] * 3) >> 8) - 1
+// Precomputed: pow3 = {1, 3, 9, 27, 81}
+static __device__ __forceinline__ int decode_tq1_0_byte(uint8_t byte_val, int layer) {
+    // layer 0..4, multiply by 1, 3, 9, 27, 81
+    int mul = (layer == 0) ? 1 : (layer == 1) ? 3 : (layer == 2) ? 9 : (layer == 3) ? 27 : 81;
+    int q = byte_val * mul;
+    int xi = ((uint16_t) q * 3) >> 8;
+    return xi - 1; // {-1, 0, +1}
+}
+
+// TQ1_0 expands 4 bytes into 20 ternary values packed as 5 x uint32 for dp4a
+// Each uint32 has 4 expanded int8 values (the last one has 4, but only 3 used + padding)
+static __device__ __forceinline__ void expand_tq1_0_bytes(const uint8_t * qs, int byte_offset, int layer, int (&result)[5]) {
+#pragma unroll
+    for (int i = 0; i < 5; ++i) {
+        int byte_val = qs[byte_offset + i];
+        int v0 = decode_tq1_0_byte(byte_val, layer);
+        // Pack 4 values into one uint32 for dp4a
+        // Each call gives only 1 value. We need 4 values per uint32.
+        // So we process 4 consecutive bytes to get 4 values.
+        // Restructure: for each group of 4 bytes (indices 4*i..4*i+3), produce 1 uint32
+    }
+}
+
+static __device__ __forceinline__ float vec_dot_tq1_0_q8_1(
+    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+
+    const block_tq1_0 * bq = (const block_tq1_0 *) vbq + kbx;
+    const float d = bq->d;
+
+    const block_q8_1 * bq8_1_chunk = bq8_1 + iqs;
+
+    // TQ1_0: 256 elements, base-3 packed:
+    //   qs[0:32]: 5 layers × 32 vals = 160 (vals  0-159)
+    //   qs[32:48]: 5 layers × 16 vals = 80  (vals 160-239)
+    //   qh[0:4]: 4 layers × 4 vals = 16    (vals 240-255)
+    //
+    // iqs maps to non-uniform 32-elem chunks:
+    //   0-4: layers 0-4 of qs[0:32], 32 vals each (clean)
+    //   5:   layer 0 of qs[32:48] (16 vals), pad 16 zeros
+    //   6:   layer 1 of qs[32:48] (16 vals), pad 16 zeros
+    //   7:   layer 2 of qs[32:48] (16 vals) + layer 0 of qh (4 vals) + 12 zeros
+
+    int sumi = 0;
+    const uint8_t * qs = bq->qs;
+
+    if (iqs <= 4) {
+        const int layer = iqs;
+        // 32 values from qs[0:32], layer = iqs
+        for (int g = 0; g < 8; ++g) {
+            int v_packed = 0;
+            for (int k = 0; k < 4; ++k) {
+                v_packed |= ((decode_tq1_0_byte(qs[g * 4 + k], layer) & 0xFF) << (k * 8));
+            }
+            sumi = ggml_cuda_dp4a(v_packed, get_int_b4(bq8_1_chunk->qs, g), sumi);
+        }
+    } else if (iqs == 5) {
+        // 16 values from qs[32:48], layer 0 + 16 zeros
+        for (int g = 0; g < 4; ++g) {
+            int v_packed = 0;
+            for (int k = 0; k < 4; ++k) {
+                v_packed |= ((decode_tq1_0_byte(qs[32 + g * 4 + k], 0) & 0xFF) << (k * 8));
+            }
+            sumi = ggml_cuda_dp4a(v_packed, get_int_b4(bq8_1_chunk->qs, g), sumi);
+        }
+        for (int g = 4; g < 8; ++g) {
+            sumi = ggml_cuda_dp4a(0, get_int_b4(bq8_1_chunk->qs, g), sumi); // pad zeros
+        }
+    } else if (iqs == 6) {
+        // 16 values from qs[32:48], layer 1 + 16 zeros
+        for (int g = 0; g < 4; ++g) {
+            int v_packed = 0;
+            for (int k = 0; k < 4; ++k) {
+                v_packed |= ((decode_tq1_0_byte(qs[32 + g * 4 + k], 1) & 0xFF) << (k * 8));
+            }
+            sumi = ggml_cuda_dp4a(v_packed, get_int_b4(bq8_1_chunk->qs, g), sumi);
+        }
+        for (int g = 4; g < 8; ++g) {
+            sumi = ggml_cuda_dp4a(0, get_int_b4(bq8_1_chunk->qs, g), sumi);
+        }
+    } else if (iqs == 7) {
+        // 16 vals from qs[32:48], layer 2 + 4 vals from qh, layer 0 + 12 zeros
+        for (int g = 0; g < 4; ++g) {
+            int v_packed = 0;
+            for (int k = 0; k < 4; ++k) {
+                v_packed |= ((decode_tq1_0_byte(qs[32 + g * 4 + k], 2) & 0xFF) << (k * 8));
+            }
+            sumi = ggml_cuda_dp4a(v_packed, get_int_b4(bq8_1_chunk->qs, g), sumi);
+        }
+        // One group of qh layer 0
+        int v_packed = 0;
+        for (int k = 0; k < 4; ++k) {
+            v_packed |= ((decode_tq1_0_byte(bq->qh[k], 0) & 0xFF) << (k * 8));
+        }
+        sumi = ggml_cuda_dp4a(v_packed, get_int_b4(bq8_1_chunk->qs, 4), sumi);
+        for (int g = 5; g < 8; ++g) {
+            sumi = ggml_cuda_dp4a(0, get_int_b4(bq8_1_chunk->qs, g), sumi);
+        }
+    }
+
+    const float d8 = __low2float(bq8_1_chunk->ds);
+    return d * d8 * sumi;
+}
+
+#define VDR_TQ1_0_Q8_1_MMVQ 1
+#define VDR_TQ1_0_Q8_1_MMQ  1
+
 static __device__ __forceinline__ float vec_dot_q1_0_q8_1(
     const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
 

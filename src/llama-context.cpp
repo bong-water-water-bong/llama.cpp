@@ -99,6 +99,7 @@ llama_context::llama_context(
     cparams.embeddings_nextn        = false;
     cparams.embeddings_nextn_masked = false;
     cparams.offload_kqv             = params.offload_kqv;
+    cparams.kv_pool_size            = params.kv_pool_size;
     cparams.no_perf                 = params.no_perf;
     cparams.warmup                  = false;
 
@@ -2307,6 +2308,7 @@ uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
         model.arch == LLM_ARCH_KIMI_LINEAR ||
         model.arch == LLM_ARCH_QWEN35 ||
         model.arch == LLM_ARCH_QWEN35MOE ||
+        model.arch == LLM_ARCH_ZAYA ||
         model.arch == LLM_ARCH_DEEPSEEK4) {
         return std::max<uint32_t>(n_tokens * 40, 32u * model.n_tensors());
     }
@@ -3459,6 +3461,7 @@ llama_context_params llama_context_default_params() {
         /*.type_v                      =*/ GGML_TYPE_F16,
         /*.abort_callback              =*/ nullptr,
         /*.abort_callback_data         =*/ nullptr,
+        /*.kv_pool_size                =*/ 0,
         /*.embeddings                  =*/ false,
         /*.offload_kqv                 =*/ true,
         /*.no_perf                     =*/ true,
