@@ -12,6 +12,14 @@ void llama_model_zaya::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_SSM_CONV_KERNEL, hparams.ssm_d_conv);
     ml.get_key(LLM_KV_EXPERT_FEED_FORWARD_LENGTH, hparams.n_ff_exp, false);
 
+    // CCA conv chain is a 2-tap depthwise conv followed by a 2-tap grouped
+    // conv (ZAYA1 config: cca_time0 = cca_time1 = 2; reference engine keeps a
+    // 2-row conv state per channel). The graph below is built around that:
+    // [2 + n_seq_tokens] rows -> ssm_conv -> [1 + n_seq_tokens] -> grouped
+    // conv -> [n_seq_tokens]. Any other kernel width desynchronizes the
+    // stream (T-4 outputs for kernel 4) and aborts in ggml_im2col.
+    GGML_ASSERT(hparams.ssm_d_conv == 2);
+
     const uint32_t n_qk = (hparams.n_head() + hparams.n_head_kv()) * hparams.n_embd_head_k();
     hparams.ssm_d_inner = 2*n_qk + hparams.n_embd; // CCA conv state + delayed value stream state
     hparams.ssm_d_state = 1;
