@@ -55,6 +55,8 @@ std::unique_ptr<llama_kv_paged_scorer_i> llama_kv_paged_scorer_create(
     const char * drafter_model_path,
     int          n_gpu_layers) {
 
+    (void) n_gpu_layers; // unused until drafter scorer is implemented
+
     if (drafter_model_path && strlen(drafter_model_path) > 0) {
         LLAMA_LOG_INFO("%s: drafter model scorer requested but not yet implemented, "
                        "falling back to heuristic scorer\n", __func__);
