@@ -403,6 +403,10 @@ void llama_model_saver::add_tensors_from_model() {
     add_tensor(model->cls_out);
     add_tensor(model->cls_out_b);
     add_tensor(model->cls_norm);
+    add_tensor(model->zaya_res_scale_hs);
+    add_tensor(model->zaya_res_scale_hs_b);
+    add_tensor(model->zaya_res_scale_res);
+    add_tensor(model->zaya_res_scale_res_b);
 
     for (const struct llama_layer & layer : model->layers) {
         for (size_t i = 0; i < sizeof(layer)/sizeof(struct ggml_tensor *); ++i) {

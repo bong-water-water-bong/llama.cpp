@@ -224,7 +224,10 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
     ms.add_kv(LLM_KV_XIELU_BETA,                1.0f);
     ms.add_kv(LLM_KV_XIELU_EPS,                 1.0e-7f);
     ms.add_kv(LLM_KV_SSM_INNER_SIZE,            arch == LLM_ARCH_QWEN3NEXT || arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE ? 256 : 2*n_embd);
-    ms.add_kv(LLM_KV_SSM_CONV_KERNEL,           uint32_t(4));
+    // ZAYA CCA conv is 2-tap (cca_time0=cca_time1=2, matches the reference engine);
+    // other SSM archs use a 4-tap conv1d. Writing 4 for zaya desynchronizes the
+    // conv chain (T+2 rows -> T-1 -> T-4) and aborts in ggml_im2col.
+    ms.add_kv(LLM_KV_SSM_CONV_KERNEL, arch == LLM_ARCH_ZAYA ? uint32_t(2) : uint32_t(4));
     ms.add_kv(LLM_KV_SSM_STATE_SIZE,            uint32_t(128));
     ms.add_kv(LLM_KV_SSM_TIME_STEP_RANK,        n_head);
     ms.add_kv(LLM_KV_SSM_GROUP_COUNT,           arch == LLM_ARCH_PLAMO2 ? 0 : uint32_t(2));
@@ -360,6 +363,7 @@ static bool moe_mandatory(const llm_arch arch) {
         case LLM_ARCH_STEP35:
         case LLM_ARCH_MISTRAL4:
         case LLM_ARCH_MELLUM:
+        case LLM_ARCH_ZAYA: // CCA attention alternates with MoE — every layer pair needs expert tensors
             return true;
         default:
             return false;
@@ -410,9 +414,6 @@ static bool arch_supported(const llm_arch arch) {
     if (arch == LLM_ARCH_PLM) {
         return false; // TODO tensor shapes
     }
-    if (arch == LLM_ARCH_ZAYA) {
-        return false; // FIXME CCA conv graph produces invalid shapes.
-    }
     if (arch == LLM_ARCH_DEEPSEEK2OCR) {
         return false;
     }
@@ -460,9 +461,6 @@ static int save_models(const llm_arch target_arch, const size_t seed, const ggml
         }
         if (arch == LLM_ARCH_EAGLE3 || arch == LLM_ARCH_DFLASH) {
             continue;
-        }
-        if (arch == LLM_ARCH_ZAYA) {
-            continue; // FIXME: CCA conv graph produces invalid shapes (ssm_conv + conv_1d_grouped) for all batch sizes
         }
         for (bool moe : {false, true}) {
             if (moe && !moe_implemented(arch)) {
@@ -569,9 +567,6 @@ static int test_backends(const llm_arch target_arch, const size_t seed, const gg
         }
         if (arch == LLM_ARCH_EAGLE3 || arch == LLM_ARCH_DFLASH) {
             continue;
-        }
-        if (arch == LLM_ARCH_ZAYA) {
-            continue; // FIXME: CCA conv graph produces invalid shapes (ssm_conv + conv_1d_grouped) for all batch sizes
         }
 
         const bool encode = arch == LLM_ARCH_T5 || arch == LLM_ARCH_DREAM || arch == LLM_ARCH_LLADA || arch == LLM_ARCH_LLADA_MOE || arch == LLM_ARCH_RND1;

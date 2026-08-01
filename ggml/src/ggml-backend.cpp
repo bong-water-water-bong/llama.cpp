@@ -1745,6 +1745,15 @@ ggml_backend_sched_t ggml_backend_sched_new(
 
     struct ggml_backend_sched * sched = (ggml_backend_sched *) calloc(1, sizeof(struct ggml_backend_sched));
 
+    // The struct contains a std::mutex; calloc zero-initialization is NOT a
+    // valid mutex state. On Linux/glibc a zeroed pthread mutex happens to be
+    // equivalent to PTHREAD_MUTEX_INITIALIZER, but on macOS libc++ the mutex
+    // carries a signature field set by its constructor — locking the
+    // calloc'd one fails with EINVAL ("mutex lock failed"), which broke
+    // every llama_context init on macOS. Construct it in place; the
+    // destructor runs in ggml_backend_sched_free.
+    new (&sched->mtx) std::mutex;
+
     const char * GGML_SCHED_DEBUG = getenv("GGML_SCHED_DEBUG");
     sched->debug = GGML_SCHED_DEBUG ? atoi(GGML_SCHED_DEBUG) : 0;
 
@@ -1823,6 +1832,8 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
     free(sched->context_buffer);
     free(sched->graph.nodes);
     free(sched->graph.leafs);
+    // match the in-place construction in ggml_backend_sched_new
+    sched->mtx.~mutex();
     free(sched);
 }
 
