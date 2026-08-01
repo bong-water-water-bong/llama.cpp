@@ -2771,6 +2771,7 @@ extern "C" {
     // dump the graph into a file using the dot format
     GGML_API void ggml_graph_dump_dot(const struct ggml_cgraph * gb, const struct ggml_cgraph * cgraph, const char * filename);
 GGML_API void ggml_graph_dump_json(const struct ggml_cgraph * gf, const char * filename);
+GGML_API void ggml_graph_dump_txt(const struct ggml_cgraph * gf, const char * filename);
 
     // TODO these functions were sandwiched in the old optimization interface, is there a better place for them?
     typedef void (*ggml_log_callback)(enum ggml_log_level level, const char * text, void * user_data);
