@@ -1,5 +1,7 @@
 #include "models.h"
 
+#include <inttypes.h>
+
 #include "ggml.h"
 #include "llama-memory-recurrent.h"
 
@@ -372,7 +374,7 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
 
             // DEBUG: dump first layer attention output for comparison
             if (il == 0 && getenv("ZAYA_DEBUG")) {
-                fprintf(stderr, "ZAYA_DEBUG L0 attn_out ne[0]=%ld ne[1]=%ld\n", cur->ne[0], cur->ne[1]);
+                fprintf(stderr, "ZAYA_DEBUG L0 attn_out ne[0]=%" PRId64 " ne[1]=%" PRId64 "\n", cur->ne[0], cur->ne[1]);
             }
 
         } else {
