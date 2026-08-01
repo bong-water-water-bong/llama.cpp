@@ -5,6 +5,8 @@
 
 #include "llama-onnx.h"
 
+#ifdef LLAMA_ONNX
+
 #include <algorithm>
 #include <cstring>
 #include <mutex>
