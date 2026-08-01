@@ -302,3 +302,5 @@ const char * llama::onnx_provider_name(onnx_provider provider) {
         default:                  return "UNKNOWN";
     }
 }
+
+#endif // LLAMA_ONNX
