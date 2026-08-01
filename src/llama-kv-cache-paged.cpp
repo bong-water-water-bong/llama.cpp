@@ -501,9 +501,8 @@ void llama_kv_cache_paged::repool_simple() {
         if (chunk_written_[c]) want[c] = true;
     }
 
-    uint32_t pinned = 0, n_written = 0;
+    uint32_t pinned = 0;
     for (uint32_t c = 0; c < n_chunks_; ++c) {
-        if (chunk_written_[c]) n_written++;
         if (want[c]) pinned++;
     }
 
