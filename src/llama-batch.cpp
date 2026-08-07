@@ -49,7 +49,6 @@ bool llama_batch_allocr::init(
     if (batch.token) {
         for (int32_t i = 0; i < batch.n_tokens; ++i) {
             if (batch.token[i] < 0 || (uint32_t) batch.token[i] >= vocab.n_tokens()) {
-                LLAMA_LOG_ERROR("%s: invalid token[%d] = %d\n", __func__, i, batch.token[i]);
                 return false;
             }
         }
@@ -59,7 +58,6 @@ bool llama_batch_allocr::init(
         for (int32_t i = 0; i < batch.n_tokens; ++i) {
             for (int32_t s = 0; s < batch.n_seq_id[i]; ++s) {
                 if (batch.seq_id && (batch.seq_id[i][s] < 0 || batch.seq_id[i][s] >= (llama_seq_id) n_seq_max)) {
-                    LLAMA_LOG_ERROR("%s: invalid seq_id[%d][%d] = %d >= %d\n", __func__, i, s, batch.seq_id[i][s], (llama_seq_id) n_seq_max);
                     return false;
                 }
             }
@@ -270,7 +268,7 @@ bool llama_batch_allocr::init(
                             " for M-RoPE, it is required that the position satisfies: X < Y\n",
                             __func__, s, s, p0, s, seq_pos_min(s));
 
-                    return false;
+                    return false;  // INIT-FAIL@274
                 }
             } else {
                 // embedding inputs can have overlapping positions
@@ -282,7 +280,7 @@ bool llama_batch_allocr::init(
                             " for M-RoPE, it is required that the position satisfies: X <= Y\n",
                             __func__, s, s, p0, s, seq_pos_min(s));
 
-                    return false;
+                    return false;  // INIT-FAIL@286
                 }
             }
         }
@@ -309,17 +307,16 @@ bool llama_batch_allocr::init(
                             " it is required that the sequence positions remain consecutive: Y = X + 1\n",
                             __func__, s, s, p0, s, seq_pos_min(s));
 
-                    return false;
+                    return false;  // INIT-FAIL@313
                 }
             }
 
             if (seq_pos_max(s) - seq_pos_min(s) + 1 > (int) seq_pos[s].size()) {
                 LLAMA_LOG_ERROR("%s: sequence %d positions are not continuous\n", __func__, s);
-                return false;
+                return false;  // INIT-FAIL@319
             }
         }
     }
-
     if (memory) {
         for (uint32_t s0 = 0; s0 < n_seq_max; ++s0) {
             for (uint32_t s1 = 0; s1 < n_seq_max; ++s1) {
@@ -327,7 +324,7 @@ bool llama_batch_allocr::init(
                     if (memory->seq_pos_min(s0) != memory->seq_pos_min(s1) ||
                         memory->seq_pos_max(s0) != memory->seq_pos_max(s1)) {
                         LLAMA_LOG_ERROR("%s: sequence %d is coupled to %d in the input batch, but have divereged\n", __func__, s0, s1);
-                        return false;
+                        return false;  // INIT-FAIL@331
                     }
                 }
             }
@@ -372,12 +369,12 @@ bool llama_batch_allocr::init(
 
                 if (cur_seq_set[seq_id].none()) {
                     LLAMA_LOG_ERROR("%s: sequence %d belongs to incompatible sequence sets (not allowed)\n", __func__, seq_id);
-                    return false;
+                    return false;  // INIT-FAIL@376
                 }
 
                 if (pos < cur_seq_pos[seq_id]) {
                     LLAMA_LOG_ERROR("%s: sequence %d positions are decreasing (not allowed)\n", __func__, seq_id);
-                    return false;
+                    return false;  // INIT-FAIL@381
                 }
 
                 cur_seq_pos[seq_id] = pos;
@@ -388,6 +385,9 @@ bool llama_batch_allocr::init(
     split_reset();
 
     return true;
+    } catch (const std::exception & e) {
+        return false;
+    }
 }
 
 llama_ubatch llama_batch_allocr::ubatch_reserve(uint32_t n_seq_tokens, uint32_t n_seqs) {

@@ -941,6 +941,10 @@ const char * llm_arch_name(llm_arch arch) {
 // that is structurally identical to a supported architecture.
 static const std::map<std::string, llm_arch> LLM_ARCH_ALIASES = {
     { "unite_qwen2_vl", LLM_ARCH_QWEN2VL },
+    // 1bit Zamba2 GGUFs use the mamba2 tensor naming; this fork predates the
+    // zamba2 arch, so treat it as mamba2 for quantization (dtype conversion
+    // only — the 1bit loader re-reads the arch from the GGUF itself).
+    { "zamba2", LLM_ARCH_MAMBA2 },
 };
 
 llm_arch llm_arch_from_string(const std::string & name) {

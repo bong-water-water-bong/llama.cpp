@@ -409,7 +409,19 @@ namespace GGUFMeta {
         const struct llama_model_kv_override * override =
             it != kv_overrides.end() ? &it->second : nullptr;
 
-        const bool found = GGUFMeta::GKV<T>::set(metadata, key, result, override);
+        bool found = GGUFMeta::GKV<T>::set(metadata, key, result, override);
+
+        // 1bit Zamba2 GGUFs store zamba2.* kvs; when the arch is aliased
+        // (zamba2 -> mamba2) the prefixed lookups miss. Fall back to the
+        // file's own arch prefix before failing.
+        // 1bit Zamba2 alias (zamba2 -> mamba2): kv lookups use the aliased
+        // arch prefix; fall back to the file's own arch name.
+        if (!found && key.rfind("mamba2.", 0) == 0 && arch_name != "mamba2") {
+            std::string alt = arch_name + "." + key.substr(7);  // strip "mamba2." prefix
+            fprintf(stderr, "[kvfb] fallback %s -> %s\n", key.c_str(), alt.c_str());
+            found = GGUFMeta::GKV<T>::set(metadata, alt, result, override);
+            fprintf(stderr, "[kvfb] found=%d\n", (int)found);
+        }
 
         if (required && !found) {
             throw std::runtime_error(format("key not found in model: %s", key.c_str()));
@@ -487,9 +499,13 @@ namespace GGUFMeta {
     }
 
     bool llama_model_loader::get_key_or_arr(enum llm_kv kid, uint32_t & result, bool required) {
-        const std::string key = llm_kv(kid);
+        std::string key = llm_kv(kid);
 
-        const int id = gguf_find_key(metadata, key.c_str());
+        int id = gguf_find_key(metadata, key.c_str());
+        if (id < 0 && key.rfind("mamba2.", 0) == 0 && arch_name != "mamba2") {
+            key = arch_name + "." + key.substr(7);
+            id = gguf_find_key(metadata, key.c_str());
+        }
 
         if (id < 0) {
             if (required) {
