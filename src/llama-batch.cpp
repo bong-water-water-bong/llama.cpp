@@ -385,9 +385,6 @@ bool llama_batch_allocr::init(
     split_reset();
 
     return true;
-    } catch (const std::exception & e) {
-        return false;
-    }
 }
 
 llama_ubatch llama_batch_allocr::ubatch_reserve(uint32_t n_seq_tokens, uint32_t n_seqs) {
