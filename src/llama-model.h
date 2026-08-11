@@ -615,6 +615,10 @@ struct llama_model {
     struct ggml_tensor * zaya_res_scale_res   = nullptr;
     struct ggml_tensor * zaya_res_scale_res_b = nullptr;
 
+    // Zaya 8B-era model input scaling (applied to embeddings: (h + bias) * scale)
+    struct ggml_tensor * zaya_input_scale   = nullptr;
+    struct ggml_tensor * zaya_input_scale_b = nullptr;
+
     // classifier
     struct ggml_tensor * cls       = nullptr;
     struct ggml_tensor * cls_b     = nullptr;

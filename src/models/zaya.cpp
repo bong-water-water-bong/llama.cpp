@@ -47,9 +47,17 @@ void llama_model_zaya::load_arch_tensors(llama_model_loader & ml) {
     zaya_res_scale_res   = create_tensor(tn(LLM_TENSOR_RES_SCALE_RES_FINAL,   "weight"), {n_embd}, TENSOR_NOT_REQUIRED);
     zaya_res_scale_res_b = create_tensor(tn(LLM_TENSOR_RES_SCALE_RES_FINAL,   "bias"),   {n_embd}, TENSOR_NOT_REQUIRED);
 
+    // 8B-era model-level input scale: (embeds + bias) * scale, applied before the layer loop
+    zaya_input_scale_b = create_tensor(tn(LLM_TENSOR_ZAYA_INPUT_SCALE, "bias"),   {n_embd}, TENSOR_NOT_REQUIRED);
+    zaya_input_scale   = create_tensor(tn(LLM_TENSOR_ZAYA_INPUT_SCALE, "weight"), {n_embd}, TENSOR_NOT_REQUIRED);
+
     const int64_t n_embd_head = hparams.n_embd_head_k();
     const int64_t d_conv      = hparams.ssm_d_conv;
     const int64_t n_ff_exp    = hparams.n_ff_exp;
+
+    // 8B-era hybrid: every layer carries BOTH attention and MoE tensors
+    const bool hybrid = ml.get_tensor_meta(tn(LLM_TENSOR_ATTN_Q, "weight", 0).str().c_str()) != nullptr
+                     && ml.get_tensor_meta(tn(LLM_TENSOR_FFN_GATE_INP, "weight", 0).str().c_str()) != nullptr;
 
     for (int i = 0; i < n_layer; ++i) {
         auto & layer = layers[i];
@@ -65,6 +73,9 @@ void llama_model_zaya::load_arch_tensors(llama_model_loader & ml) {
 
         layer.attn_norm = create_tensor(tn(LLM_TENSOR_ATTN_NORM, "weight", i), {n_embd}, 0);
 
+        // 8B-era: post_attention_layernorm (hybrid layers have attn + MoE, two norms)
+        layer.attn_post_norm = create_tensor(tn(LLM_TENSOR_ATTN_POST_NORM, "weight", i), {n_embd}, TENSOR_NOT_REQUIRED);
+
         // All layers have residual scaling params
         layer.res_scale_hs   = create_tensor(tn(LLM_TENSOR_RES_SCALE_HS, "weight", i), {n_embd}, 0);
         layer.res_scale_hs_b = create_tensor(tn(LLM_TENSOR_RES_SCALE_HS, "bias", i), {n_embd}, TENSOR_NOT_REQUIRED);
@@ -75,8 +86,8 @@ void llama_model_zaya::load_arch_tensors(llama_model_loader & ml) {
         layer.res_scale_res_mlp  = create_tensor(tn(LLM_TENSOR_RES_SCALE_RES_MLP, "weight", i), {n_embd}, TENSOR_NOT_REQUIRED);
         layer.res_scale_res_mlp_b = create_tensor(tn(LLM_TENSOR_RES_SCALE_RES_MLP, "bias", i), {n_embd}, TENSOR_NOT_REQUIRED);
 
-        // Even layers (0, 2, 4, ...): CCA Attention (ZayaDecoderATTLayer)
-        if (i % 2 == 0) {
+        // Even layers (0, 2, 4, ...): CCA Attention (ZayaDecoderATTLayer); hybrid = every layer
+        if (i % 2 == 0 || hybrid) {
             layer.wq = create_tensor(tn(LLM_TENSOR_ATTN_Q, "weight", i), {n_embd, n_embd_q}, 0);
             layer.wk = create_tensor(tn(LLM_TENSOR_ATTN_K, "weight", i), {n_embd, n_embd_k}, 0);
 
@@ -97,8 +108,8 @@ void llama_model_zaya::load_arch_tensors(llama_model_loader & ml) {
             layer.cca_k_scale = create_tensor(tn(LLM_TENSOR_CCA_K_SCALE, "weight", i), {n_head_kv}, 0);
         }
 
-        // Odd layers (1, 3, 5, ...): MoE (ZayaDecoderMLPLayer)
-        if (i % 2 == 1) {
+        // Odd layers (1, 3, 5, ...): MoE (ZayaDecoderMLPLayer); hybrid = every layer
+        if (i % 2 == 1 || hybrid) {
             layer.zaya_router_down   = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP, "weight", i),
                 {n_embd, n_ff_exp}, 0);
             layer.zaya_router_down_b = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP, "bias", i),
@@ -119,6 +130,8 @@ void llama_model_zaya::load_arch_tensors(llama_model_loader & ml) {
                 {n_expert + 1}, TENSOR_NOT_REQUIRED);
             layer.zaya_router_eda_scale = create_tensor(tn(LLM_TENSOR_ZAYA_ROUTER_EDA_SCALE, "weight", i),
                 {n_ff_exp}, TENSOR_NOT_REQUIRED);
+
+
 
             create_tensor_gate_up_exps(layer, i, n_embd, n_ff, n_expert, 0);
             layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i),
@@ -149,6 +162,13 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
 
     inpL = build_inp_embd(model.tok_embd);
 
+    // 8B-era: scale the embedding output at model input: h = (h + bias) * scale (fp32 stream)
+    if (model.zaya_input_scale != nullptr) {
+        inpL = ggml_add(ctx0, ggml_cast(ctx0, inpL, GGML_TYPE_F32), ggml_cast(ctx0, model.zaya_input_scale_b, GGML_TYPE_F32));
+        inpL = ggml_mul(ctx0, inpL, ggml_reshape_2d(ctx0, model.zaya_input_scale, n_embd, 1));
+        cb(inpL, "input_scale", -1);
+    }
+
     auto * inp = build_inp_mem_hybrid();
     auto * inp_recr = inp->get_recr();
 
@@ -162,12 +182,17 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
             return x;
         }
         if (bias != nullptr) {
+            if (bias->type != x->type) bias = ggml_cast(ctx0, bias, x->type);
             x = ggml_add(ctx0, x, bias);
         }
+        if (scale->type != x->type) scale = ggml_cast(ctx0, scale, x->type);
         x = ggml_mul(ctx0, x, scale);
         cb(x, name, il);
         return x;
     };
+
+    // 8B-era: every layer is hybrid (attn + MoE); detected by presence of post_attention_norm
+    const bool hybrid = model.layers[0].attn_post_norm != nullptr;
 
     for (int il = 0; il < n_layer; ++il) {
         const auto & layer = model.layers[il];
@@ -190,7 +215,14 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
         //   hidden_states = norm(residual)
         //   # then sublayer...
 
-        ggml_tensor * hs, * hb, * rs, * rb;
+        ggml_tensor * hs = nullptr, * hb = nullptr, * rs = nullptr, * rb = nullptr;
+        ggml_tensor * merged = nullptr;
+        if (hybrid) {
+            // 8B hybrid layer (attn + MoE every layer):
+            //   input_layernorm → attn → post_attention_residual_scale → post_attention_layernorm → mlp → post_mlp_residual_scale
+            cur = build_norm(inpL, layer.attn_norm, nullptr, LLM_NORM_RMS, il);
+            cb(cur, "input_norm", il);
+        } else {
         if (il % 2 == 0) {
             // Even = ATT layer → use ATT's res_scale (res_scale_hs, res_scale_res)
             hs = layer.res_scale_hs;
@@ -220,8 +252,9 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
         // ── Pre-norm ──
         cur = build_norm(residual, layer.attn_norm, nullptr, LLM_NORM_RMS, il);
         cb(cur, "input_norm", il);
+        }
 
-        if (il % 2 == 0) {
+        if (il % 2 == 0 || hybrid) {
             // ===== CCA Attention (ZayaDecoderATTLayer) =====
             const int64_t conv_state_size = 2*n_qk;
             const int64_t cca_state_size  = conv_state_size + n_embd;
@@ -252,7 +285,8 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
             ggml_tensor * cur_state_src = ggml_cont(ctx0, cur);
             ggml_tensor * cur_seq = ggml_reshape_3d(ctx0, cur_state_src, n_embd, n_seq_tokens, n_seqs);
 
-            ggml_tensor * hs_d = ggml_reshape_3d(ctx0, ggml_cont(ctx0, prev_hs), n_embd, 1, n_seqs);
+            ggml_tensor * hs_d = ggml_reshape_3d(ctx0, ggml_cont(ctx0,
+                    prev_hs->type != cur->type ? ggml_cast(ctx0, prev_hs, cur->type) : prev_hs), n_embd, 1, n_seqs);
             if (n_seq_tokens > 1) {
                 ggml_tensor * cur_shift = ggml_view_3d(ctx0, cur_seq, n_embd, n_seq_tokens - 1, n_seqs,
                         cur_seq->nb[1],
@@ -266,7 +300,8 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
             // V = concat(val_proj1(x), val_proj2(x delayed))
             ggml_tensor * V1 = ggml_mul_mat(ctx0, layer.cca_val_proj1, cur);
             cb(V1, "V1", il);
-            ggml_tensor * V2 = ggml_mul_mat(ctx0, layer.cca_val_proj2, hs_d);
+            ggml_tensor * V2 = ggml_mul_mat(ctx0, layer.cca_val_proj2,
+                hs_d->type != cur->type ? ggml_cast(ctx0, hs_d, cur->type) : hs_d);
             cb(V2, "V2", il);
             ggml_tensor * Vcur = ggml_concat(ctx0, V1, V2, 0);
             cb(Vcur, "Vcur", il);
@@ -325,7 +360,8 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
             ggml_tensor * QK = ggml_ssm_conv(ctx0, conv_input, conv_dw);
             QK = ggml_cont(ctx0, ggml_permute(ctx0, QK, 1, 0, 2, 3));
             if (layer.cca_conv_dw_b) {
-                QK = ggml_add(ctx0, QK, ggml_reshape_3d(ctx0, layer.cca_conv_dw_b, 1, n_qk, 1));
+                ggml_tensor * b = layer.cca_conv_dw_b->type != QK->type ? ggml_cast(ctx0, layer.cca_conv_dw_b, QK->type) : layer.cca_conv_dw_b;
+                QK = ggml_add(ctx0, QK, ggml_reshape_3d(ctx0, b, 1, n_qk, 1));
             }
             cb(QK, "QK_dw", il);
 
@@ -334,7 +370,10 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
                 conv_grp = ggml_cont(ctx0, ggml_cast(ctx0, conv_grp, GGML_TYPE_F32));
             }
             QK = ggml_conv_1d_grouped(ctx0, conv_grp, QK, 1, 0, 1, n_groups);
-            QK = ggml_add(ctx0, QK, ggml_reshape_3d(ctx0, layer.cca_conv_grp_b, 1, n_qk, 1));
+            {
+                ggml_tensor * b = layer.cca_conv_grp_b->type != QK->type ? ggml_cast(ctx0, layer.cca_conv_grp_b, QK->type) : layer.cca_conv_grp_b;
+                QK = ggml_add(ctx0, QK, ggml_reshape_3d(ctx0, b, 1, n_qk, 1));
+            }
             cb(QK, "QK_grp", il);
 
             QK = ggml_cont(ctx0, ggml_permute(ctx0, QK, 1, 0, 2, 3));
@@ -351,7 +390,9 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
 
             Qcur = ggml_scale(ctx0, ggml_l2_norm(ctx0, Qcur, 1e-12f), sqrtf((float) n_embd_head));
             Kcur = ggml_scale(ctx0, ggml_l2_norm(ctx0, Kcur, 1e-12f), sqrtf((float) n_embd_head));
-            Kcur = ggml_mul(ctx0, Kcur, ggml_reshape_3d(ctx0, layer.cca_k_scale, 1, n_head_kv, 1));
+            Kcur = ggml_mul(ctx0, Kcur, ggml_reshape_3d(ctx0,
+                layer.cca_k_scale->type != Kcur->type ? ggml_cast(ctx0, layer.cca_k_scale, Kcur->type) : layer.cca_k_scale,
+                1, n_head_kv, 1));
             cb(Qcur, "Qcur_pre_rope", il);
             cb(Kcur, "Kcur_pre_rope", il);
 
@@ -372,12 +413,18 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
                 1.0f / sqrtf((float) n_embd_head), il);
             cb(cur, "attn_out", il);
 
-            // DEBUG: dump first layer attention output for comparison
-            if (il == 0 && getenv("ZAYA_DEBUG")) {
-                fprintf(stderr, "ZAYA_DEBUG L0 attn_out ne[0]=%" PRId64 " ne[1]=%" PRId64 "\n", cur->ne[0], cur->ne[1]);
+            // 8B hybrid: post_attention_residual_scale(attn_out, layer_input) → post_attention_layernorm
+            if (hybrid) {
+                merged = ggml_add(ctx0,
+                    apply_res_scale(ggml_cast(ctx0, cur, GGML_TYPE_F32), layer.res_scale_hs, layer.res_scale_hs_b, "res_scale_hs", il),
+                    apply_res_scale(inpL, layer.res_scale_res, layer.res_scale_res_b, "res_scale_res", il));
+                cb(merged, "merged", il);
+                cur = build_norm(merged, layer.attn_post_norm, nullptr, LLM_NORM_RMS, il);
+                cb(cur, "post_attn_norm", il);
             }
 
-        } else {
+        }
+        if (il % 2 == 1 || hybrid) {
             // ===== MoE (ZayaDecoderMLPLayer) =====
             // Build Zaya router network matching Python ZayaRouter:
             //   hs = down_proj(hidden_states)
@@ -387,13 +434,20 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
             //   probs = softmax(logits) + balancing_biases
             //   top-1 expert selection
             //   Apply experts via FusedMoE
-
             ggml_tensor * router_h = ggml_mul_mat(ctx0, layer.zaya_router_down, cur);
-            router_h = ggml_add(ctx0, router_h, layer.zaya_router_down_b);
+            if (layer.zaya_router_down_b != nullptr) {
+                router_h = ggml_add(ctx0, router_h,
+                    layer.zaya_router_down_b->type != router_h->type
+                        ? ggml_cast(ctx0, layer.zaya_router_down_b, router_h->type)
+                        : layer.zaya_router_down_b);
+            }
             cb(router_h, "router_down", il);
 
             if (il != 0 && prev_router != nullptr && layer.zaya_router_eda_scale != nullptr) {
-                router_h = ggml_add(ctx0, router_h, ggml_mul(ctx0, prev_router, layer.zaya_router_eda_scale));
+                ggml_tensor * eda = layer.zaya_router_eda_scale->type != prev_router->type
+                    ? ggml_cast(ctx0, layer.zaya_router_eda_scale, prev_router->type)
+                    : layer.zaya_router_eda_scale;
+                router_h = ggml_add(ctx0, router_h, ggml_mul(ctx0, prev_router, eda));
                 cb(router_h, "router_eda", il);
             }
             prev_router = router_h;
@@ -402,12 +456,22 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
             cb(router_h, "router_norm", il);
 
             router_h = ggml_mul_mat(ctx0, layer.zaya_router_mlp0, router_h);
-            router_h = ggml_add(ctx0, router_h, layer.zaya_router_mlp0_b);
+            if (layer.zaya_router_mlp0_b != nullptr) {
+                router_h = ggml_add(ctx0, router_h,
+                    layer.zaya_router_mlp0_b->type != router_h->type
+                        ? ggml_cast(ctx0, layer.zaya_router_mlp0_b, router_h->type)
+                        : layer.zaya_router_mlp0_b);
+            }
             router_h = ggml_gelu(ctx0, router_h);
             cb(router_h, "router_mlp0", il);
 
             router_h = ggml_mul_mat(ctx0, layer.zaya_router_mlp2, router_h);
-            router_h = ggml_add(ctx0, router_h, layer.zaya_router_mlp2_b);
+            if (layer.zaya_router_mlp2_b != nullptr) {
+                router_h = ggml_add(ctx0, router_h,
+                    layer.zaya_router_mlp2_b->type != router_h->type
+                        ? ggml_cast(ctx0, layer.zaya_router_mlp2_b, router_h->type)
+                        : layer.zaya_router_mlp2_b);
+            }
             router_h = ggml_gelu(ctx0, router_h);
             cb(router_h, "router_mlp2", il);
 
@@ -426,7 +490,10 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
             // but build_moe_ffn applies them to LOGITS. This is a known difference.
             ggml_tensor * expert_biases = nullptr;
             if (layer.zaya_router_biases != nullptr) {
-                expert_biases = ggml_view_1d(ctx0, layer.zaya_router_biases, n_expert, 0);
+                ggml_tensor * biases = layer.zaya_router_biases->type != GGML_TYPE_F32
+                    ? ggml_cast(ctx0, layer.zaya_router_biases, GGML_TYPE_F32)
+                    : layer.zaya_router_biases;
+                expert_biases = ggml_view_1d(ctx0, biases, n_expert, 0);
             }
 
             cur = build_moe_ffn(cur,
@@ -445,13 +512,17 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
                 /* probs_in */        gate_probs,
                 /* gate_up_exps */    layer.ffn_gate_up_exps);
             cb(cur, "moe_out", il);
+
+            // 8B hybrid: post_mlp_residual_scale(moe_out, merged) = (moe_out + hb)*hs + (merged + rb)*rs
+            if (hybrid) {
+                ggml_tensor * moe_out = cur;
+                cur = apply_res_scale(ggml_cast(ctx0, moe_out, GGML_TYPE_F32), layer.res_scale_hs_mlp, layer.res_scale_hs_mlp_b, "res_scale_hs_mlp", il);
+                cur = ggml_add(ctx0, cur,
+                    apply_res_scale(merged, layer.res_scale_res_mlp, layer.res_scale_res_mlp_b, "res_scale_res_mlp", il));
+                cb(cur, "out", il);
+            }
         }
 
-        if (getenv("ZAYA_DUMP")) {
-            char fname[64]; snprintf(fname, 64, "/tmp/zaya_gguf/layer_%d.bin", il);
-            FILE* fp = fopen(fname, "wb");
-            if (fp) { fclose(fp); }
-        }
         inpL = cur;
     }
 
