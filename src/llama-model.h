@@ -270,6 +270,7 @@ struct llama_layer {
     struct ggml_tensor * wv_enc    = nullptr;
     struct ggml_tensor * wo_enc    = nullptr;
     struct ggml_tensor * wqkv_gate = nullptr;
+    struct ggml_tensor * attn_gate  = nullptr; // instella gated MLA (gate_proj)
 
     // relative position bias
     struct ggml_tensor * attn_rel_b       = nullptr;

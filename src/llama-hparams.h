@@ -131,6 +131,10 @@ struct llama_hparams {
     uint32_t n_ctx_orig_yarn;
     float    rope_yarn_log_mul = 0.0f;
 
+    bool     instella_farskip = false;      // instella MoE dual-residual connectivity
+    uint32_t instella_farskip_start = 0;
+    uint32_t instella_farskip_end   = 10000;
+
     float    yarn_ext_factor  = -1.0f;
     float    yarn_attn_factor =  1.0f;
     float    yarn_beta_fast   = 32.0f;

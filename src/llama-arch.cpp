@@ -282,6 +282,9 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
     { LLM_KV_ROPE_SCALING_YARN_EXT_FACTOR,   "%s.rope.scaling.yarn_ext_factor"         },
     { LLM_KV_ROPE_SCALING_YARN_ATTN_FACTOR,  "%s.rope.scaling.yarn_attn_factor"        },
     { LLM_KV_ROPE_SCALING_YARN_BETA_FAST,    "%s.rope.scaling.yarn_beta_fast"          },
+    { LLM_KV_INSTELLA_FARSKIP,               "%s.instella_farskip"                     },
+    { LLM_KV_INSTELLA_FARSKIP_START,         "%s.instella_farskip_start"               },
+    { LLM_KV_INSTELLA_FARSKIP_END,           "%s.instella_farskip_end"                 },
     { LLM_KV_ROPE_SCALING_YARN_BETA_SLOW,    "%s.rope.scaling.yarn_beta_slow"          },
 
     { LLM_KV_SPLIT_NO,            "split.no"            },

@@ -208,6 +208,7 @@ class DeepseekModel(TextModel):
 @ModelBase.register(
     "DeepseekV2ForCausalLM",
     "DeepseekV3ForCausalLM",
+    "InstellaMoEForCausalLM",
     "DeepseekOCRForCausalLM",
     "UnlimitedOCRForCausalLM",
     "KimiVLForConditionalGeneration",
@@ -299,6 +300,12 @@ class DeepseekV2Model(TextModel):
             raise NotImplementedError(f"Deepseek pre-tokenizer {tokpre!r} is not supported yet!")
 
     def set_gguf_parameters(self):
+        # instella MoE: dual-residual FarSkip connectivity (trained-in, must be honored at inference)
+        if self.origin_hf_arch == "InstellaMoEForCausalLM" and self.hparams.get("farskip", False):
+            self.gguf_writer.add_key_value("deepseek2.instella_farskip", True, gguf.GGUFValueType.BOOL)
+            self.gguf_writer.add_key_value("deepseek2.instella_farskip_start", int(self.hparams.get("farskip_start_idx", 0)), gguf.GGUFValueType.UINT32)
+            self.gguf_writer.add_key_value("deepseek2.instella_farskip_end", int(self.hparams.get("farskip_end_idx", 10000)), gguf.GGUFValueType.UINT32)
+
         is_ocr = (self.model_arch == gguf.MODEL_ARCH.DEEPSEEK2OCR)
 
         if is_ocr:

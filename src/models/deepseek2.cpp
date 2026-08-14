@@ -43,6 +43,11 @@ void llama_model_deepseek2::load_arch_hparams(llama_model_loader & ml) {
 
     hparams.f_attn_temp_offset = 0.0f;
 
+    // Instella MoE dual-residual connectivity (FarSkip)
+    ml.get_key(LLM_KV_INSTELLA_FARSKIP, hparams.instella_farskip, false);
+    ml.get_key(LLM_KV_INSTELLA_FARSKIP_START, hparams.instella_farskip_start, false);
+    ml.get_key(LLM_KV_INSTELLA_FARSKIP_END,   hparams.instella_farskip_end,   false);
+
     switch (hparams.n_layer()) {
         case 27: type = LLM_TYPE_16B; break;
         case 47: type = LLM_TYPE_30B_A3B; break;
@@ -109,6 +114,7 @@ void llama_model_deepseek2::load_arch_tensors(llama_model_loader &) {
         }
 
         layer.wo = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight", i), {n_head * n_embd_head_v_mla, n_embd}, 0);
+        layer.attn_gate = create_tensor(tn(LLM_TENSOR_ATTN_GATE, "weight", i), {n_head * n_embd_head_v_mla, n_embd}, TENSOR_NOT_REQUIRED); // instella gated MLA
 
         layer.ffn_norm = create_tensor(tn(LLM_TENSOR_FFN_NORM, "weight", i), {n_embd}, 0);
 
@@ -191,12 +197,21 @@ llama_model_deepseek2::graph::graph(const llama_model & model, const llm_graph_p
 
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
+    // Instella FarSkip: attention reads the routed-free residual stream (inpL_alt),
+    // MLP reads the main stream (inpL). Same tensor until the first MoE layer.
+    ggml_tensor * inpL_alt = nullptr;
+
     for (int il = 0; il < n_layer; ++il) {
         ggml_tensor * inpSA = inpL;
+        if (hparams.instella_farskip && (uint32_t) il >= hparams.n_layer_dense_lead && (uint32_t) il <= hparams.instella_farskip_end && (uint32_t) il >= hparams.instella_farskip_start) {
+            if (inpL_alt == nullptr) inpL_alt = inpL;
+            inpSA = inpL_alt;
+        }
 
         // norm
-        cur = build_norm(inpL, model.layers[il].attn_norm, NULL, LLM_NORM_RMS, il);
+        cur = build_norm(inpSA, model.layers[il].attn_norm, NULL, LLM_NORM_RMS, il);
         cb(cur, "attn_norm", il);
+        ggml_tensor * gate_inp = cur; // instella gated MLA: gate_proj input is the normed attn input
 
         // self_attention
         if (is_ocr) {
@@ -324,8 +339,18 @@ llama_model_deepseek2::graph::graph(const llama_model & model, const llm_graph_p
 
                 // note: MLA with the absorption optimization converts into MQA (ie: GQA with 1 group)
                 cur = build_attn(inp_attn_k,
-                        model.layers[il].wo, NULL, model.layers[il].wo_s,
+                        nullptr, NULL, nullptr,
                         Qcur, Kcur, Vcur, nullptr, nullptr, model.layers[il].wv_b, kq_scale, il);
+                
+                // instella gated MLA: attn_out * sigmoid(gate_proj(pre_norm_input)) before o_proj
+                if (model.layers[il].attn_gate != nullptr) {
+                    ggml_tensor * gate = ggml_sigmoid(ctx0, build_lora_mm(model.layers[il].attn_gate, gate_inp, nullptr));
+                    cb(gate, "attn_gate", il);
+                    cur = ggml_mul(ctx0, cur, gate);
+                    cb(cur, "attn_out_gated", il);
+                }
+                cur = build_lora_mm(model.layers[il].wo, cur, model.layers[il].wo_s);
+                cb(cur, "attn_out", il);
             } else {
                 ggml_tensor * kv = ggml_mul_mat(ctx0, model.layers[il].wkv_b, kv_cmpr);
                 cb(kv, "kv", il);
@@ -368,11 +393,20 @@ llama_model_deepseek2::graph::graph(const llama_model & model, const llm_graph_p
         if (il == n_layer - 1 && inp_out_ids) {
             cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+            inpL  = ggml_get_rows(ctx0, inpL,  inp_out_ids);
         }
-        ggml_tensor * ffn_inp = ggml_add(ctx0, cur, inpSA);
+        ggml_tensor * ffn_inp = ggml_add(ctx0, cur, inpL);
         cb(ffn_inp, "ffn_inp", il);
 
-        cur = build_norm(ffn_inp, model.layers[il].ffn_norm, NULL, LLM_NORM_RMS, il);
+        // instella FarSkip: MLP consumes the outdated main stream (o_{k-1}) WITHOUT
+        // the current attention output; attention output only flows into the residuals.
+        // Applies to ALL in-range layers, including the dense lead (layer 0 is also
+        // farskip-flagged in the HF config: farskip_start_idx=0).
+        if (hparams.instella_farskip && (uint32_t) il <= hparams.instella_farskip_end && (uint32_t) il >= hparams.instella_farskip_start) {
+            cur = build_norm(inpL, model.layers[il].ffn_norm, NULL, LLM_NORM_RMS, il);
+        } else {
+            cur = build_norm(ffn_inp, model.layers[il].ffn_norm, NULL, LLM_NORM_RMS, il);
+        }
         cb(cur, "ffn_norm", il);
 
         if ((uint32_t) il < hparams.n_layer_dense_lead) {
@@ -400,20 +434,29 @@ llama_model_deepseek2::graph::graph(const llama_model & model, const llm_graph_p
             cb(moe_out, "ffn_moe_out", il);
 
             // FFN shared expert
-            {
-                ggml_tensor * ffn_shexp =
-                    build_ffn(cur,
-                        model.layers[il].ffn_up_shexp, NULL, NULL,
-                        model.layers[il].ffn_gate_shexp, NULL, NULL,
-                        model.layers[il].ffn_down_shexp, NULL, NULL,
-                        NULL, LLM_FFN_SILU, LLM_FFN_PAR, il);
-                cb(ffn_shexp, "ffn_shexp", il);
+            ggml_tensor * ffn_shexp =
+                build_ffn(cur,
+                    model.layers[il].ffn_up_shexp, NULL, NULL,
+                    model.layers[il].ffn_gate_shexp, NULL, NULL,
+                    model.layers[il].ffn_down_shexp, NULL, NULL,
+                    NULL, LLM_FFN_SILU, LLM_FFN_PAR, il);
+            cb(ffn_shexp, "ffn_shexp", il);
 
+            if (hparams.instella_farskip && (uint32_t) il <= hparams.instella_farskip_end && (uint32_t) il >= hparams.instella_farskip_start) {
+                // instella FarSkip: main' = main + attn + routed + shared
+                //                   alt' = main + attn + shared (routed-free)
+                ggml_tensor * alt = ggml_add(ctx0, ffn_inp, ffn_shexp);
+                inpL_alt = alt;
+                cur = ggml_add(ctx0, alt, moe_out);
+            } else {
                 cur = ggml_add(ctx0, moe_out, ffn_shexp);
-                cb(cur, "ffn_out", il);
             }
+            cb(cur, "ffn_out", il);
         }
-        cur = ggml_add(ctx0, cur, ffn_inp);
+        if (!hparams.instella_farskip || (uint32_t) il < hparams.n_layer_dense_lead || (uint32_t) il > hparams.instella_farskip_end || (uint32_t) il < hparams.instella_farskip_start) {
+            cur = ggml_add(ctx0, cur, ffn_inp);
+            inpL_alt = cur;
+        }
 
         cur = build_cvec(cur, il);
         cb(cur, "l_out", il);
