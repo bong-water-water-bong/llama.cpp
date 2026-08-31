@@ -18,6 +18,7 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -102,6 +103,13 @@ struct ggml_backend_hrx2_device_context {
     size_t q4nx_w_cap = 0;
     hrx_buffer_t q4nx_ids = nullptr;   // host-visible scratch for MUL_MAT_ID_Q4NX ids
     size_t q4nx_ids_cap = 0;
+    // Grown-out q4nx scratch buffers, freed only after a stream sync. The
+    // kernels reading q4nx_scl/q4nx_w/q4nx_ids are async on the stream; the
+    // allocator unmaps/recycles a released buffer immediately, so releasing on
+    // growth while the previous op's kernels are still in flight caused
+    // gfxhub TCP read faults (shader reads of unmapped GTT pages). Retire here
+    // and free in ggml_backend_hrx2_sync_streams, after every stream synced.
+    std::vector<hrx_buffer_t> q4nx_retired;
     std::vector<const ggml_backend_hrx2_kernel_route *> mul_mat_q4_k_routes;
     std::vector<const ggml_backend_hrx2_kernel_route *> mul_mat_q4_k_swiglu_routes;
     std::vector<const ggml_backend_hrx2_kernel_route *> mul_mat_id_q4_k_routes;
@@ -194,6 +202,8 @@ struct ggml_backend_hrx2_reg_context {
             if (device_context->q4nx_scl) hrx_buffer_release(device_context->q4nx_scl);
             if (device_context->q4nx_w)   hrx_buffer_release(device_context->q4nx_w);
             if (device_context->q4nx_ids) hrx_buffer_release(device_context->q4nx_ids);
+            for (hrx_buffer_t b : device_context->q4nx_retired) hrx_buffer_release(b);
+            device_context->q4nx_retired.clear();
             if (device_context->device) {
                 hrx_device_release(device_context->device);
             }
@@ -785,6 +795,11 @@ static bool ggml_backend_hrx2_sync_streams(ggml_backend_hrx2_device_context * de
             ggml_backend_hrx2_reset_staging_arena_locked(*arena);
         }
     }
+    // Every stream is quiescent now: safe to free grown-out q4nx scratch.
+    for (hrx_buffer_t b : device_context->q4nx_retired) {
+        hrx_buffer_release(b);
+    }
+    device_context->q4nx_retired.clear();
     return ok;
 }
 
@@ -8025,7 +8040,10 @@ static bool ggml_backend_hrx2_q4nx_scratch_grow(
         return true;
     }
     if (*out) {
-        hrx_buffer_release(*out);
+        // Do NOT release here: the previous op's kernels may still be reading
+        // this buffer (async on the stream, no per-op sync). Retire it and let
+        // ggml_backend_hrx2_sync_streams free it after all streams are synced.
+        device_context->q4nx_retired.push_back(*out);
         *out = nullptr;
     }
     hrx_allocator_t alloc = hrx_device_allocator(device_context->device);
@@ -10148,6 +10166,12 @@ static enum ggml_status ggml_backend_hrx2_graph_compute(ggml_backend_t backend, 
     context->q8_1_cached_src = nullptr;
     context->q8_1_cached_ref = {};
     ggml_backend_hrx2_active_graph_guard active_graph_guard(context);
+    // per-op timing (env HRX2_OPTIME): accumulate wall time per op type
+    // across all graphs in the process; print for the large graph only.
+    static std::map<int, double> optime_accum;
+    static std::map<int, int64_t> optime_count;
+    const bool optime_enabled = getenv("HRX2_OPTIME") != nullptr;
+    auto t0 = std::chrono::steady_clock::now();
     for (int i = 0; i < cgraph->n_nodes; ++i) {
         const ggml_tensor * node = cgraph->nodes[i];
         g_hrx2_active_graph_node = node;
@@ -10681,6 +10705,19 @@ static enum ggml_status ggml_backend_hrx2_graph_compute(ggml_backend_t backend, 
                 GGML_LOG_ERROR("HRX2: unsupported op %s\n", ggml_op_desc(node));
                 return GGML_STATUS_FAILED;
         }
+        if (optime_enabled) {
+            auto t1 = std::chrono::steady_clock::now();
+            optime_accum[(int) node->op] += std::chrono::duration<double, std::milli>(t1 - t0).count();
+            optime_count[(int) node->op] += 1;
+            t0 = t1;
+        }
+    }
+    if (optime_enabled && cgraph->n_nodes > 5) {
+        for (const auto & kv : optime_accum) {
+            fprintf(stderr, "HRX2_OPTIME: op=%-22s count=%-5lld total_ms=%8.2f avg_ms=%8.3f\n",
+                ggml_op_name((enum ggml_op) kv.first), (long long) optime_count[kv.first], kv.second,
+                kv.second / optime_count[kv.first]);
+        }
     }
     if (ggml_backend_hrx2_env_enabled("GGML_HRX2_ASYNC_GRAPH_COMPUTE")) {
         if (!GGML_HRX2_CHECK(hrx_stream_flush(context->stream))) {
@@ -10831,6 +10868,9 @@ static bool ggml_backend_hrx2_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_GLU:
             return ggml_backend_hrx2_supports_swiglu_route(ggml_backend_hrx2_get_device_context(dev), op);
         case GGML_OP_MUL_MAT:
+            // F32/Q4_K etc. MUL_MAT stays on CPU: the naive generic f32 mm
+            // kernel on HRX2 measures slower than the CPU AVX-512 path for
+            // the zaya attention shapes (9.87 vs 10.93 t/s decode).
             return false;
         case GGML_OP_MUL_MAT_ID:
             return ggml_backend_hrx2_supports_mul_mat_id_q4_k_route(ggml_backend_hrx2_get_device_context(dev), op) ||
