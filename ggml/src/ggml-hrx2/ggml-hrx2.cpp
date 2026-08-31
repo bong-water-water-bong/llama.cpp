@@ -98,10 +98,6 @@ struct ggml_backend_hrx2_device_context {
     // allocator and corrupted memory)
     hrx_buffer_t q4nx_scl = nullptr;
     size_t q4nx_scl_cap = 0;
-    hrx_buffer_t q4nx_zp = nullptr;
-    size_t q4nx_zp_cap = 0;
-    hrx_buffer_t q4nx_pck = nullptr;
-    size_t q4nx_pck_cap = 0;
     hrx_buffer_t q4nx_w = nullptr;
     size_t q4nx_w_cap = 0;
     hrx_buffer_t q4nx_ids = nullptr;   // host-visible scratch for MUL_MAT_ID_Q4NX ids
@@ -196,8 +192,6 @@ struct ggml_backend_hrx2_reg_context {
                 device_context->transfer_stream = nullptr;
             }
             if (device_context->q4nx_scl) hrx_buffer_release(device_context->q4nx_scl);
-            if (device_context->q4nx_zp)  hrx_buffer_release(device_context->q4nx_zp);
-            if (device_context->q4nx_pck) hrx_buffer_release(device_context->q4nx_pck);
             if (device_context->q4nx_w)   hrx_buffer_release(device_context->q4nx_w);
             if (device_context->device) {
                 hrx_device_release(device_context->device);
@@ -8120,35 +8114,24 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice(
         ggml_backend_hrx2_json_kv("tile_base", std::to_string(tile_base)) + "," +
         ggml_backend_hrx2_json_kv("n_tc", std::to_string(n_tc)));
 
-    // scratch: section views + dequant f32 output
-    const size_t scl_bytes = (size_t) n_tiles * 512;
-    const size_t pck_bytes = (size_t) n_tiles * 4096;
+    // scratch: one raw tile-major blob (tile t at byte t*5120) + dequant out
+    const size_t raw_bytes = (size_t) n_tiles * 5120;
     const size_t w_bytes   = (size_t) rows * k * sizeof(float);
-    if (!ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_scl, &device_context->q4nx_scl_cap, scl_bytes) ||
-        !ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_zp,  &device_context->q4nx_zp_cap,  scl_bytes) ||
-        !ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_pck, &device_context->q4nx_pck_cap, pck_bytes) ||
+    if (!ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_scl, &device_context->q4nx_scl_cap, raw_bytes) ||
         !ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_w,   &device_context->q4nx_w_cap,   w_bytes)) {
         return GGML_STATUS_FAILED;
     }
-    hrx_buffer_t b_scl = device_context->q4nx_scl;
-    hrx_buffer_t b_zp  = device_context->q4nx_zp;
-    hrx_buffer_t b_pck = device_context->q4nx_pck;
+    hrx_buffer_t b_raw = device_context->q4nx_scl;
     hrx_buffer_t b_w   = device_context->q4nx_w;
 
-    // assemble tile-major blob -> section-major views (3 copies per tile)
-    for (uint32_t t = 0; t < n_tiles; ++t) {
-        const size_t tile_off = (size_t) (tile_base + t) * 5120;
-        if (!GGML_HRX2_CHECK(hrx_stream_copy_buffer(
-                context->stream, src0_ref.buffer, src0_ref.offset + tile_off,
-                b_scl, (size_t) t * 512, 512)) ||
-            !GGML_HRX2_CHECK(hrx_stream_copy_buffer(
-                context->stream, src0_ref.buffer, src0_ref.offset + tile_off + 512,
-                b_zp, (size_t) t * 512, 512)) ||
-            !GGML_HRX2_CHECK(hrx_stream_copy_buffer(
-                context->stream, src0_ref.buffer, src0_ref.offset + tile_off + 1024,
-                b_pck, (size_t) t * 4096, 4096))) {
-            return GGML_STATUS_FAILED;
-        }
+    // ONE stream copy for the whole slice: expert tiles are contiguous in
+    // src0 (tile (t,e) at (e*tpe + t)*5120), and the dequant kernel reads
+    // the raw tile-major layout (scales t*5120, zeros t*5120+512, packed
+    // t*5120+1024) via three views of this blob.
+    if (!GGML_HRX2_CHECK(hrx_stream_copy_buffer(
+            context->stream, src0_ref.buffer, src0_ref.offset + (size_t) tile_base * 5120,
+            b_raw, 0, raw_bytes))) {
+        return GGML_STATUS_FAILED;
     }
 
     // dequant provider (q4nx_dequant_f32 route)
@@ -8168,10 +8151,10 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice(
     }
 
     hrx_buffer_ref_t deq_bindings[4] = {
-        { b_pck, 0, pck_bytes },
-        { b_scl, 0, scl_bytes },
-        { b_zp,  0, scl_bytes },
-        { b_w,   0, w_bytes },
+        { b_raw, 1024, (size_t) n_tiles * 4096 },  // packed
+        { b_raw,    0, (size_t) n_tiles * 512  },  // scales
+        { b_raw,  512, (size_t) n_tiles * 512  },  // zeros
+        { b_w,     0, w_bytes },
     };
     hrx_dispatch_config_t deq_config = {
         { (rows * k + wg_size - 1) / wg_size, 1, 1 },

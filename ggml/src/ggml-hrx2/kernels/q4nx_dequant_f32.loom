@@ -15,6 +15,13 @@ config.decl @hrx2.tuning.q4nx.n_tile_cols : %value: index where [range(%value, 1
 //     out = val * scale + zp
 // Two's-complement signed int4 (nibble 8..15 -> -8..-1), mins all 0 for Zaya.
 //
+// The %packed/%scales/%zeros bindings are three views of the SAME raw
+// tile-major blob (tile t at byte t*5120, sections interleaved per tile);
+// the dispatch binds the blob at offsets 1024 / 0 / 512 respectively, so
+// the kernel indexes scales at t*5120 + idx*2, zeros at t*5120 + 512 +
+// idx*2 and packed at t*5120 + 1024 + in-tile offset. This lets a slice be
+// uploaded with ONE stream copy instead of 3 copies per tile.
+//
 // Kernel: one workitem per output element (row, col); dequantizes the packed
 // tile into a float32 [nrows x ncols] output.
 
@@ -45,6 +52,7 @@ kernel.def export("hrx2_q4nx_dequant_f32") @hrx2_q4nx_dequant_f32() {
   %thirtytwo = index.constant 32 : index
   %twofiftysix = index.constant 256 : index
   %fourzero96 = index.constant 4096 : index
+  %five120 = index.constant 5120 : index
   %sixteen = index.constant 16 : index
   %two048 = index.constant 2048 : index
   %ncols_c = config.get @hrx2.shape.ncols : index
@@ -86,12 +94,12 @@ kernel.def export("hrx2_q4nx_dequant_f32") @hrx2_q4nx_dequant_f32() {
     %n_tc = config.get @hrx2.tuning.q4nx.n_tile_cols : index
     %tr_x_ntc = index.mul %tile_row, %n_tc : index
     %tile_idx = index.add %tr_x_ntc, %tile_col : index
-    %tile_scale_base = index.mul %tile_idx, %twofiftysix : index
+    %tile_byte_base = index.mul %tile_idx, %five120 : index
     %in_tile_row = index.rem %row, %thirtytwo : index
     %row8 = index.mul %in_tile_row, %eight_idx : index
-    %scale_idx0 = index.add %tile_scale_base, %row8 : index
-    %scale_idx = index.add %scale_idx0, %g_in_tile : index
-    %scale_lo_off = index.mul %scale_idx, %two_idx : index
+    %scale_idx = index.add %row8, %g_in_tile : index
+    %scale_off2 = index.mul %scale_idx, %two_idx : index
+    %scale_lo_off = index.add %tile_byte_base, %scale_off2 : index
     %scale_hi_off = index.add %scale_lo_off, %unit : index
     %scale_lo = view.load %scales_v[%scale_lo_off] : view<1073741824xi8> -> i8
     %scale_lo_u = scalar.extui %scale_lo : i8 to i32
@@ -102,9 +110,11 @@ kernel.def export("hrx2_q4nx_dequant_f32") @hrx2_q4nx_dequant_f32() {
     %scale_f32_bits = scalar.shli %scale_bf16, %sixteen_i32 : i32
     %scale = scalar.bitcast %scale_f32_bits : i32 to f32
 
-    %zp_lo = view.load %zeros_v[%scale_lo_off] : view<1073741824xi8> -> i8
+    %zp_lo_off = index.add %tile_byte_base, %scale_off2 : index
+    %zp_hi_off = index.add %zp_lo_off, %unit : index
+    %zp_lo = view.load %zeros_v[%zp_lo_off] : view<1073741824xi8> -> i8
     %zp_lo_u = scalar.extui %zp_lo : i8 to i32
-    %zp_hi = view.load %zeros_v[%scale_hi_off] : view<1073741824xi8> -> i8
+    %zp_hi = view.load %zeros_v[%zp_hi_off] : view<1073741824xi8> -> i8
     %zp_hi_u = scalar.extui %zp_hi : i8 to i32
     %zp_hi_shl = scalar.shli %zp_hi_u, %eight_i32 : i32
     %zp_bf16 = scalar.ori %zp_lo_u, %zp_hi_shl : i32
@@ -136,16 +146,14 @@ kernel.def export("hrx2_q4nx_dequant_f32") @hrx2_q4nx_dequant_f32() {
     %lane_row = index.rem %in_tile_row, %sixteen : index
     %byte_idx = index.div %lane_row, %two_idx : index
     %nib = index.rem %in_tile_row, %two_idx : index
-    // packed base: tile t's packed region is t*4096 bytes; lane (of the
-    // in-tile row) adds 2048 within the tile; byte = t*4096 + lane*2048 +
-    // (col%256)*8 + byte_idx.
-    %tile_packed_base = index.mul %tile_idx, %fourzero96 : index
+    // packed base: raw layout tile t's packed region is t*5120 + 1024;
+    // lane (of the in-tile row) adds 2048 within the tile.
     %in_tile_lane = index.div %in_tile_row, %sixteen : index
     %lane_base = index.mul %in_tile_lane, %two048 : index
     %in_tile_col = index.rem %col, %twofiftysix : index
     %col8 = index.mul %in_tile_col, %eight_idx : index
     %byte_off0 = index.add %lane_base, %col8 : index
-    %byte_off1 = index.add %byte_off0, %tile_packed_base : index
+    %byte_off1 = index.add %byte_off0, %tile_byte_base : index
     %byte_off2 = index.add %byte_off1, %byte_idx : index
     %packed_byte = view.load %packed_v[%byte_off2] : view<1073741824xi8> -> i8
     %pb_u = scalar.extui %packed_byte : i8 to i32
