@@ -212,6 +212,7 @@ struct llama_layer {
     // normalization
     struct ggml_tensor * attn_norm       = nullptr;
     struct ggml_tensor * attn_norm_b     = nullptr;
+    struct ggml_tensor * post_attn_norm  = nullptr;
     struct ggml_tensor * attn_norm_2     = nullptr;
     struct ggml_tensor * attn_norm_2_b   = nullptr;
     struct ggml_tensor * attn_q_norm     = nullptr;
@@ -307,6 +308,28 @@ struct llama_layer {
     // ff MoE latent proj
     struct ggml_tensor * ffn_latent_down = nullptr;
     struct ggml_tensor * ffn_latent_up   = nullptr;
+
+    // ZAYA CCA (Compressed Convolutional Attention)
+    struct ggml_tensor * cca_conv_grp    = nullptr;
+    struct ggml_tensor * cca_conv_grp_b  = nullptr;
+    struct ggml_tensor * cca_k_scale     = nullptr;
+    struct ggml_tensor * cca_val_proj1   = nullptr;
+    struct ggml_tensor * cca_val_proj2   = nullptr;
+    // ZAYA residual scaling (per layer)
+    struct ggml_tensor * res_scale_hs    = nullptr;
+    struct ggml_tensor * res_scale_hs_b  = nullptr;
+    struct ggml_tensor * res_scale_res   = nullptr;
+    struct ggml_tensor * res_scale_res_b = nullptr;
+    struct ggml_tensor * res_scale_hs_mlp    = nullptr;
+    struct ggml_tensor * res_scale_hs_mlp_b  = nullptr;
+    struct ggml_tensor * res_scale_res_mlp   = nullptr;
+    struct ggml_tensor * res_scale_res_mlp_b = nullptr;
+    // ZAYA Router (MoE gating)
+    struct ggml_tensor * zaya_router_mlp2      = nullptr;
+    struct ggml_tensor * zaya_router_mlp2_b    = nullptr;
+    struct ggml_tensor * zaya_router_mlp4      = nullptr;
+    struct ggml_tensor * zaya_router_biases    = nullptr;
+    struct ggml_tensor * zaya_router_eda_scale = nullptr;
 
     // ff shared expert (shexp)
     struct ggml_tensor * ffn_gate_inp_shexp = nullptr;
@@ -522,6 +545,14 @@ struct llama_model {
     struct ggml_tensor * output          = nullptr;
     struct ggml_tensor * output_b        = nullptr;
     struct ggml_tensor * output_norm_enc = nullptr;
+
+    // ZAYA input embedding scaling + final residual scaling
+    struct ggml_tensor * zaya_input_hs_scale   = nullptr;
+    struct ggml_tensor * zaya_input_hs_bias    = nullptr;
+    struct ggml_tensor * zaya_res_scale_hs     = nullptr;
+    struct ggml_tensor * zaya_res_scale_hs_b   = nullptr;
+    struct ggml_tensor * zaya_res_scale_res    = nullptr;
+    struct ggml_tensor * zaya_res_scale_res_b  = nullptr;
 
     // classifier
     struct ggml_tensor * cls       = nullptr;

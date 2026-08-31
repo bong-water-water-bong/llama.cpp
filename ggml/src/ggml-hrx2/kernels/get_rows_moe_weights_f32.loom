@@ -45,9 +45,9 @@ kernel.def export("hrx2_get_rows_moe_weights_f32") @hrx2_get_rows_moe_weights_f3
   %src0_global = buffer.assume.memory_space<global> %src0 : buffer
   %idx_global = buffer.assume.memory_space<global> %idx : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
-  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32, #dense>
-  %idx_view = buffer.view %idx_global[%base] : buffer -> view<1073741824xi32, #dense>
-  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xf32, #dense>
+  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32>
+  %idx_view = buffer.view %idx_global[%base] : buffer -> view<1073741824xi32>
+  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xf32>
 
   scf.if %in_bounds {
     %expert_slot = index.rem %linear, %nselected_bounded : index
@@ -56,7 +56,7 @@ kernel.def export("hrx2_get_rows_moe_weights_f32") @hrx2_get_rows_moe_weights_f3
     %idx_token = index.assume %idx_token_raw [range(%idx_token_raw, 0, 1073741823)] : index
     %idx_offset_raw = index.add %idx_token, %expert_slot : index
     %idx_offset = index.assume %idx_offset_raw [range(%idx_offset_raw, 0, 1073741823)] : index
-    %expert_i32 = view.load %idx_view[%idx_offset] : view<1073741824xi32, #dense> -> i32
+    %expert_i32 = view.load %idx_view[%idx_offset] : view<1073741824xi32> -> i32
     %expert_nonnegative = scalar.cmpi sge, %expert_i32, %zero_i32 : i32
     scf.if %expert_nonnegative {
       %expert0 = index.cast %expert_i32 : i32 to index
@@ -71,8 +71,8 @@ kernel.def export("hrx2_get_rows_moe_weights_f32") @hrx2_get_rows_moe_weights_f3
         %dst_token = index.assume %dst_token_raw [range(%dst_token_raw, 0, 1073741823)] : index
         %dst_offset_raw = index.add %dst_token, %expert_slot : index
         %dst_offset = index.assume %dst_offset_raw [range(%dst_offset_raw, 0, 1073741823)] : index
-        %value = view.load %src0_view[%src_offset] : view<1073741824xf32, #dense> -> f32
-        view.store %value, %dst_view[%dst_offset] : f32, view<1073741824xf32, #dense>
+        %value = view.load %src0_view[%src_offset] : view<1073741824xf32> -> f32
+        view.store %value, %dst_view[%dst_offset] : f32, view<1073741824xf32>
       }
     }
   }

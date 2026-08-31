@@ -3,7 +3,8 @@ config.decl @hrx2.shape.rows : %value: index where [range(%value, 1, 32768)]
 config.decl @hrx2.shape.cols : %value: index where [range(%value, 1, 512)]
 config.decl @hrx2.tuning.workgroup_size : %value: index where [range(%value, 64, 256), mul(%value, 64)]
 
-func.template<hrx2.q4_k_f32.accumulate_block> priority(1) @q4_k_f32_accumulate_block(%acc: f32, %weight: buffer, %rhs: view<1073741824xf32, #dense>, %row_block_base: index, %src1_col_base: index, %block_idx: index, %group: index, %lane_q: index, %qs_lane_base: index) -> (f32) {
+template.decl @hrx2.q4_k_f32.accumulate_block(%acc: f32, %weight: buffer, %rhs: view<1073741824xf32>, %row_block_base: index, %src1_col_base: index, %block_idx: index, %group: index, %lane_q: index, %qs_lane_base: index) -> (f32)
+template.def<@hrx2.q4_k_f32.accumulate_block> device priority(1) @q4_k_f32_accumulate_block(%acc: f32, %weight: buffer, %rhs: view<1073741824xf32>, %row_block_base: index, %src1_col_base: index, %block_idx: index, %group: index, %lane_q: index, %qs_lane_base: index) -> (f32) {
   %base = index.constant 0 : offset
   %zero_index = index.constant 0 : index
   %one = index.constant 1 : index
@@ -20,7 +21,7 @@ func.template<hrx2.q4_k_f32.accumulate_block> priority(1) @q4_k_f32_accumulate_b
   %scale_offset = index.constant 4 : index
   %qs_offset = index.constant 16 : index
 
-  %weight_f16_view = buffer.view %weight[%base] : buffer -> view<536870912xf16, #dense>
+  %weight_f16_view = buffer.view %weight[%base] : buffer -> view<536870912xf16>
   %src_base_block = index.mul %block_idx, %qk : index
   %src_base_group = index.mul %group, %thirtytwo : index
   %src_base0 = index.add %src_base_block, %src_base_group : index
@@ -32,8 +33,8 @@ func.template<hrx2.q4_k_f32.accumulate_block> priority(1) @q4_k_f32_accumulate_b
   %scale_base = index.add %block_byte_base, %scale_offset : index
   %qs_payload = index.add %block_byte_base, %qs_offset : index
   %qs_base = index.add %qs_payload, %qs_lane_base : index
-  %d_f16 = view.load %weight_f16_view[%block_f16_base] : view<536870912xf16, #dense> -> f16
-  %dmin_f16 = view.load %weight_f16_view[%dmin_index] : view<536870912xf16, #dense> -> f16
+  %d_f16 = view.load %weight_f16_view[%block_f16_base] : view<536870912xf16> -> f16
+  %dmin_f16 = view.load %weight_f16_view[%dmin_index] : view<536870912xf16> -> f16
   %d0 = scalar.extf %d_f16 : f16 to f32
   %dmin0 = scalar.extf %dmin_f16 : f16 to f32
   %group_lt4 = index.cmp slt, %group, %four : index
@@ -43,10 +44,10 @@ func.template<hrx2.q4_k_f32.accumulate_block> priority(1) @q4_k_f32_accumulate_b
     %m_index = index.add %scale_base, %m_group : index
     %d_offset = index.cast %d_index : index to offset
     %m_offset = index.cast %m_index : index to offset
-    %d_word_view = buffer.view %weight[%d_offset] : buffer -> view<1xi32, #dense>
-    %m_word_view = buffer.view %weight[%m_offset] : buffer -> view<1xi32, #dense>
-    %d_word = vector.load %d_word_view[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
-    %m_word = vector.load %m_word_view[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
+    %d_word_view = buffer.view %weight[%d_offset] : buffer -> view<1xi32>
+    %m_word_view = buffer.view %weight[%m_offset] : buffer -> view<1xi32>
+    %d_word = vector.load %d_word_view[%zero_index] : view<1xi32> -> vector<1xi32>
+    %m_word = vector.load %m_word_view[%zero_index] : view<1xi32> -> vector<1xi32>
     %d_byte_vec = vector.bitfield.extractu %d_word {offset = 0, width = 8} : vector<1xi32> -> vector<1xi32>
     %m_byte_vec = vector.bitfield.extractu %m_word {offset = 0, width = 8} : vector<1xi32> -> vector<1xi32>
     %d_u32 = vector.extract %d_byte_vec[0] : vector<1xi32> -> i32
@@ -63,12 +64,12 @@ func.template<hrx2.q4_k_f32.accumulate_block> priority(1) @q4_k_f32_accumulate_b
     %low_offset = index.cast %low_index : index to offset
     %mid_offset = index.cast %mid_index : index to offset
     %high_offset = index.cast %high_index : index to offset
-    %low_word_view = buffer.view %weight[%low_offset] : buffer -> view<1xi32, #dense>
-    %mid_word_view = buffer.view %weight[%mid_offset] : buffer -> view<1xi32, #dense>
-    %high_word_view = buffer.view %weight[%high_offset] : buffer -> view<1xi32, #dense>
-    %low_word = vector.load %low_word_view[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
-    %mid_word = vector.load %mid_word_view[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
-    %high_word = vector.load %high_word_view[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
+    %low_word_view = buffer.view %weight[%low_offset] : buffer -> view<1xi32>
+    %mid_word_view = buffer.view %weight[%mid_offset] : buffer -> view<1xi32>
+    %high_word_view = buffer.view %weight[%high_offset] : buffer -> view<1xi32>
+    %low_word = vector.load %low_word_view[%zero_index] : view<1xi32> -> vector<1xi32>
+    %mid_word = vector.load %mid_word_view[%zero_index] : view<1xi32> -> vector<1xi32>
+    %high_word = vector.load %high_word_view[%zero_index] : view<1xi32> -> vector<1xi32>
     %low_byte_vec = vector.bitfield.extractu %low_word {offset = 0, width = 8} : vector<1xi32> -> vector<1xi32>
     %mid_byte_vec = vector.bitfield.extractu %mid_word {offset = 0, width = 8} : vector<1xi32> -> vector<1xi32>
     %high_byte_vec = vector.bitfield.extractu %high_word {offset = 0, width = 8} : vector<1xi32> -> vector<1xi32>
@@ -96,8 +97,8 @@ func.template<hrx2.q4_k_f32.accumulate_block> priority(1) @q4_k_f32_accumulate_b
     %src_offset = index.add %src_base, %j : index
     %src1_index = index.add %src1_col_base, %src_offset : index
     %q_offset = index.cast %q_index : index to offset
-    %q_word_view = buffer.view %weight[%q_offset] : buffer -> view<1xi32, #dense>
-    %q_word = vector.load %q_word_view[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
+    %q_word_view = buffer.view %weight[%q_offset] : buffer -> view<1xi32>
+    %q_word = vector.load %q_word_view[%zero_index] : view<1xi32> -> vector<1xi32>
     %q_byte_vec = vector.bitfield.extractu %q_word {offset = 0, width = 8} : vector<1xi32> -> vector<1xi32>
     %q_byte = vector.extract %q_byte_vec[0] : vector<1xi32> -> i32
     %q_i32 = scf.if %is_high_group -> (i32) {
@@ -108,14 +109,14 @@ func.template<hrx2.q4_k_f32.accumulate_block> priority(1) @q4_k_f32_accumulate_b
       scf.yield %lo : i32
     }
     %q_f32 = scalar.uitofp %q_i32 : i32 to f32
-    %rhs_value = view.load %rhs[%src1_index] : view<1073741824xf32, #dense> -> f32
+    %rhs_value = view.load %rhs[%src1_index] : view<1073741824xf32> -> f32
     %scaled = scalar.mulf<reassoc|nnan|ninf|nsz> %d, %q_f32 : f32
     %dequant = scalar.subf<reassoc|nnan|ninf|nsz> %scaled, %min : f32
     %product = scalar.mulf<reassoc|nnan|ninf|nsz> %dequant, %rhs_value : f32
     %acc_next = scalar.addf<reassoc|nnan|ninf|nsz> %inner, %product : f32
     scf.yield %acc_next : f32
   }
-  func.return %next : f32
+  template.return %next : f32
 }
 
 kernel.def export("hrx2_mul_mat_q4_k_swiglu_f32_static") @hrx2_mul_mat_q4_k_swiglu_f32_static() {
@@ -169,14 +170,14 @@ kernel.def export("hrx2_mul_mat_q4_k_swiglu_f32_static") @hrx2_mul_mat_q4_k_swig
   %src1_global = buffer.assume.memory_space<global> %src1 : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src_x_noalias, %src_gate_noalias, %src1_noalias, %dst_noalias = buffer.assume.noalias %src_x_global, %src_gate_global, %src1_global, %dst_global : buffer, buffer, buffer, buffer
-  %src1_view = buffer.view %src1_noalias[%base] : buffer -> view<1073741824xf32, #dense>
-  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32, #dense>
+  %src1_view = buffer.view %src1_noalias[%base] : buffer -> view<1073741824xf32>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32>
 
   %row_block_base = index.mul %row, %blocks_per_row : index
   %src1_col_base = index.mul %col, %k_bounded : index
   %x_sum, %gate_sum = scf.for %block_idx = [%block_slot to %blocks_per_row step %block_step](%x_acc = %zero_f32 : f32, %gate_acc = %zero_f32 : f32) -> (f32, f32) {
-    %x_next = func.apply<hrx2.q4_k_f32.accumulate_block>(%x_acc, %src_x_noalias, %src1_view, %row_block_base, %src1_col_base, %block_idx, %group, %lane_q, %qs_lane_base) : (f32, buffer, view<1073741824xf32, #dense>, index, index, index, index, index, index) -> (f32)
-    %gate_next = func.apply<hrx2.q4_k_f32.accumulate_block>(%gate_acc, %src_gate_noalias, %src1_view, %row_block_base, %src1_col_base, %block_idx, %group, %lane_q, %qs_lane_base) : (f32, buffer, view<1073741824xf32, #dense>, index, index, index, index, index, index) -> (f32)
+    %x_next = template.apply<@hrx2.q4_k_f32.accumulate_block>(%x_acc, %src_x_noalias, %src1_view, %row_block_base, %src1_col_base, %block_idx, %group, %lane_q, %qs_lane_base) : (f32, buffer, view<1073741824xf32>, index, index, index, index, index, index) -> (f32)
+    %gate_next = template.apply<@hrx2.q4_k_f32.accumulate_block>(%gate_acc, %src_gate_noalias, %src1_view, %row_block_base, %src1_col_base, %block_idx, %group, %lane_q, %qs_lane_base) : (f32, buffer, view<1073741824xf32>, index, index, index, index, index, index) -> (f32)
     scf.yield %x_next, %gate_next : f32, f32
   }
 
@@ -190,7 +191,7 @@ kernel.def export("hrx2_mul_mat_q4_k_swiglu_f32_static") @hrx2_mul_mat_q4_k_swig
   scf.if %is_lane0 {
     %silu = scalar.siluf %x_dot : f32
     %result = scalar.mulf<nnan|ninf|nsz> %silu, %gate_dot : f32
-    view.store %result, %dst_view[%dst_index] : f32, view<[%dst_count]xf32, #dense>
+    view.store %result, %dst_view[%dst_index] : f32, view<[%dst_count]xf32>
   }
   kernel.return
 }
@@ -242,16 +243,16 @@ kernel.def export("hrx2_mul_mat_q4_k_packed_swiglu_f32_static") @hrx2_mul_mat_q4
   %src1_global = buffer.assume.memory_space<global> %src1 : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src0_noalias, %src1_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %src1_global, %dst_global : buffer, buffer, buffer
-  %src1_view = buffer.view %src1_noalias[%base] : buffer -> view<1073741824xf32, #dense>
-  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32, #dense>
+  %src1_view = buffer.view %src1_noalias[%base] : buffer -> view<1073741824xf32>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32>
 
   %gate_row = index.add %row, %rows_bounded : index
   %x_row_block_base = index.mul %row, %blocks_per_row : index
   %gate_row_block_base = index.mul %gate_row, %blocks_per_row : index
   %src1_col_base = index.mul %col, %k_bounded : index
   %x_sum, %gate_sum = scf.for %block_idx = [%block_slot to %blocks_per_row step %block_step](%x_acc = %zero_f32 : f32, %gate_acc = %zero_f32 : f32) -> (f32, f32) {
-    %x_next = func.apply<hrx2.q4_k_f32.accumulate_block>(%x_acc, %src0_noalias, %src1_view, %x_row_block_base, %src1_col_base, %block_idx, %group, %lane_q, %qs_lane_base) : (f32, buffer, view<1073741824xf32, #dense>, index, index, index, index, index, index) -> (f32)
-    %gate_next = func.apply<hrx2.q4_k_f32.accumulate_block>(%gate_acc, %src0_noalias, %src1_view, %gate_row_block_base, %src1_col_base, %block_idx, %group, %lane_q, %qs_lane_base) : (f32, buffer, view<1073741824xf32, #dense>, index, index, index, index, index, index) -> (f32)
+    %x_next = template.apply<@hrx2.q4_k_f32.accumulate_block>(%x_acc, %src0_noalias, %src1_view, %x_row_block_base, %src1_col_base, %block_idx, %group, %lane_q, %qs_lane_base) : (f32, buffer, view<1073741824xf32>, index, index, index, index, index, index) -> (f32)
+    %gate_next = template.apply<@hrx2.q4_k_f32.accumulate_block>(%gate_acc, %src0_noalias, %src1_view, %gate_row_block_base, %src1_col_base, %block_idx, %group, %lane_q, %qs_lane_base) : (f32, buffer, view<1073741824xf32>, index, index, index, index, index, index) -> (f32)
     scf.yield %x_next, %gate_next : f32, f32
   }
 
@@ -265,7 +266,7 @@ kernel.def export("hrx2_mul_mat_q4_k_packed_swiglu_f32_static") @hrx2_mul_mat_q4
   scf.if %is_lane0 {
     %silu = scalar.siluf %x_dot : f32
     %result = scalar.mulf<nnan|ninf|nsz> %silu, %gate_dot : f32
-    view.store %result, %dst_view[%dst_index] : f32, view<[%dst_count]xf32, #dense>
+    view.store %result, %dst_view[%dst_index] : f32, view<[%dst_count]xf32>
   }
   kernel.return
 }

@@ -35,8 +35,8 @@ kernel.def export("hrx2_swiglu_f32") @hrx2_swiglu_f32() {
   %src0_global = buffer.assume.memory_space<global> %src0 : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src0_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %dst_global : buffer, buffer
-  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<1073741824xf32, #dense>
-  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<1073741824xf32, #dense>
+  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<1073741824xf32>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<1073741824xf32>
 
   scf.if %in_bounds {
     %col = index.rem %linear, %ncols_bounded : index
@@ -50,11 +50,11 @@ kernel.def export("hrx2_swiglu_f32") @hrx2_swiglu_f32() {
     %x_idx = index.assume %x_idx_raw [range(%x_idx_raw, 0, 1073741823)] : index
     %g_idx_raw = index.add %x_idx, %ncols_bounded : index
     %g_idx = index.assume %g_idx_raw [range(%g_idx_raw, 0, 1073741823)] : index
-    %x = view.load %src0_view[%x_idx] : view<1073741824xf32, #dense> -> f32
-    %gate = view.load %src0_view[%g_idx] : view<1073741824xf32, #dense> -> f32
+    %x = view.load %src0_view[%x_idx] : view<1073741824xf32> -> f32
+    %gate = view.load %src0_view[%g_idx] : view<1073741824xf32> -> f32
     %silu = scalar.siluf %x : f32
     %result = scalar.mulf<nnan|ninf|nsz> %silu, %gate : f32
-    view.store %result, %dst_view[%linear] : f32, view<1073741824xf32, #dense>
+    view.store %result, %dst_view[%linear] : f32, view<1073741824xf32>
   }
   kernel.return
 }
@@ -92,16 +92,16 @@ kernel.def export("hrx2_swiglu_f32_split") @hrx2_swiglu_f32_split() {
   %src0_global = buffer.assume.memory_space<global> %src0 : buffer
   %src1_global = buffer.assume.memory_space<global> %src1 : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
-  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32, #dense>
-  %src1_view = buffer.view %src1_global[%base] : buffer -> view<1073741824xf32, #dense>
-  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xf32, #dense>
+  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32>
+  %src1_view = buffer.view %src1_global[%base] : buffer -> view<1073741824xf32>
+  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xf32>
 
   scf.if %in_bounds {
-    %x = view.load %src0_view[%linear] : view<1073741824xf32, #dense> -> f32
-    %gate = view.load %src1_view[%linear] : view<1073741824xf32, #dense> -> f32
+    %x = view.load %src0_view[%linear] : view<1073741824xf32> -> f32
+    %gate = view.load %src1_view[%linear] : view<1073741824xf32> -> f32
     %silu = scalar.siluf %x : f32
     %result = scalar.mulf<nnan|ninf|nsz> %silu, %gate : f32
-    view.store %result, %dst_view[%linear] : f32, view<1073741824xf32, #dense>
+    view.store %result, %dst_view[%linear] : f32, view<1073741824xf32>
   }
   kernel.return
 }
@@ -139,13 +139,13 @@ kernel.def export("hrx2_geglu_f32_split") @hrx2_geglu_f32_split() {
   %src0_global = buffer.assume.memory_space<global> %src0 : buffer
   %src1_global = buffer.assume.memory_space<global> %src1 : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
-  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32, #dense>
-  %src1_view = buffer.view %src1_global[%base] : buffer -> view<1073741824xf32, #dense>
-  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xf32, #dense>
+  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32>
+  %src1_view = buffer.view %src1_global[%base] : buffer -> view<1073741824xf32>
+  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xf32>
 
   scf.if %in_bounds {
-    %x = view.load %src0_view[%linear] : view<1073741824xf32, #dense> -> f32
-    %gate = view.load %src1_view[%linear] : view<1073741824xf32, #dense> -> f32
+    %x = view.load %src0_view[%linear] : view<1073741824xf32> -> f32
+    %gate = view.load %src1_view[%linear] : view<1073741824xf32> -> f32
     %one_f32 = scalar.constant 1.0 : f32
     %sqrt_2_over_pi_times_two = scalar.constant 1.5957691216057308 : f32
     %gelu_coef = scalar.constant 0.044715 : f32
@@ -157,7 +157,7 @@ kernel.def export("hrx2_geglu_f32_split") @hrx2_geglu_f32_split() {
     %logistic = scalar.logisticf %logistic_arg : f32
     %gelu = scalar.mulf<nnan|ninf|nsz> %x, %logistic : f32
     %result = scalar.mulf<nnan|ninf|nsz> %gelu, %gate : f32
-    view.store %result, %dst_view[%linear] : f32, view<1073741824xf32, #dense>
+    view.store %result, %dst_view[%linear] : f32, view<1073741824xf32>
   }
   kernel.return
 }

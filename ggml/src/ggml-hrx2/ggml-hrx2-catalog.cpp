@@ -418,11 +418,18 @@ static bool ggml_backend_hrx2_compile_route(
     const char * loader_format = route.loader_format.empty() || route.loader_format == "amdgpu-hsaco" ?
         nullptr :
         route.loader_format.c_str();
+    // The runtime's target family is the *device* HAL family ("amdgpu"); the
+    // route's catalog `family` field is a route grouping, not a device family.
+    // target_key selects the executable target: the device architecture when
+    // the route does not pin one.
+    const char * target_family = "amdgpu";
+    const char * target_key = route.target_key.empty() ? architecture : route.target_key.c_str();
     const bool loaded = GGML_HRX2_CATALOG_CHECK(hrx_executable_load_data(
         device.device,
         result.hsaco_data,
         hsaco_size,
-        loader_format,
+        target_family,
+        target_key,
         &executable));
     provider->manifest_json = result.manifest_json ?
         std::string(result.manifest_json, result.manifest_json_size) :
@@ -509,11 +516,14 @@ static bool ggml_backend_hrx2_load_hsaco_route(
     const char * loader_format = route.loader_format.empty() || route.loader_format == "amdgpu-hsaco" ?
         nullptr :
         route.loader_format.c_str();
+    const char * target_family = "amdgpu";
+    const char * target_key = route.target_key.empty() ? architecture : route.target_key.c_str();
     if (!GGML_HRX2_CATALOG_CHECK(hrx_executable_load_data(
             device.device,
             hsaco_data,
             hsaco_size,
-            loader_format,
+            target_family,
+            target_key,
             &executable))) {
         return false;
     }

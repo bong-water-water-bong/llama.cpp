@@ -44,24 +44,24 @@ kernel.def export("hrx2_get_rows_f32") @hrx2_get_rows_f32() {
   %idx_global = buffer.assume.memory_space<global> %idx : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src0_noalias, %idx_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %idx_global, %dst_global : buffer, buffer, buffer
-  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_nrows_bounded]x[%ncols_bounded]xf32, #dense>
-  %idx_view = buffer.view %idx_noalias[%base] : buffer -> view<1073741824xi32, #dense>
-  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%nrows_bounded]x[%ncols_bounded]xf32, #dense>
+  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_nrows_bounded]x[%ncols_bounded]xf32>
+  %idx_view = buffer.view %idx_noalias[%base] : buffer -> view<1073741824xi32>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%nrows_bounded]x[%ncols_bounded]xf32>
 
   scf.if %in_bounds {
     %col = index.rem %linear, %ncols_bounded : index
     %row = index.div %linear, %ncols_bounded : index
     %idx_row0 = index.mul %row, %idx_row_stride_bounded : index
     %idx_row = index.assume %idx_row0 [range(%idx_row0, 0, 1073741823)] : index
-    %row_i32 = view.load %idx_view[%idx_row] : view<1073741824xi32, #dense> -> i32
+    %row_i32 = view.load %idx_view[%idx_row] : view<1073741824xi32> -> i32
     %row_nonnegative = scalar.cmpi sge, %row_i32, %zero_i32 : i32
     scf.if %row_nonnegative {
       %src_row0 = index.cast %row_i32 : i32 to index
       %src_row = index.assume %src_row0 [range(%src_row0, 0, 1073741823)] : index
       %src_row_valid = index.cmp ult, %src_row, %src0_nrows_bounded : index
       scf.if %src_row_valid {
-        %value = view.load %src0_view[%src_row, %col] : view<[%src0_nrows_bounded]x[%ncols_bounded]xf32, #dense> -> f32
-        view.store %value, %dst_view[%row, %col] : f32, view<[%nrows_bounded]x[%ncols_bounded]xf32, #dense>
+        %value = view.load %src0_view[%src_row, %col] : view<[%src0_nrows_bounded]x[%ncols_bounded]xf32> -> f32
+        view.store %value, %dst_view[%row, %col] : f32, view<[%nrows_bounded]x[%ncols_bounded]xf32>
       }
     }
   }

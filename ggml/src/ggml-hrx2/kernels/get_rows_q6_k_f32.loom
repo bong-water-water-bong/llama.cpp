@@ -67,17 +67,17 @@ kernel.def export("hrx2_get_rows_q6_k_f32") @hrx2_get_rows_q6_k_f32() {
   %idx_global = buffer.assume.memory_space<global> %idx : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src0_noalias, %idx_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %idx_global, %dst_global : buffer, buffer, buffer
-  %src0_i8_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_i8_count]xi8, #dense>
-  %src0_f16_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_f16_count]xf16, #dense>
-  %idx_view = buffer.view %idx_noalias[%base] : buffer -> view<1073741824xi32, #dense>
-  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%nrows_bounded]x[%ncols_bounded]xf32, #dense>
+  %src0_i8_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_i8_count]xi8>
+  %src0_f16_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_f16_count]xf16>
+  %idx_view = buffer.view %idx_noalias[%base] : buffer -> view<1073741824xi32>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%nrows_bounded]x[%ncols_bounded]xf32>
 
   scf.if %in_bounds {
     %col = index.rem %linear, %ncols_bounded : index
     %row = index.div %linear, %ncols_bounded : index
     %idx_row0 = index.mul %row, %idx_row_stride_bounded : index
     %idx_row = index.assume %idx_row0 [range(%idx_row0, 0, 1073741823)] : index
-    %row_i32 = view.load %idx_view[%idx_row] : view<1073741824xi32, #dense> -> i32
+    %row_i32 = view.load %idx_view[%idx_row] : view<1073741824xi32> -> i32
     %row_nonnegative = scalar.cmpi sge, %row_i32, %zero_i32 : i32
     scf.if %row_nonnegative {
       %src_row0 = index.cast %row_i32 : i32 to index
@@ -102,8 +102,8 @@ kernel.def export("hrx2_get_rows_q6_k_f32") @hrx2_get_rows_q6_k_f32() {
         %ql_lane = index.add %ql_lane_base, %ql_pair_add : index
         %ql_byte_index = index.add %block_byte_base, %ql_lane : index
         %ql_offset_dynamic = index.cast %ql_byte_index : index to offset
-        %ql_word_view = buffer.view %src0_noalias[%ql_offset_dynamic] : buffer -> view<1xi32, #dense>
-        %ql_word = vector.load %ql_word_view[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
+        %ql_word_view = buffer.view %src0_noalias[%ql_offset_dynamic] : buffer -> view<1xi32>
+        %ql_word = vector.load %ql_word_view[%zero_index] : view<1xi32> -> vector<1xi32>
         %ql_byte_vec = vector.bitfield.extractu %ql_word {offset = 0, width = 8} : vector<1xi32> -> vector<1xi32>
         %ql_byte = vector.extract %ql_byte_vec[0] : vector<1xi32> -> i32
         %part_div2 = index.div %part, %two : index
@@ -117,8 +117,8 @@ kernel.def export("hrx2_get_rows_q6_k_f32") @hrx2_get_rows_q6_k_f32() {
         %qh_block_base0 = index.add %block_byte_base, %qh_offset : index
         %qh_byte_index = index.add %qh_block_base0, %qh_lane_base : index
         %qh_offset_dynamic = index.cast %qh_byte_index : index to offset
-        %qh_word_view = buffer.view %src0_noalias[%qh_offset_dynamic] : buffer -> view<1xi32, #dense>
-        %qh_word = vector.load %qh_word_view[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
+        %qh_word_view = buffer.view %src0_noalias[%qh_offset_dynamic] : buffer -> view<1xi32>
+        %qh_word = vector.load %qh_word_view[%zero_index] : view<1xi32> -> vector<1xi32>
         %qh_byte_vec = vector.bitfield.extractu %qh_word {offset = 0, width = 8} : vector<1xi32> -> vector<1xi32>
         %qh_byte = vector.extract %qh_byte_vec[0] : vector<1xi32> -> i32
         %part_i32 = index.cast %part : index to i32
@@ -137,14 +137,14 @@ kernel.def export("hrx2_get_rows_q6_k_f32") @hrx2_get_rows_q6_k_f32() {
         %scale_lane = index.add %scale_base0, %scale_part_add : index
         %scale_block_base = index.add %block_byte_base, %scales_offset : index
         %scale_index = index.add %scale_block_base, %scale_lane : index
-        %scale_i8 = view.load %src0_i8_view[%scale_index] : view<[%src0_i8_count]xi8, #dense> -> i8
+        %scale_i8 = view.load %src0_i8_view[%scale_index] : view<[%src0_i8_count]xi8> -> i8
         %scale_f32 = scalar.sitofp %scale_i8 : i8 to f32
         %d_index = index.add %block_f16_base, %d_f16_offset : index
-        %d_f16 = view.load %src0_f16_view[%d_index] : view<[%src0_f16_count]xf16, #dense> -> f16
+        %d_f16 = view.load %src0_f16_view[%d_index] : view<[%src0_f16_count]xf16> -> f16
         %d = scalar.extf %d_f16 : f16 to f32
         %dq0 = scalar.mulf<reassoc|nnan|ninf|nsz> %d, %scale_f32 : f32
         %value = scalar.mulf<reassoc|nnan|ninf|nsz> %dq0, %q_f32 : f32
-        view.store %value, %dst_view[%row, %col] : f32, view<[%nrows_bounded]x[%ncols_bounded]xf32, #dense>
+        view.store %value, %dst_view[%row, %col] : f32, view<[%nrows_bounded]x[%ncols_bounded]xf32>
       }
     }
   }

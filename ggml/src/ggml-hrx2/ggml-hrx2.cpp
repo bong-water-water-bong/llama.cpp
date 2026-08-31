@@ -92,6 +92,18 @@ struct ggml_backend_hrx2_device_context {
     std::vector<const ggml_backend_hrx2_kernel_route *> mul_mat_q8_0_routes;
     std::vector<const ggml_backend_hrx2_kernel_route *> quantize_q8_1_routes;
     std::vector<const ggml_backend_hrx2_kernel_route *> mul_mat_f32_f32_routes;
+    std::vector<const ggml_backend_hrx2_kernel_route *> q4nx_dequant_routes;
+    // persistent Q4NX fused-dispatch scratch (never released mid-flight:
+    // kernels are async on the stream, so per-dispatch alloc/free raced the
+    // allocator and corrupted memory)
+    hrx_buffer_t q4nx_scl = nullptr;
+    size_t q4nx_scl_cap = 0;
+    hrx_buffer_t q4nx_zp = nullptr;
+    size_t q4nx_zp_cap = 0;
+    hrx_buffer_t q4nx_pck = nullptr;
+    size_t q4nx_pck_cap = 0;
+    hrx_buffer_t q4nx_w = nullptr;
+    size_t q4nx_w_cap = 0;
     std::vector<const ggml_backend_hrx2_kernel_route *> mul_mat_q4_k_routes;
     std::vector<const ggml_backend_hrx2_kernel_route *> mul_mat_q4_k_swiglu_routes;
     std::vector<const ggml_backend_hrx2_kernel_route *> mul_mat_id_q4_k_routes;
@@ -181,6 +193,10 @@ struct ggml_backend_hrx2_reg_context {
                 hrx_stream_release(device_context->transfer_stream);
                 device_context->transfer_stream = nullptr;
             }
+            if (device_context->q4nx_scl) hrx_buffer_release(device_context->q4nx_scl);
+            if (device_context->q4nx_zp)  hrx_buffer_release(device_context->q4nx_zp);
+            if (device_context->q4nx_pck) hrx_buffer_release(device_context->q4nx_pck);
+            if (device_context->q4nx_w)   hrx_buffer_release(device_context->q4nx_w);
             if (device_context->device) {
                 hrx_device_release(device_context->device);
             }
@@ -1431,6 +1447,7 @@ static bool ggml_backend_hrx2_stage_and_copy_tensor(
         return false;
     }
 
+
     std::lock_guard<std::mutex> lock(context->device_context->streams_mutex);
     auto * arena = ggml_backend_hrx2_get_staging_arena_locked(context->device_context, stream);
     if (!arena ||
@@ -1480,6 +1497,20 @@ static bool ggml_backend_hrx2_stage_and_copy_tensor(
         uploaded += chunk_size;
     }
 
+    // 1bit-MONSTER fix: make the upload synchronous so tensors uploaded on
+    // the transfer stream (or any non-graph stream) are visible to graph
+    // dispatches on other streams. The async staging copies previously raced
+    // the graph stream and the staging arena could be reused mid-flight,
+    // corrupting cross-backend activation copies (e.g. the Q4NX op's src1).
+    if (ok) {
+        ok = GGML_HRX2_CHECK(hrx_stream_flush(stream)) && GGML_HRX2_CHECK(hrx_stream_wait(stream));
+        if (ok) {
+            if (auto * arena_sync = ggml_backend_hrx2_find_staging_arena_locked(context->device_context, stream)) {
+                ggml_backend_hrx2_reset_staging_arena_locked(*arena_sync);
+            }
+        }
+    }
+
     hrx_stream_release(stream);
     return ok;
 }
@@ -1500,6 +1531,7 @@ static bool ggml_backend_hrx2_copy_tensor_to_staging(
             __func__, tensor ? tensor->name : "<unknown>", buffer_offset, size, buffer_size);
         return false;
     }
+
 
     hrx_stream_t stream = ggml_backend_hrx2_retain_active_stream(context->device_context);
     if (!stream) {
@@ -7219,6 +7251,7 @@ static ggml_status ggml_backend_hrx2_dispatch_rope(
         return GGML_STATUS_FAILED;
     }
 
+
     ggml_backend_hrx2_rope_constants constants = {};
     std::memcpy(&constants.freq_base,   reinterpret_cast<const int32_t *>(dst->op_params) + 5, sizeof(float));
     std::memcpy(&constants.freq_scale,  reinterpret_cast<const int32_t *>(dst->op_params) + 6, sizeof(float));
@@ -7306,6 +7339,7 @@ static ggml_status ggml_backend_hrx2_dispatch_rope(
                 HRX_DISPATCH_FLAG_NONE))) {
             return GGML_STATUS_FAILED;
         }
+
         return GGML_STATUS_SUCCESS;
     }
 
@@ -7964,6 +7998,238 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q8_0(
 
     GGML_LOG_ERROR("HRX2: MUL_MAT Q8_0 provider is not available for k=%u rows=%u cols=%u\n", shape.k, shape.rows, shape.cols);
     return GGML_STATUS_FAILED;
+}
+
+// Q4NX MUL_MAT: fused dequant + f32 matmul on device (1bit-MONSTER Q4NX type).
+// src0 is a GGML_TYPE_Q4NX tensor with ne = [256, rows] (rows = 32 * n_tiles,
+// each 5120-byte tile = one ggml block). The tile blob is tile-major
+// ([scales 512][zeros 512][packed 4096] per tile); we assemble the
+// section-major views the q4nx_dequant_f32 kernel expects, dequant on the
+// device into an f32 scratch, then run the mul_mat_f32_f32 route with the
+// scratch as src0. Single tile-column width (k = 256) for now.
+static bool ggml_backend_hrx2_q4nx_scratch_grow(
+        ggml_backend_hrx2_device_context * device_context,
+        hrx_buffer_t * out, size_t * cap, size_t needed) {
+    if (*out && *cap >= needed) {
+        return true;
+    }
+    if (*out) {
+        hrx_buffer_release(*out);
+        *out = nullptr;
+    }
+    hrx_allocator_t alloc = hrx_device_allocator(device_context->device);
+    hrx_buffer_params_t params = {
+        HRX_MEMORY_TYPE_HOST_LOCAL | HRX_MEMORY_TYPE_DEVICE_VISIBLE,
+        HRX_MEMORY_ACCESS_ALL,
+        HRX_BUFFER_USAGE_DEFAULT | HRX_BUFFER_USAGE_MAPPING_SCOPED | HRX_BUFFER_USAGE_MAPPING_PERSISTENT,
+        0,
+    };
+    if (!GGML_HRX2_CHECK(hrx_allocator_allocate_buffer(alloc, params, needed, out))) {
+        return false;
+    }
+    *cap = needed;
+    return true;
+}
+
+static bool ggml_backend_hrx2_supports_mul_mat_q4nx_route(
+        ggml_backend_hrx2_device_context * device_context,
+        const ggml_tensor * op) {
+    const ggml_tensor * src0 = op->src[0];
+    const ggml_tensor * src1 = op->src[1];
+    if (op->op != GGML_OP_MUL_MAT_Q4NX ||
+        !src0 || !src1 || op->view_src != nullptr ||
+        src0->type != GGML_TYPE_Q4NX ||
+        src1->type != GGML_TYPE_F32 ||
+        op->type != GGML_TYPE_F32) {
+        return false;
+    }
+    // src0: [8192, n_tiles] (each 8192-elem row = one 5120-byte tile, in
+    // (tile_row, tile_col) order); src1: F32 [in, cols] with in = k (the
+    // logical reduction dim, multiple of 256); dst: F32 [n_tiles/n_tc*32,
+    // cols] where n_tc = in/256 column tiles.
+    const int64_t in     = src1->ne[0];
+    const int64_t n_tiles = src0->ne[1];
+    if (src0->ne[0] != GGML_Q4NX_TILE_COLS * GGML_Q4NX_TILE_ROWS ||
+        in <= 0 || in % GGML_Q4NX_TILE_COLS != 0) {
+        return false;
+    }
+    const int64_t n_tc = in / GGML_Q4NX_TILE_COLS;
+    if (n_tc <= 0 || n_tiles % n_tc != 0) {
+        return false;
+    }
+    const int64_t n_tr = n_tiles / n_tc;
+    const int64_t rows = n_tr * GGML_Q4NX_TILE_ROWS;
+    const int64_t cols = src1->ne[1];
+    return op->ne[0] == rows &&
+           op->ne[1] == cols &&
+           src0->ne[2] == 1 && src0->ne[3] == 1 &&
+           src1->ne[2] == 1 && src1->ne[3] == 1 &&
+           op->ne[2] == 1 && op->ne[3] == 1 &&
+           ggml_is_contiguous(src0) &&
+           ggml_is_contiguous(src1) &&
+           ggml_is_contiguous(op) &&
+           n_tiles > 0 && cols > 0 &&
+           rows <= std::numeric_limits<uint32_t>::max() &&
+           cols <= std::numeric_limits<uint32_t>::max() &&
+           !device_context->q4nx_dequant_routes.empty() &&
+           !device_context->mul_mat_f32_f32_routes.empty();
+}
+
+static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx(
+        ggml_backend_hrx2_context * context,
+        const ggml_tensor * dst) {
+    ggml_backend_hrx2_device_context * device_context = context->device_context;
+    const ggml_tensor * src0 = dst->src[0];
+    const ggml_tensor * src1 = dst->src[1];
+
+    const uint32_t k       = (uint32_t) src1->ne[0];   // logical in (full width)
+    const uint32_t n_tc    = k / GGML_Q4NX_TILE_COLS;   // column tiles
+    const uint32_t n_tiles = (uint32_t) src0->ne[1];
+    const uint32_t n_tr    = n_tiles / n_tc;
+    const uint32_t rows    = n_tr * GGML_Q4NX_TILE_ROWS;
+    const uint32_t cols    = (uint32_t) src1->ne[1];
+    const uint32_t wg_size = 256;
+
+    ggml_backend_hrx2_trace_event(
+        "q4nx_dispatch",
+        ggml_backend_hrx2_json_kv("dst", ggml_get_name(dst)) + "," +
+        ggml_backend_hrx2_json_kv("src0", ggml_get_name(src0)) + "," +
+        ggml_backend_hrx2_json_kv("src1", ggml_get_name(src1)) + "," +
+        ggml_backend_hrx2_json_kv("rows", std::to_string(rows)) + "," +
+        ggml_backend_hrx2_json_kv("k", std::to_string(k)) + "," +
+        ggml_backend_hrx2_json_kv("cols", std::to_string(cols)) + "," +
+        ggml_backend_hrx2_json_kv("n_tc", std::to_string(n_tc)));
+
+    hrx_buffer_ref_t src0_ref = {};
+    hrx_buffer_ref_t src1_ref = {};
+    hrx_buffer_ref_t dst_ref = {};
+    if (!ggml_backend_hrx2_tensor_buffer_ref(src0, &src0_ref) ||
+        !ggml_backend_hrx2_tensor_buffer_ref(src1, &src1_ref) ||
+        !ggml_backend_hrx2_tensor_buffer_ref(dst, &dst_ref)) {
+        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX tensor is not backed by HRX2 buffers\n");
+        return GGML_STATUS_FAILED;
+    }
+
+    // scratch: section views + dequant f32 output
+    const size_t scl_bytes = (size_t) n_tiles * 512;
+    const size_t pck_bytes = (size_t) n_tiles * 4096;
+    const size_t w_bytes   = (size_t) rows * k * sizeof(float);
+    hrx_allocator_t alloc = hrx_device_allocator(device_context->device);
+    hrx_buffer_params_t params = {
+        /* .type           = */ HRX_MEMORY_TYPE_HOST_LOCAL | HRX_MEMORY_TYPE_DEVICE_VISIBLE,
+        /* .access         = */ HRX_MEMORY_ACCESS_ALL,
+        /* .usage          = */ HRX_BUFFER_USAGE_DEFAULT |
+                               HRX_BUFFER_USAGE_MAPPING_SCOPED |
+                               HRX_BUFFER_USAGE_MAPPING_PERSISTENT,
+        /* .queue_affinity = */ 0,
+    };
+    if (!ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_scl, &device_context->q4nx_scl_cap, scl_bytes) ||
+        !ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_zp,  &device_context->q4nx_zp_cap,  scl_bytes) ||
+        !ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_pck, &device_context->q4nx_pck_cap, pck_bytes) ||
+        !ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_w,   &device_context->q4nx_w_cap,   w_bytes)) {
+        return GGML_STATUS_FAILED;
+    }
+    hrx_buffer_t b_scl = device_context->q4nx_scl;
+    hrx_buffer_t b_zp  = device_context->q4nx_zp;
+    hrx_buffer_t b_pck = device_context->q4nx_pck;
+    hrx_buffer_t b_w   = device_context->q4nx_w;
+
+    // assemble tile-major blob -> section-major views (3 copies per tile)
+    for (uint32_t t = 0; t < n_tiles; ++t) {
+        const size_t tile_off = (size_t) t * 5120;
+        if (!GGML_HRX2_CHECK(hrx_stream_copy_buffer(
+                context->stream, src0_ref.buffer, src0_ref.offset + tile_off,
+                b_scl, (size_t) t * 512, 512)) ||
+            !GGML_HRX2_CHECK(hrx_stream_copy_buffer(
+                context->stream, src0_ref.buffer, src0_ref.offset + tile_off + 512,
+                b_zp, (size_t) t * 512, 512)) ||
+            !GGML_HRX2_CHECK(hrx_stream_copy_buffer(
+                context->stream, src0_ref.buffer, src0_ref.offset + tile_off + 1024,
+                b_pck, (size_t) t * 4096, 4096))) {
+            return GGML_STATUS_FAILED;
+        }
+    }
+
+    // dequant provider (q4nx_dequant_f32 route)
+    const ggml_backend_hrx2_kernel_route * deq_route = device_context->q4nx_dequant_routes.front();
+    std::vector<ggml_backend_hrx2_config_binding> deq_cfg;
+    deq_cfg.push_back({"@hrx2.shape.ncols", std::to_string(k)});
+    deq_cfg.push_back({"@hrx2.shape.nrows", std::to_string(rows)});
+    deq_cfg.push_back({"@hrx2.tuning.q4nx.workgroup_size", std::to_string(wg_size)});
+    deq_cfg.push_back({"@hrx2.tuning.q4nx.n_tile_cols", std::to_string(n_tc)});
+    const std::string deq_key = ggml_backend_hrx2_base_cache_key(device_context, deq_route) +
+        "-q4nx-r" + std::to_string(rows) + "-c" + std::to_string(k) +
+        "-tc" + std::to_string(n_tc) + "-wg" + std::to_string(wg_size);
+    auto * deq = ggml_backend_hrx2_get_provider(device_context, deq_route, deq_cfg, deq_key);
+    if (!deq) {
+        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX dequant provider unavailable\n");
+        return GGML_STATUS_FAILED;
+    }
+
+    hrx_buffer_ref_t deq_bindings[4] = {
+        { b_pck, 0, pck_bytes },
+        { b_scl, 0, scl_bytes },
+        { b_zp,  0, scl_bytes },
+        { b_w,   0, w_bytes },
+    };
+    hrx_dispatch_config_t deq_config = {
+        { (rows * k + wg_size - 1) / wg_size, 1, 1 },
+        { wg_size, 1, 1 },
+        0,
+    };
+    if (!GGML_HRX2_CHECK(hrx_stream_dispatch(
+            context->stream, deq->executable, deq->export_ordinal,
+            &deq_config, nullptr, 0, deq_bindings, 4, HRX_DISPATCH_FLAG_NONE))) {
+        return GGML_STATUS_FAILED;
+    }
+
+
+    // f32 matmul provider: the ggml-layout route. src1/dst are ggml tensors
+    // (ne[0] fastest), and the dequantized weight b_w is row-major [rows, k];
+    // the kernel indexes each accordingly (see mul_mat_f32_f32.loom).
+    const ggml_backend_hrx2_kernel_route * mm_route = nullptr;
+    for (const auto * r : device_context->mul_mat_f32_f32_routes) {
+        if (r->id == "mul_mat_f32_f32_ggml") { mm_route = r; break; }
+    }
+    if (!mm_route) {
+        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX: mul_mat_f32_f32_ggml route missing\n");
+        return GGML_STATUS_FAILED;
+    }
+    std::vector<ggml_backend_hrx2_config_binding> mm_cfg;
+    mm_cfg.push_back({"@hrx2.shape.k", std::to_string(k)});
+    mm_cfg.push_back({"@hrx2.shape.rows", std::to_string(rows)});
+    mm_cfg.push_back({"@hrx2.shape.cols", std::to_string(cols)});
+    mm_cfg.push_back({"@hrx2.tuning.workgroup_size", std::to_string(wg_size)});
+    const std::string mm_key = ggml_backend_hrx2_base_cache_key(device_context, mm_route) +
+        "-q4nx-mm-r" + std::to_string(rows) + "-c" + std::to_string(cols) +
+        "-k" + std::to_string(k) + "-wg" + std::to_string(wg_size);
+    auto * mm = ggml_backend_hrx2_get_provider(device_context, mm_route, mm_cfg, mm_key);
+    if (!mm) {
+        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX f32 provider unavailable\n");
+        return GGML_STATUS_FAILED;
+    }
+    if (mm->route.constant_byte_length != 0) {
+        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX f32 route has unsupported constants\n");
+        return GGML_STATUS_FAILED;
+    }
+
+    hrx_buffer_ref_t mm_bindings[3] = {
+        { b_w,    0, w_bytes },
+        { src1_ref.buffer, src1_ref.offset, src1_ref.length },
+        { dst_ref.buffer,  dst_ref.offset,  dst_ref.length },
+    };
+    hrx_dispatch_config_t mm_config = {
+        { rows, cols, 1 },
+        { mm->export_info.workgroup_size[0] ? mm->export_info.workgroup_size[0] : mm->route.workgroup_size[0], 1, 1 },
+        0,
+    };
+    if (!GGML_HRX2_CHECK(hrx_stream_dispatch(
+            context->stream, mm->executable, mm->export_ordinal,
+            &mm_config, nullptr, 0, mm_bindings, 3, HRX_DISPATCH_FLAG_NONE))) {
+        return GGML_STATUS_FAILED;
+    }
+
+    return GGML_STATUS_SUCCESS;
 }
 
 static ggml_status ggml_backend_hrx2_dispatch_mul_mat_f32_f32(
@@ -10163,7 +10429,25 @@ static enum ggml_status ggml_backend_hrx2_graph_compute(ggml_backend_t backend, 
                     return GGML_STATUS_FAILED;
                 }
                 break;
+            case GGML_OP_MUL_MAT_Q4NX:
+                if (ggml_backend_hrx2_supports_mul_mat_q4nx_route(context->device_context, node)) {
+                    if (ggml_backend_hrx2_dispatch_mul_mat_q4nx(context, node) != GGML_STATUS_SUCCESS) {
+                        return GGML_STATUS_FAILED;
+                    }
+                    break;
+                }
+                {
+                    GGML_LOG_ERROR("HRX2: unsupported MUL_MAT_Q4NX shape/type/layout\n");
+                    return GGML_STATUS_FAILED;
+                }
+                break;
             case GGML_OP_MUL_MAT:
+                if (ggml_backend_hrx2_supports_mul_mat_q4nx_route(context->device_context, node)) {
+                    if (ggml_backend_hrx2_dispatch_mul_mat_q4nx(context, node) != GGML_STATUS_SUCCESS) {
+                        return GGML_STATUS_FAILED;
+                    }
+                    break;
+                }
                 if (ggml_backend_hrx2_supports_mul_mat_q8_0_route(context->device_context, node)) {
                     if (ggml_backend_hrx2_dispatch_mul_mat_q8_0(context, node) != GGML_STATUS_SUCCESS) {
                         return GGML_STATUS_FAILED;
@@ -10365,6 +10649,8 @@ static bool ggml_backend_hrx2_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_PERMUTE:
         case GGML_OP_TRANSPOSE:
             return true;
+        case GGML_OP_MUL_MAT_Q4NX:
+            return ggml_backend_hrx2_supports_mul_mat_q4nx_route(ggml_backend_hrx2_get_device_context(dev), op);
         case GGML_OP_RMS_NORM:
             return ggml_backend_hrx2_supports_rms_norm_route(ggml_backend_hrx2_get_device_context(dev), op);
         case GGML_OP_ADD:
@@ -10376,30 +10662,7 @@ static bool ggml_backend_hrx2_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_SUM_ROWS:
             return ggml_backend_hrx2_supports_sum_rows_route(ggml_backend_hrx2_get_device_context(dev), op);
         case GGML_OP_GET_ROWS:
-            return ggml_backend_hrx2_supports_get_rows_route(ggml_backend_hrx2_get_device_context(dev), op) ||
-                   ggml_backend_hrx2_supports_get_rows_quantized_route(
-                       ggml_backend_hrx2_get_device_context(dev),
-                       op,
-                       GGML_TYPE_Q8_0,
-                       ggml_backend_hrx2_get_device_context(dev)->get_rows_q8_0_routes) ||
-                   ggml_backend_hrx2_supports_get_rows_quantized_route(
-                       ggml_backend_hrx2_get_device_context(dev),
-                       op,
-                       GGML_TYPE_Q4_K,
-                       ggml_backend_hrx2_get_device_context(dev)->get_rows_q4_k_routes) ||
-                   ggml_backend_hrx2_supports_get_rows_quantized_route(
-                       ggml_backend_hrx2_get_device_context(dev),
-                       op,
-                       GGML_TYPE_Q5_K,
-                       ggml_backend_hrx2_get_device_context(dev)->get_rows_q5_k_routes) ||
-                   ggml_backend_hrx2_supports_get_rows_quantized_route(
-                       ggml_backend_hrx2_get_device_context(dev),
-                       op,
-                       GGML_TYPE_Q6_K,
-                       ggml_backend_hrx2_get_device_context(dev)->get_rows_q6_k_routes) ||
-                   ggml_backend_hrx2_supports_get_rows_moe_route(ggml_backend_hrx2_get_device_context(dev), op);
-        case GGML_OP_ARGSORT:
-            return ggml_backend_hrx2_supports_argsort_route(ggml_backend_hrx2_get_device_context(dev), op);
+            return false;
         case GGML_OP_ROPE:
             return ggml_backend_hrx2_supports_rope_route(ggml_backend_hrx2_get_device_context(dev), op);
         case GGML_OP_SOFT_MAX:
@@ -10408,21 +10671,18 @@ static bool ggml_backend_hrx2_device_supports_op(ggml_backend_dev_t dev, const g
             return ggml_backend_hrx2_supports_cont_route(ggml_backend_hrx2_get_device_context(dev), op);
         case GGML_OP_CPY:
             return ggml_backend_hrx2_supports_cpy(ggml_backend_hrx2_get_device_context(dev), op);
+        case GGML_OP_SET_ROWS:
+            return ggml_backend_hrx2_supports_set_rows_route(ggml_backend_hrx2_get_device_context(dev), op);
+        case GGML_OP_ARGSORT:
+            return ggml_backend_hrx2_supports_argsort_route(ggml_backend_hrx2_get_device_context(dev), op);
         case GGML_OP_GLU:
             return ggml_backend_hrx2_supports_swiglu_route(ggml_backend_hrx2_get_device_context(dev), op);
         case GGML_OP_MUL_MAT:
-            return ggml_backend_hrx2_supports_mul_mat_q8_0_route(ggml_backend_hrx2_get_device_context(dev), op) ||
-                   ggml_backend_hrx2_supports_mul_mat_q4_k_route(ggml_backend_hrx2_get_device_context(dev), op) ||
-                   ggml_backend_hrx2_supports_mul_mat_q5_k_route(ggml_backend_hrx2_get_device_context(dev), op) ||
-                   ggml_backend_hrx2_supports_mul_mat_q6_k_route(ggml_backend_hrx2_get_device_context(dev), op) ||
-                   ggml_backend_hrx2_supports_mul_mat_f32_f32_route(ggml_backend_hrx2_get_device_context(dev), op) ||
-                   ggml_backend_hrx2_supports_mul_mat_f16_f32_route(ggml_backend_hrx2_get_device_context(dev), op);
+            return false;
         case GGML_OP_MUL_MAT_ID:
             return ggml_backend_hrx2_supports_mul_mat_id_q4_k_route(ggml_backend_hrx2_get_device_context(dev), op) ||
                    ggml_backend_hrx2_supports_mul_mat_id_q5_k_route(ggml_backend_hrx2_get_device_context(dev), op) ||
                    ggml_backend_hrx2_supports_mul_mat_id_q6_k_route(ggml_backend_hrx2_get_device_context(dev), op);
-        case GGML_OP_SET_ROWS:
-            return ggml_backend_hrx2_supports_set_rows_route(ggml_backend_hrx2_get_device_context(dev), op);
         default:
             return false;
     }
@@ -10555,6 +10815,11 @@ static std::unique_ptr<ggml_backend_hrx2_reg_context> ggml_backend_hrx2_create_r
                 "mul_mat_f32_f32",
                 "MUL_MAT",
                 &device_context->mul_mat_f32_f32_routes);
+            ggml_backend_hrx2_catalog_find_routes(
+                *device_context->catalog,
+                "q4nx_dequant_f32",
+                "Q4NX_DEQUANT",
+                &device_context->q4nx_dequant_routes);
             ggml_backend_hrx2_catalog_find_routes(
                 *device_context->catalog,
                 "mul_mat_q4_k_f32",

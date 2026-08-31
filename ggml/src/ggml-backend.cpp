@@ -1334,6 +1334,20 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
         for (int b = 0; b < sched->n_backends && *cur_backend_id == -1; b++) {
             ggml_backend_sched_set_if_supported(sched, node, b, cur_backend_id);
         }
+        if (*cur_backend_id == -1) {
+            fprintf(stderr, "HRX2-SCHED: no backend supports node op=%d name=%s ne=[%lld,%lld,%lld,%lld] type=%d\n",
+                    (int) node->op, ggml_get_name(node),
+                    (long long) node->ne[0], (long long) node->ne[1],
+                    (long long) node->ne[2], (long long) node->ne[3],
+                    (int) node->type);
+            for (int i = 0; i < GGML_MAX_SRC; ++i) {
+                if (node->src[i]) {
+                    fprintf(stderr, "  src%d: op=%d name=%s type=%d\n", i,
+                            (int) node->src[i]->op, ggml_get_name(node->src[i]),
+                            (int) node->src[i]->type);
+                }
+            }
+        }
         GGML_ASSERT(*cur_backend_id != -1);
     }
 

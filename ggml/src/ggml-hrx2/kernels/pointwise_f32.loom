@@ -42,9 +42,9 @@ kernel.def export("hrx2_add_f32") @hrx2_add_f32() {
   %src0_global = buffer.assume.memory_space<global> %src0 : buffer
   %src1_global = buffer.assume.memory_space<global> %src1 : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
-  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32, #dense>
-  %src1_view = buffer.view %src1_global[%base] : buffer -> view<1073741824xf32, #dense>
-  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xf32, #dense>
+  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32>
+  %src1_view = buffer.view %src1_global[%base] : buffer -> view<1073741824xf32>
+  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xf32>
 
   scf.if %in_bounds {
     %col = index.rem %linear, %ncols_bounded : index
@@ -58,10 +58,10 @@ kernel.def export("hrx2_add_f32") @hrx2_add_f32() {
     %src1_col = index.rem %col, %src1_ncols_bounded : index
     %src1_idx0 = index.add %src1_row, %src1_col : index
     %src1_idx = index.assume %src1_idx0 [range(%src1_idx0, 0, 1073741823)] : index
-    %a = view.load %src0_view[%src0_idx] : view<1073741824xf32, #dense> -> f32
-    %b = view.load %src1_view[%src1_idx] : view<1073741824xf32, #dense> -> f32
+    %a = view.load %src0_view[%src0_idx] : view<1073741824xf32> -> f32
+    %b = view.load %src1_view[%src1_idx] : view<1073741824xf32> -> f32
     %result = scalar.addf<nnan|ninf|nsz> %a, %b : f32
-    view.store %result, %dst_view[%linear] : f32, view<1073741824xf32, #dense>
+    view.store %result, %dst_view[%linear] : f32, view<1073741824xf32>
   }
   kernel.return
 }
@@ -103,9 +103,9 @@ kernel.def export("hrx2_mul_f32") @hrx2_mul_f32() {
   %src0_global = buffer.assume.memory_space<global> %src0 : buffer
   %src1_global = buffer.assume.memory_space<global> %src1 : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
-  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32, #dense>
-  %src1_view = buffer.view %src1_global[%base] : buffer -> view<1073741824xf32, #dense>
-  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xf32, #dense>
+  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32>
+  %src1_view = buffer.view %src1_global[%base] : buffer -> view<1073741824xf32>
+  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xf32>
 
   scf.if %in_bounds {
     %col = index.rem %linear, %ncols_bounded : index
@@ -119,10 +119,10 @@ kernel.def export("hrx2_mul_f32") @hrx2_mul_f32() {
     %src1_col = index.rem %col, %src1_ncols_bounded : index
     %src1_idx0 = index.add %src1_row, %src1_col : index
     %src1_idx = index.assume %src1_idx0 [range(%src1_idx0, 0, 1073741823)] : index
-    %a = view.load %src0_view[%src0_idx] : view<1073741824xf32, #dense> -> f32
-    %b = view.load %src1_view[%src1_idx] : view<1073741824xf32, #dense> -> f32
+    %a = view.load %src0_view[%src0_idx] : view<1073741824xf32> -> f32
+    %b = view.load %src1_view[%src1_idx] : view<1073741824xf32> -> f32
     %result = scalar.mulf<nnan|ninf|nsz> %a, %b : f32
-    view.store %result, %dst_view[%linear] : f32, view<1073741824xf32, #dense>
+    view.store %result, %dst_view[%linear] : f32, view<1073741824xf32>
   }
   kernel.return
 }
@@ -159,19 +159,19 @@ kernel.def export("hrx2_add_f32_contiguous_2d") @hrx2_add_f32_contiguous_2d() {
   %src0_global = buffer.assume.memory_space<global> %src0 : buffer
   %src1_global = buffer.assume.memory_space<global> %src1 : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
-  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32, #dense>
-  %src1_view = buffer.view %src1_global[%base] : buffer -> view<1073741824xf32, #dense>
-  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xf32, #dense>
+  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32>
+  %src1_view = buffer.view %src1_global[%base] : buffer -> view<1073741824xf32>
+  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xf32>
 
   scf.if %in_bounds {
     %row_base0 = index.mul %row, %ncols_bounded : index
     %row_base = index.assume %row_base0 [range(%row_base0, 0, 1073741823)] : index
     %idx0 = index.add %row_base, %col : index
     %idx = index.assume %idx0 [range(%idx0, 0, 1073741823)] : index
-    %a = view.load %src0_view[%idx] : view<1073741824xf32, #dense> -> f32
-    %b = view.load %src1_view[%idx] : view<1073741824xf32, #dense> -> f32
+    %a = view.load %src0_view[%idx] : view<1073741824xf32> -> f32
+    %b = view.load %src1_view[%idx] : view<1073741824xf32> -> f32
     %result = scalar.addf<nnan|ninf|nsz> %a, %b : f32
-    view.store %result, %dst_view[%idx] : f32, view<1073741824xf32, #dense>
+    view.store %result, %dst_view[%idx] : f32, view<1073741824xf32>
   }
   kernel.return
 }
@@ -208,19 +208,19 @@ kernel.def export("hrx2_mul_f32_contiguous_2d") @hrx2_mul_f32_contiguous_2d() {
   %src0_global = buffer.assume.memory_space<global> %src0 : buffer
   %src1_global = buffer.assume.memory_space<global> %src1 : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
-  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32, #dense>
-  %src1_view = buffer.view %src1_global[%base] : buffer -> view<1073741824xf32, #dense>
-  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xf32, #dense>
+  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32>
+  %src1_view = buffer.view %src1_global[%base] : buffer -> view<1073741824xf32>
+  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xf32>
 
   scf.if %in_bounds {
     %row_base0 = index.mul %row, %ncols_bounded : index
     %row_base = index.assume %row_base0 [range(%row_base0, 0, 1073741823)] : index
     %idx0 = index.add %row_base, %col : index
     %idx = index.assume %idx0 [range(%idx0, 0, 1073741823)] : index
-    %a = view.load %src0_view[%idx] : view<1073741824xf32, #dense> -> f32
-    %b = view.load %src1_view[%idx] : view<1073741824xf32, #dense> -> f32
+    %a = view.load %src0_view[%idx] : view<1073741824xf32> -> f32
+    %b = view.load %src1_view[%idx] : view<1073741824xf32> -> f32
     %result = scalar.mulf<nnan|ninf|nsz> %a, %b : f32
-    view.store %result, %dst_view[%idx] : f32, view<1073741824xf32, #dense>
+    view.store %result, %dst_view[%idx] : f32, view<1073741824xf32>
   }
   kernel.return
 }
@@ -257,19 +257,19 @@ kernel.def export("hrx2_add_f32_rhs_row_broadcast_2d") @hrx2_add_f32_rhs_row_bro
   %src0_global = buffer.assume.memory_space<global> %src0 : buffer
   %src1_global = buffer.assume.memory_space<global> %src1 : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
-  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32, #dense>
-  %src1_view = buffer.view %src1_global[%base] : buffer -> view<1073741824xf32, #dense>
-  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xf32, #dense>
+  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32>
+  %src1_view = buffer.view %src1_global[%base] : buffer -> view<1073741824xf32>
+  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xf32>
 
   scf.if %in_bounds {
     %row_base0 = index.mul %row, %ncols_bounded : index
     %row_base = index.assume %row_base0 [range(%row_base0, 0, 1073741823)] : index
     %idx0 = index.add %row_base, %col : index
     %idx = index.assume %idx0 [range(%idx0, 0, 1073741823)] : index
-    %a = view.load %src0_view[%idx] : view<1073741824xf32, #dense> -> f32
-    %b = view.load %src1_view[%col] : view<1073741824xf32, #dense> -> f32
+    %a = view.load %src0_view[%idx] : view<1073741824xf32> -> f32
+    %b = view.load %src1_view[%col] : view<1073741824xf32> -> f32
     %result = scalar.addf<nnan|ninf|nsz> %a, %b : f32
-    view.store %result, %dst_view[%idx] : f32, view<1073741824xf32, #dense>
+    view.store %result, %dst_view[%idx] : f32, view<1073741824xf32>
   }
   kernel.return
 }
@@ -306,19 +306,19 @@ kernel.def export("hrx2_mul_f32_rhs_row_broadcast_2d") @hrx2_mul_f32_rhs_row_bro
   %src0_global = buffer.assume.memory_space<global> %src0 : buffer
   %src1_global = buffer.assume.memory_space<global> %src1 : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
-  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32, #dense>
-  %src1_view = buffer.view %src1_global[%base] : buffer -> view<1073741824xf32, #dense>
-  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xf32, #dense>
+  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32>
+  %src1_view = buffer.view %src1_global[%base] : buffer -> view<1073741824xf32>
+  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xf32>
 
   scf.if %in_bounds {
     %row_base0 = index.mul %row, %ncols_bounded : index
     %row_base = index.assume %row_base0 [range(%row_base0, 0, 1073741823)] : index
     %idx0 = index.add %row_base, %col : index
     %idx = index.assume %idx0 [range(%idx0, 0, 1073741823)] : index
-    %a = view.load %src0_view[%idx] : view<1073741824xf32, #dense> -> f32
-    %b = view.load %src1_view[%col] : view<1073741824xf32, #dense> -> f32
+    %a = view.load %src0_view[%idx] : view<1073741824xf32> -> f32
+    %b = view.load %src1_view[%col] : view<1073741824xf32> -> f32
     %result = scalar.mulf<nnan|ninf|nsz> %a, %b : f32
-    view.store %result, %dst_view[%idx] : f32, view<1073741824xf32, #dense>
+    view.store %result, %dst_view[%idx] : f32, view<1073741824xf32>
   }
   kernel.return
 }
@@ -360,9 +360,9 @@ kernel.def export("hrx2_div_f32") @hrx2_div_f32() {
   %src0_global = buffer.assume.memory_space<global> %src0 : buffer
   %src1_global = buffer.assume.memory_space<global> %src1 : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
-  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32, #dense>
-  %src1_view = buffer.view %src1_global[%base] : buffer -> view<1073741824xf32, #dense>
-  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xf32, #dense>
+  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32>
+  %src1_view = buffer.view %src1_global[%base] : buffer -> view<1073741824xf32>
+  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xf32>
 
   scf.if %in_bounds {
     %col = index.rem %linear, %ncols_bounded : index
@@ -376,10 +376,10 @@ kernel.def export("hrx2_div_f32") @hrx2_div_f32() {
     %src1_col = index.rem %col, %src1_ncols_bounded : index
     %src1_idx0 = index.add %src1_row, %src1_col : index
     %src1_idx = index.assume %src1_idx0 [range(%src1_idx0, 0, 1073741823)] : index
-    %a = view.load %src0_view[%src0_idx] : view<1073741824xf32, #dense> -> f32
-    %b = view.load %src1_view[%src1_idx] : view<1073741824xf32, #dense> -> f32
+    %a = view.load %src0_view[%src0_idx] : view<1073741824xf32> -> f32
+    %b = view.load %src1_view[%src1_idx] : view<1073741824xf32> -> f32
     %result = scalar.divf<nnan|ninf|nsz|arcp> %a, %b : f32
-    view.store %result, %dst_view[%linear] : f32, view<1073741824xf32, #dense>
+    view.store %result, %dst_view[%linear] : f32, view<1073741824xf32>
   }
   kernel.return
 }
@@ -416,14 +416,14 @@ kernel.def export("hrx2_scale_f32") @hrx2_scale_f32() {
 
   %src0_global = buffer.assume.memory_space<global> %src0 : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
-  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32, #dense>
-  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xf32, #dense>
+  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32>
+  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xf32>
 
   scf.if %in_bounds {
-    %value = view.load %src0_view[%linear] : view<1073741824xf32, #dense> -> f32
+    %value = view.load %src0_view[%linear] : view<1073741824xf32> -> f32
     %scaled = scalar.mulf<nnan|ninf|nsz> %value, %scale : f32
     %result = scalar.addf<nnan|ninf|nsz> %scaled, %bias : f32
-    view.store %result, %dst_view[%linear] : f32, view<1073741824xf32, #dense>
+    view.store %result, %dst_view[%linear] : f32, view<1073741824xf32>
   }
   kernel.return
 }
@@ -460,13 +460,13 @@ kernel.def export("hrx2_clamp_f32") @hrx2_clamp_f32() {
 
   %src0_global = buffer.assume.memory_space<global> %src0 : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
-  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32, #dense>
-  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xf32, #dense>
+  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32>
+  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xf32>
 
   scf.if %in_bounds {
-    %value = view.load %src0_view[%linear] : view<1073741824xf32, #dense> -> f32
+    %value = view.load %src0_view[%linear] : view<1073741824xf32> -> f32
     %result = scalar.clampf<number, nnan|nsz> %value, %min, %max : f32
-    view.store %result, %dst_view[%linear] : f32, view<1073741824xf32, #dense>
+    view.store %result, %dst_view[%linear] : f32, view<1073741824xf32>
   }
   kernel.return
 }

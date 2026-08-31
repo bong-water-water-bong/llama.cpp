@@ -1305,6 +1305,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             {
                 probs = logits; // [n_expert, n_tokens]
             } break;
+        case LLAMA_EXPERT_GATING_FUNC_TYPE_NONE:
+            {
+                probs = logits; // already-normalized expert probabilities (zaya)
+            } break;
         default:
             GGML_ABORT("fatal error");
     }

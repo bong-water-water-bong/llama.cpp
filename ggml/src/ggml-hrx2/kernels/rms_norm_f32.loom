@@ -35,11 +35,11 @@ kernel.def export("hrx2_rms_norm_f32") @hrx2_rms_norm_f32(%ncols: index, %nrows:
   %src_global = buffer.assume.memory_space<global> %src : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src_noalias, %dst_noalias = buffer.assume.noalias %src_global, %dst_global : buffer, buffer
-  %src_view = buffer.view %src_noalias[%base] : buffer -> view<[%nrows_bounded]x[%ncols_bounded]xf32, #dense>
-  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%nrows_bounded]x[%ncols_bounded]xf32, #dense>
+  %src_view = buffer.view %src_noalias[%base] : buffer -> view<[%nrows_bounded]x[%ncols_bounded]xf32>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%nrows_bounded]x[%ncols_bounded]xf32>
 
   %sum = scf.for %col = [%lane to %ncols_bounded step %workgroup_size](%acc = %zero_f32 : f32) -> (f32) {
-    %value = view.load %src_view[%row, %col] : view<[%nrows_bounded]x[%ncols_bounded]xf32, #dense> -> f32
+    %value = view.load %src_view[%row, %col] : view<[%nrows_bounded]x[%ncols_bounded]xf32> -> f32
     %square = scalar.mulf<reassoc|nnan|ninf|nsz> %value, %value : f32
     %next = scalar.addf<reassoc|nnan|ninf|nsz> %acc, %square : f32
     scf.yield %next : f32
@@ -53,9 +53,9 @@ kernel.def export("hrx2_rms_norm_f32") @hrx2_rms_norm_f32(%ncols: index, %nrows:
   %scale = scalar.rsqrtf<nnan|ninf|nsz|afn> %mean_eps : f32
 
   scf.for %col = [%lane to %ncols_bounded step %workgroup_size] {
-    %value = view.load %src_view[%row, %col] : view<[%nrows_bounded]x[%ncols_bounded]xf32, #dense> -> f32
+    %value = view.load %src_view[%row, %col] : view<[%nrows_bounded]x[%ncols_bounded]xf32> -> f32
     %result = scalar.mulf<nnan|ninf|nsz> %value, %scale : f32
-    view.store %result, %dst_view[%row, %col] : f32, view<[%nrows_bounded]x[%ncols_bounded]xf32, #dense>
+    view.store %result, %dst_view[%row, %col] : f32, view<[%nrows_bounded]x[%ncols_bounded]xf32>
   }
   kernel.return
 }
@@ -81,11 +81,11 @@ kernel.def export("hrx2_rms_norm_f32_static_scalar") @hrx2_rms_norm_f32_static_s
   %src_global = buffer.assume.memory_space<global> %src : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src_noalias, %dst_noalias = buffer.assume.noalias %src_global, %dst_global : buffer, buffer
-  %src_view = buffer.view %src_noalias[%base] : buffer -> view<[%nrows_bounded]x[%ncols_bounded]xf32, #dense>
-  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%nrows_bounded]x[%ncols_bounded]xf32, #dense>
+  %src_view = buffer.view %src_noalias[%base] : buffer -> view<[%nrows_bounded]x[%ncols_bounded]xf32>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%nrows_bounded]x[%ncols_bounded]xf32>
 
   %sum = scf.for %col = [%lane to %ncols_bounded step %workgroup_size](%acc = %zero_f32 : f32) -> (f32) {
-    %value = view.load %src_view[%row, %col] : view<[%nrows_bounded]x[%ncols_bounded]xf32, #dense> -> f32
+    %value = view.load %src_view[%row, %col] : view<[%nrows_bounded]x[%ncols_bounded]xf32> -> f32
     %square = scalar.mulf<reassoc|nnan|ninf|nsz> %value, %value : f32
     %next = scalar.addf<reassoc|nnan|ninf|nsz> %acc, %square : f32
     scf.yield %next : f32
@@ -99,9 +99,9 @@ kernel.def export("hrx2_rms_norm_f32_static_scalar") @hrx2_rms_norm_f32_static_s
   %scale = scalar.rsqrtf<nnan|ninf|nsz|afn> %mean_eps : f32
 
   scf.for %col = [%lane to %ncols_bounded step %workgroup_size] {
-    %value = view.load %src_view[%row, %col] : view<[%nrows_bounded]x[%ncols_bounded]xf32, #dense> -> f32
+    %value = view.load %src_view[%row, %col] : view<[%nrows_bounded]x[%ncols_bounded]xf32> -> f32
     %result = scalar.mulf<nnan|ninf|nsz> %value, %scale : f32
-    view.store %result, %dst_view[%row, %col] : f32, view<[%nrows_bounded]x[%ncols_bounded]xf32, #dense>
+    view.store %result, %dst_view[%row, %col] : f32, view<[%nrows_bounded]x[%ncols_bounded]xf32>
   }
   kernel.return
 }
@@ -132,15 +132,15 @@ kernel.def export("hrx2_rms_norm_f32_static_vector_tail") @hrx2_rms_norm_f32_sta
   %src_global = buffer.assume.memory_space<global> %src : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src_noalias, %dst_noalias = buffer.assume.noalias %src_global, %dst_global : buffer, buffer
-  %src_view = buffer.view %src_noalias[%base] : buffer -> view<[%element_count]xf32, #dense>
-  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%element_count]xf32, #dense>
+  %src_view = buffer.view %src_noalias[%base] : buffer -> view<[%element_count]xf32>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%element_count]xf32>
   %row_base = index.mul %row, %ncols_bounded : index
 
   %sum_vec = scf.for %vcol = [%lane to %logical_cols step %workgroup_size](%acc = %zero_f32 : f32) -> (f32) {
     %col0 = index.mul %vcol, %vector_width_bounded : index
     %linear0 = index.add %row_base, %col0 : index
     %linear = index.assume %linear0 [range(%linear0, 0, 67108863)] : index
-    %values = vector.load %src_view[%linear] : view<[%element_count]xf32, #dense> -> vector<[%vector_width_bounded]xf32>
+    %values = vector.load %src_view[%linear] : view<[%element_count]xf32> -> vector<[%vector_width_bounded]xf32>
     %squares = vector.mulf<reassoc|nnan|ninf|nsz> %values, %values : vector<[%vector_width_bounded]xf32>
     %next = vector.reduce<addf, reassoc|nnan|ninf|nsz> %squares, %acc : vector<[%vector_width_bounded]xf32>, f32
     scf.yield %next : f32
@@ -150,7 +150,7 @@ kernel.def export("hrx2_rms_norm_f32_static_vector_tail") @hrx2_rms_norm_f32_sta
   %sum = scf.for %col = [%tail_lane0 to %ncols_bounded step %workgroup_size](%acc = %sum_vec : f32) -> (f32) {
     %linear0 = index.add %row_base, %col : index
     %linear = index.assume %linear0 [range(%linear0, 0, 67108863)] : index
-    %value = view.load %src_view[%linear] : view<[%element_count]xf32, #dense> -> f32
+    %value = view.load %src_view[%linear] : view<[%element_count]xf32> -> f32
     %square = scalar.mulf<reassoc|nnan|ninf|nsz> %value, %value : f32
     %next = scalar.addf<reassoc|nnan|ninf|nsz> %acc, %square : f32
     scf.yield %next : f32
@@ -168,17 +168,17 @@ kernel.def export("hrx2_rms_norm_f32_static_vector_tail") @hrx2_rms_norm_f32_sta
     %col0 = index.mul %vcol, %vector_width_bounded : index
     %linear0 = index.add %row_base, %col0 : index
     %linear = index.assume %linear0 [range(%linear0, 0, 67108863)] : index
-    %values = vector.load %src_view[%linear] : view<[%element_count]xf32, #dense> -> vector<[%vector_width_bounded]xf32>
+    %values = vector.load %src_view[%linear] : view<[%element_count]xf32> -> vector<[%vector_width_bounded]xf32>
     %result = vector.mulf<nnan|ninf|nsz> %values, %scale_vector : vector<[%vector_width_bounded]xf32>
-    vector.store %result, %dst_view[%linear] : vector<[%vector_width_bounded]xf32>, view<[%element_count]xf32, #dense>
+    vector.store %result, %dst_view[%linear] : vector<[%vector_width_bounded]xf32>, view<[%element_count]xf32>
   }
 
   scf.for %col = [%tail_lane0 to %ncols_bounded step %workgroup_size] {
     %linear0 = index.add %row_base, %col : index
     %linear = index.assume %linear0 [range(%linear0, 0, 67108863)] : index
-    %value = view.load %src_view[%linear] : view<[%element_count]xf32, #dense> -> f32
+    %value = view.load %src_view[%linear] : view<[%element_count]xf32> -> f32
     %result = scalar.mulf<nnan|ninf|nsz> %value, %scale : f32
-    view.store %result, %dst_view[%linear] : f32, view<[%element_count]xf32, #dense>
+    view.store %result, %dst_view[%linear] : f32, view<[%element_count]xf32>
   }
   kernel.return
 }
@@ -198,9 +198,9 @@ check.case @hrx2_rms_norm_f32_case {
   %src = check.generate.fill value(2.0) : tensor<[%nrows]x[%ncols]xf32>
   %dst = check.generate.fill value(0.0) : tensor<[%nrows]x[%ncols]xf32>
   %expected = check.generate.fill value(1.0) : tensor<[%nrows]x[%ncols]xf32>
-  func.call @hrx2_rms_norm_f32(
+  kernel.launch @hrx2_rms_norm_f32[%ncols, %nrows](
       %ncols, %nrows, %ne1, %ne2, %src_nb1, %src_nb2, %src_nb3, %dst_nb1, %dst_nb2, %dst_nb3, %eps, %src, %dst)
-      : (index, index, index, index, index, index, index, index, index, index, f32,
+      : [index, index](index, index, index, index, index, index, index, index, index, index, f32,
          tensor<[%nrows]x[%ncols]xf32>, tensor<[%nrows]x[%ncols]xf32>)
   check.expect.close actual(%dst) expected(%expected) atol(0.0001) rtol(0.0001) nan(same) : tensor<[%nrows]x[%ncols]xf32>
   check.return

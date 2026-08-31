@@ -181,6 +181,22 @@ typedef struct {
 } block_q1_0;
 static_assert(sizeof(block_q1_0) == sizeof(ggml_half) + QK1_0 / 8, "wrong q1_0 block size/padding");
 
+// Q4NX (1bit-MONSTER): one 5120-byte tile = [32 BF16 rows x 256 BF16 cols].
+//   [0..511]    256 BF16 scales, row-major: scales[row*8 + col/32] (2 B each)
+//   [512..1023] 256 BF16 zero points, same layout (trailer bytes at 1018..1023
+//               are per-tile metadata, NOT zero-points; dequant clamps outliers)
+//   [1024..5119] 4096 B packed int4: lane = row/16, byte = lane*2048 + col*8 +
+//               (row%16)/2; low nibble = even row; two's-complement signed
+#define QK4NX 8192
+#define QK4NX_TILE_ROWS 32
+#define QK4NX_TILE_COLS 256
+typedef struct {
+    uint8_t scales[512]; // 256 BF16 scales
+    uint8_t zeros[512];  // 256 BF16 zero points
+    uint8_t packed[4096]; // packed int4
+} block_q4nx;
+static_assert(sizeof(block_q4nx) == 5120, "wrong q4nx block size/padding");
+
 #define QK4_0 32
 typedef struct {
     ggml_half d;           // delta

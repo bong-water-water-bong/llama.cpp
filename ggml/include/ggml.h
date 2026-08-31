@@ -429,7 +429,16 @@ extern "C" {
         GGML_TYPE_MXFP4   = 39, // MXFP4 (1 block)
         GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
         GGML_TYPE_Q1_0    = 41,
-        GGML_TYPE_COUNT   = 42,
+        GGML_TYPE_Q4NX    = 42, // 1bit-MONSTER Q4NX: 5120-byte tile = [32 BF16 rows x 256 cols]
+                                // (256 BF16 scales + 256 BF16 zeros + 4096 B packed int4)
+        GGML_TYPE_COUNT   = 43,
+    };
+
+    // Q4NX tile geometry (1bit-MONSTER engine format, engine/npu/dequant_q4nx.cpp)
+    enum {
+        GGML_Q4NX_TILE_ROWS = 32,
+        GGML_Q4NX_TILE_COLS = 256,
+        GGML_Q4NX_TILE_BYTES = 5120,
     };
 
     // precision
@@ -576,6 +585,10 @@ extern "C" {
         GGML_OP_OPT_STEP_SGD,
 
         GGML_OP_GLU,
+
+        GGML_OP_MUL_MAT_Q4NX, // 1bit-MONSTER: src0 GGML_TYPE_Q4NX [8192, n_tiles]
+                              // (each 8192-elem row = one 5120-byte tile) x
+                              // src1 F32 [256, cols] -> F32 [n_tiles*32, cols]
 
         GGML_OP_COUNT,
     };
@@ -1418,6 +1431,9 @@ extern "C" {
             enum ggml_prec       prec);
 
     // indirect matrix multiplication
+    GGML_API struct ggml_tensor * ggml_mul_mat_q4nx(
+            struct ggml_context * ctx, struct ggml_tensor * a, struct ggml_tensor * b);
+
     GGML_API struct ggml_tensor * ggml_mul_mat_id(
             struct ggml_context * ctx,
             struct ggml_tensor  * as,

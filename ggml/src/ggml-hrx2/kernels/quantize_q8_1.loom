@@ -68,9 +68,9 @@ kernel.def export("hrx2_quantize_q8_1_f32") @hrx2_quantize_q8_1_f32() {
   %src_global = buffer.assume.memory_space<global> %src : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src_noalias, %dst_noalias = buffer.assume.noalias %src_global, %dst_global : buffer, buffer
-  %src_view = buffer.view %src_noalias[%base] : buffer -> view<1073741824xf32, #dense>
-  %dst_i8_view = buffer.view %dst_noalias[%base] : buffer -> view<1073741824xi8, #dense>
-  %dst_f16_view = buffer.view %dst_noalias[%base] : buffer -> view<536870912xf16, #dense>
+  %src_view = buffer.view %src_noalias[%base] : buffer -> view<1073741824xf32>
+  %dst_i8_view = buffer.view %dst_noalias[%base] : buffer -> view<1073741824xi8>
+  %dst_f16_view = buffer.view %dst_noalias[%base] : buffer -> view<536870912xf16>
 
   %src_i3_offset_raw = index.mul %i3, %s03_bounded : index
   %src_i3_offset = index.assume %src_i3_offset_raw [range(%src_i3_offset_raw, 0, 1073741823)] : index
@@ -86,7 +86,7 @@ kernel.def export("hrx2_quantize_q8_1_f32") @hrx2_quantize_q8_1_f32() {
   %src_index = index.assume %src_index_raw [range(%src_index_raw, 0, 1073741823)] : index
   %in_src = index.cmp ult, %i0_lane, %ne00_bounded : index
   %value = scf.if %in_src -> (f32) {
-    %loaded = view.load %src_view[%src_index] : view<1073741824xf32, #dense> -> f32
+    %loaded = view.load %src_view[%src_index] : view<1073741824xf32> -> f32
     scf.yield %loaded : f32
   } else {
     scf.yield %zero_f32 : f32
@@ -126,7 +126,7 @@ kernel.def export("hrx2_quantize_q8_1_f32") @hrx2_quantize_q8_1_f32() {
   %qs_payload = index.assume %qs_payload_raw [range(%qs_payload_raw, 4, 301989856)] : index
   %qs_index_raw = index.add %qs_payload, %lane : index
   %qs_index = index.assume %qs_index_raw [range(%qs_index_raw, 4, 301989887)] : index
-  view.store %q_i8, %dst_i8_view[%qs_index] : i8, view<1073741824xi8, #dense>
+  view.store %q_i8, %dst_i8_view[%qs_index] : i8, view<1073741824xi8>
 
   %lane_i32 = index.cast %lane : index to i32
   %is_lane0 = scalar.cmpi eq, %lane_i32, %zero_i32 : i32
@@ -138,8 +138,8 @@ kernel.def export("hrx2_quantize_q8_1_f32") @hrx2_quantize_q8_1_f32() {
     %block_f16_base = index.assume %block_f16_base_raw [range(%block_f16_base_raw, 0, 150994926)] : index
     %sum_f16_index_raw = index.add %block_f16_base, %one : index
     %sum_f16_index = index.assume %sum_f16_index_raw [range(%sum_f16_index_raw, 1, 150994927)] : index
-    view.store %d_f16, %dst_f16_view[%block_f16_base] : f16, view<536870912xf16, #dense>
-    view.store %sum_f16, %dst_f16_view[%sum_f16_index] : f16, view<536870912xf16, #dense>
+    view.store %d_f16, %dst_f16_view[%block_f16_base] : f16, view<536870912xf16>
+    view.store %sum_f16, %dst_f16_view[%sum_f16_index] : f16, view<536870912xf16>
   }
   kernel.return
 }
@@ -224,9 +224,9 @@ kernel.def export("hrx2_quantize_q8_1_x4_f32") @hrx2_quantize_q8_1_x4_f32() {
   %src_global = buffer.assume.memory_space<global> %src : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src_noalias, %dst_noalias = buffer.assume.noalias %src_global, %dst_global : buffer, buffer
-  %src_view = buffer.view %src_noalias[%base] : buffer -> view<1073741824xf32, #dense>
-  %dst_i8_view = buffer.view %dst_noalias[%base] : buffer -> view<1073741824xi8, #dense>
-  %dst_f16_view = buffer.view %dst_noalias[%base] : buffer -> view<536870912xf16, #dense>
+  %src_view = buffer.view %src_noalias[%base] : buffer -> view<1073741824xf32>
+  %dst_i8_view = buffer.view %dst_noalias[%base] : buffer -> view<1073741824xi8>
+  %dst_f16_view = buffer.view %dst_noalias[%base] : buffer -> view<536870912xf16>
 
   %src_i3_offset_raw = index.mul %i3, %s03_bounded : index
   %src_i3_offset = index.assume %src_i3_offset_raw [range(%src_i3_offset_raw, 0, 1073741823)] : index
@@ -242,7 +242,7 @@ kernel.def export("hrx2_quantize_q8_1_x4_f32") @hrx2_quantize_q8_1_x4_f32() {
   %src_index = index.assume %src_index_raw [range(%src_index_raw, 0, 1073741823)] : index
   %in_src = index.cmp ult, %i0_lane, %ne00_bounded : index
   %value = scf.if %in_src -> (f32) {
-    %loaded = view.load %src_view[%src_index] : view<1073741824xf32, #dense> -> f32
+    %loaded = view.load %src_view[%src_index] : view<1073741824xf32> -> f32
     scf.yield %loaded : f32
   } else {
     scf.yield %zero_f32 : f32
@@ -285,7 +285,7 @@ kernel.def export("hrx2_quantize_q8_1_x4_f32") @hrx2_quantize_q8_1_x4_f32() {
   %qs_payload1 = index.add %qs_payload0, %inner_qs_offset : index
   %qs_index_raw = index.add %qs_payload1, %lane : index
   %qs_index = index.assume %qs_index_raw [range(%qs_index_raw, 16, 301989887)] : index
-  view.store %q_i8, %dst_i8_view[%qs_index] : i8, view<1073741824xi8, #dense>
+  view.store %q_i8, %dst_i8_view[%qs_index] : i8, view<1073741824xi8>
 
   %lane_i32 = index.cast %lane : index to i32
   %is_lane0 = scalar.cmpi eq, %lane_i32, %zero_i32 : i32
@@ -300,8 +300,8 @@ kernel.def export("hrx2_quantize_q8_1_x4_f32") @hrx2_quantize_q8_1_x4_f32() {
     %block_f16_base = index.add %block_f16_base0, %inner_ds_offset : index
     %sum_f16_index_raw = index.add %block_f16_base, %one : index
     %sum_f16_index = index.assume %sum_f16_index_raw [range(%sum_f16_index_raw, 1, 150994879)] : index
-    view.store %d_f16, %dst_f16_view[%block_f16_base] : f16, view<536870912xf16, #dense>
-    view.store %sum_f16, %dst_f16_view[%sum_f16_index] : f16, view<536870912xf16, #dense>
+    view.store %d_f16, %dst_f16_view[%block_f16_base] : f16, view<536870912xf16>
+    view.store %sum_f16, %dst_f16_view[%sum_f16_index] : f16, view<536870912xf16>
   }
   kernel.return
 }

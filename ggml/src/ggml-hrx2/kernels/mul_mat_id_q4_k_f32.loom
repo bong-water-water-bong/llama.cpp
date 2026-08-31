@@ -87,15 +87,15 @@ kernel.def export("hrx2_mul_mat_id_q4_k_f32_static") @hrx2_mul_mat_id_q4_k_f32_s
   %idx_global = buffer.assume.memory_space<global> %idx : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src0_noalias, %src1_noalias, %idx_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %src1_global, %idx_global, %dst_global : buffer, buffer, buffer, buffer
-  %src0_i8_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_i8_count]xi8, #dense>
-  %src0_f16_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_f16_count]xf16, #dense>
-  %src1_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_count]xf32, #dense>
-  %idx_view = buffer.view %idx_noalias[%base] : buffer -> view<[%idx_count]xi32, #dense>
-  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32, #dense>
+  %src0_i8_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_i8_count]xi8>
+  %src0_f16_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_f16_count]xf16>
+  %src1_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_count]xf32>
+  %idx_view = buffer.view %idx_noalias[%base] : buffer -> view<[%idx_count]xi32>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32>
 
   %idx_token_base = index.mul %token, %idx_token_stride : index
   %idx_offset = index.add %idx_token_base, %selected : index
-  %expert_i32 = view.load %idx_view[%idx_offset] : view<[%idx_count]xi32, #dense> -> i32
+  %expert_i32 = view.load %idx_view[%idx_offset] : view<[%idx_count]xi32> -> i32
   %expert_nonnegative = scalar.cmpi sge, %expert_i32, %zero_i32 : i32
   %expert0 = index.cast %expert_i32 : i32 to index
   %expert = index.assume %expert0 [range(%expert0, 0, 1023)] : index
@@ -118,8 +118,8 @@ kernel.def export("hrx2_mul_mat_id_q4_k_f32_static") @hrx2_mul_mat_id_q4_k_f32_s
     %scale_base = index.add %block_byte_base, %scale_offset : index
     %qs_payload = index.add %block_byte_base, %qs_offset : index
     %qs_base = index.add %qs_payload, %qs_lane_base : index
-    %d_f16 = view.load %src0_f16_view[%block_f16_base] : view<[%src0_f16_count]xf16, #dense> -> f16
-    %dmin_f16 = view.load %src0_f16_view[%dmin_index] : view<[%src0_f16_count]xf16, #dense> -> f16
+    %d_f16 = view.load %src0_f16_view[%block_f16_base] : view<[%src0_f16_count]xf16> -> f16
+    %dmin_f16 = view.load %src0_f16_view[%dmin_index] : view<[%src0_f16_count]xf16> -> f16
     %d0 = scalar.extf %d_f16 : f16 to f32
     %dmin0 = scalar.extf %dmin_f16 : f16 to f32
     %group_lt4 = index.cmp slt, %group, %four : index
@@ -129,10 +129,10 @@ kernel.def export("hrx2_mul_mat_id_q4_k_f32_static") @hrx2_mul_mat_id_q4_k_f32_s
       %m_index = index.add %scale_base, %m_group : index
       %d_offset = index.cast %d_index : index to offset
       %m_offset = index.cast %m_index : index to offset
-      %d_word_view = buffer.view %src0_noalias[%d_offset] : buffer -> view<1xi32, #dense>
-      %m_word_view = buffer.view %src0_noalias[%m_offset] : buffer -> view<1xi32, #dense>
-      %d_word = vector.load %d_word_view[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
-      %m_word = vector.load %m_word_view[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
+      %d_word_view = buffer.view %src0_noalias[%d_offset] : buffer -> view<1xi32>
+      %m_word_view = buffer.view %src0_noalias[%m_offset] : buffer -> view<1xi32>
+      %d_word = vector.load %d_word_view[%zero_index] : view<1xi32> -> vector<1xi32>
+      %m_word = vector.load %m_word_view[%zero_index] : view<1xi32> -> vector<1xi32>
       %d_byte_vec = vector.bitfield.extractu %d_word {offset = 0, width = 8} : vector<1xi32> -> vector<1xi32>
       %m_byte_vec = vector.bitfield.extractu %m_word {offset = 0, width = 8} : vector<1xi32> -> vector<1xi32>
       %d_u32 = vector.extract %d_byte_vec[0] : vector<1xi32> -> i32
@@ -149,12 +149,12 @@ kernel.def export("hrx2_mul_mat_id_q4_k_f32_static") @hrx2_mul_mat_id_q4_k_f32_s
       %low_offset = index.cast %low_index : index to offset
       %mid_offset = index.cast %mid_index : index to offset
       %high_offset = index.cast %high_index : index to offset
-      %low_word_view = buffer.view %src0_noalias[%low_offset] : buffer -> view<1xi32, #dense>
-      %mid_word_view = buffer.view %src0_noalias[%mid_offset] : buffer -> view<1xi32, #dense>
-      %high_word_view = buffer.view %src0_noalias[%high_offset] : buffer -> view<1xi32, #dense>
-      %low_word = vector.load %low_word_view[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
-      %mid_word = vector.load %mid_word_view[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
-      %high_word = vector.load %high_word_view[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
+      %low_word_view = buffer.view %src0_noalias[%low_offset] : buffer -> view<1xi32>
+      %mid_word_view = buffer.view %src0_noalias[%mid_offset] : buffer -> view<1xi32>
+      %high_word_view = buffer.view %src0_noalias[%high_offset] : buffer -> view<1xi32>
+      %low_word = vector.load %low_word_view[%zero_index] : view<1xi32> -> vector<1xi32>
+      %mid_word = vector.load %mid_word_view[%zero_index] : view<1xi32> -> vector<1xi32>
+      %high_word = vector.load %high_word_view[%zero_index] : view<1xi32> -> vector<1xi32>
       %low_byte_vec = vector.bitfield.extractu %low_word {offset = 0, width = 8} : vector<1xi32> -> vector<1xi32>
       %mid_byte_vec = vector.bitfield.extractu %mid_word {offset = 0, width = 8} : vector<1xi32> -> vector<1xi32>
       %high_byte_vec = vector.bitfield.extractu %high_word {offset = 0, width = 8} : vector<1xi32> -> vector<1xi32>
@@ -180,8 +180,8 @@ kernel.def export("hrx2_mul_mat_id_q4_k_f32_static") @hrx2_mul_mat_id_q4_k_f32_s
       %src_offset = index.add %src_base, %j : index
       %src1_index = index.add %src1_col_base, %src_offset : index
       %q_offset = index.cast %q_index : index to offset
-      %q_word_view = buffer.view %src0_noalias[%q_offset] : buffer -> view<1xi32, #dense>
-      %q_word = vector.load %q_word_view[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
+      %q_word_view = buffer.view %src0_noalias[%q_offset] : buffer -> view<1xi32>
+      %q_word = vector.load %q_word_view[%zero_index] : view<1xi32> -> vector<1xi32>
       %q_byte_vec = vector.bitfield.extractu %q_word {offset = 0, width = 8} : vector<1xi32> -> vector<1xi32>
       %q_byte = vector.extract %q_byte_vec[0] : vector<1xi32> -> i32
       %q_i32 = scf.if %is_high_group -> (i32) {
@@ -192,7 +192,7 @@ kernel.def export("hrx2_mul_mat_id_q4_k_f32_static") @hrx2_mul_mat_id_q4_k_f32_s
         scf.yield %lo : i32
       }
       %q_f32 = scalar.uitofp %q_i32 : i32 to f32
-      %rhs = view.load %src1_view[%src1_index] : view<[%src1_count]xf32, #dense> -> f32
+      %rhs = view.load %src1_view[%src1_index] : view<[%src1_count]xf32> -> f32
       %scaled = scalar.mulf<reassoc|nnan|ninf|nsz> %d, %q_f32 : f32
       %dequant = scalar.subf<reassoc|nnan|ninf|nsz> %scaled, %min : f32
       %product = scalar.mulf<reassoc|nnan|ninf|nsz> %dequant, %rhs : f32
@@ -212,7 +212,7 @@ kernel.def export("hrx2_mul_mat_id_q4_k_f32_static") @hrx2_mul_mat_id_q4_k_f32_s
   scf.if %expert_nonnegative {
     scf.if %expert_valid {
       scf.if %is_lane0 {
-        view.store %dot, %dst_view[%dst_index] : f32, view<[%dst_count]xf32, #dense>
+        view.store %dot, %dst_view[%dst_index] : f32, view<[%dst_count]xf32>
       }
     }
   }

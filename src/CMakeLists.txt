@@ -129,6 +129,7 @@ add_library(llama
             models/qwen35moe.cpp
             models/qwen3moe.cpp
             models/qwen3next.cpp
+            models/zaya.cpp
             models/qwen3vl-moe.cpp
             models/qwen3vl.cpp
             models/refact.cpp

@@ -26,19 +26,19 @@ kernel.def export("hrx2_argsort_f32_i32_desc") @hrx2_argsort_f32_i32_desc() {
 
   %src0_global = buffer.assume.memory_space<global> %src0 : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
-  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32, #dense>
-  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xi32, #dense>
+  %src0_view = buffer.view %src0_global[%base] : buffer -> view<1073741824xf32>
+  %dst_view = buffer.view %dst_global[%base] : buffer -> view<1073741824xi32>
 
   %row_offset0 = index.mul %row, %ncols_bounded : index
   %row_offset = index.assume %row_offset0 [range(%row_offset0, 0, 1073741823)] : index
   scf.if %lane_in_ncols {
     %self_offset_raw = index.add %row_offset, %lane : index
     %self_offset = index.assume %self_offset_raw [range(%self_offset_raw, 0, 1073741823)] : index
-    %self_value = view.load %src0_view[%self_offset] : view<1073741824xf32, #dense> -> f32
+    %self_value = view.load %src0_view[%self_offset] : view<1073741824xf32> -> f32
     %rank = scf.for %other = [%zero to %ncols_bounded step %one](%acc = %zero_i32 : i32) -> (i32) {
       %other_offset_raw = index.add %row_offset, %other : index
       %other_offset = index.assume %other_offset_raw [range(%other_offset_raw, 0, 1073741823)] : index
-      %other_value = view.load %src0_view[%other_offset] : view<1073741824xf32, #dense> -> f32
+      %other_value = view.load %src0_view[%other_offset] : view<1073741824xf32> -> f32
       %other_i32 = index.cast %other : index to i32
       %greater = scalar.cmpf ogt, %other_value, %self_value : f32
       %equal = scalar.cmpf oeq, %other_value, %self_value : f32
@@ -58,7 +58,7 @@ kernel.def export("hrx2_argsort_f32_i32_desc") @hrx2_argsort_f32_i32_desc() {
     %dst_offset_raw = index.add %row_offset, %rank_index : index
     %dst_offset = index.assume %dst_offset_raw [range(%dst_offset_raw, 0, 1073741823)] : index
     %lane_vec = vector.splat %lane_i32 : vector<1xi32>
-    vector.store %lane_vec, %dst_view[%dst_offset] : vector<1xi32>, view<1073741824xi32, #dense>
+    vector.store %lane_vec, %dst_view[%dst_offset] : vector<1xi32>, view<1073741824xi32>
   }
   kernel.return
 }

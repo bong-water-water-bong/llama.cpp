@@ -659,6 +659,14 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .to_float                 = (ggml_to_float_t) dequantize_row_q1_0,
         .from_float_ref           = (ggml_from_float_t) quantize_row_q1_0_ref,
     },
+    [GGML_TYPE_Q4NX] = {
+        .type_name                = "q4nx",
+        .blck_size                = QK4NX,
+        .type_size                = sizeof(block_q4nx),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_q4nx,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_q4nx_ref,
+    },
     [GGML_TYPE_Q4_0] = {
         .type_name                = "q4_0",
         .blck_size                = QK4_0,
@@ -1063,9 +1071,10 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "OPT_STEP_SGD",
 
     "GLU",
+    "MUL_MAT_Q4NX",
 };
 
-static_assert(GGML_OP_COUNT == 96, "GGML_OP_COUNT != 96");
+static_assert(GGML_OP_COUNT == 97, "GGML_OP_COUNT != 97");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1173,9 +1182,10 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "sgd(x)",
 
     "glu(x)",
+    "Q4NX*",
 };
 
-static_assert(GGML_OP_COUNT == 96, "GGML_OP_COUNT != 96");
+static_assert(GGML_OP_COUNT == 97, "GGML_OP_COUNT != 97");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -3226,6 +3236,12 @@ struct ggml_tensor * ggml_mul_mat(
         struct ggml_context * ctx,
         struct ggml_tensor  * a,
         struct ggml_tensor  * b) {
+    // 1bit-MONSTER: a Q4NX weight is stored tile-major as [8192, n_tiles]
+    // (its ne[0] is the tile block size, not the logical k-dim), so the
+    // standard ne[0] equality check does not apply; route to the Q4NX op.
+    if (a->type == GGML_TYPE_Q4NX) {
+        return ggml_mul_mat_q4nx(ctx, a, b);
+    }
     GGML_ASSERT(ggml_can_mul_mat(a, b));
     GGML_ASSERT(!ggml_is_transposed(a));
 
@@ -3263,6 +3279,39 @@ void ggml_mul_mat_set_prec(
 
     c ~= as[:,:,i] @ b[:,i%r,t], i = ids[e,t] for all e,t in ids
 */
+struct ggml_tensor * ggml_mul_mat_q4nx(
+        struct ggml_context * ctx,
+        struct ggml_tensor * a,
+        struct ggml_tensor * b) {
+    // 1bit-MONSTER Q4NX fused matmul: a is a GGML_TYPE_Q4NX weight stored
+    // tile-major as [8192, n_tiles] (each 8192-element row = one 5120-byte
+    // tile = [32 rows x 256 cols]); tiles in (tile_row, tile_col) order with
+    // tile_col = t % n_tc, n_tc = b->ne[0]/256. b is the F32 activation
+    // [in, cols] where in = b->ne[0] (multiple of 256). The dispatch
+    // dequantizes the FULL weight (multi column-tile) in one pass and runs
+    // the f32 matmul. result F32 [n_tiles/n_tc*32, cols].
+    GGML_ASSERT(a->type == GGML_TYPE_Q4NX);
+    GGML_ASSERT(a->ne[0] == GGML_Q4NX_TILE_COLS * GGML_Q4NX_TILE_ROWS); // 8192
+    GGML_ASSERT(a->ne[1] >= 1);
+    GGML_ASSERT(b->type == GGML_TYPE_F32);
+    GGML_ASSERT(b->ne[0] % GGML_Q4NX_TILE_COLS == 0);                    // in % 256
+    GGML_ASSERT(!ggml_is_transposed(a) && !ggml_is_transposed(b));
+
+    const int64_t n_tc  = b->ne[0] / GGML_Q4NX_TILE_COLS; // column tiles
+    const int64_t n_tiles = a->ne[1];
+    GGML_ASSERT(n_tc >= 1 && n_tiles % n_tc == 0);
+    const int64_t n_tr  = n_tiles / n_tc;                  // row tiles
+    const int64_t rows  = n_tr * GGML_Q4NX_TILE_ROWS;
+    const int64_t ne[4] = { rows, b->ne[1], b->ne[2], b->ne[3] };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    result->op     = GGML_OP_MUL_MAT_Q4NX;
+    result->src[0] = a;
+    result->src[1] = b;
+
+    return result;
+}
+
 struct ggml_tensor * ggml_mul_mat_id(
         struct ggml_context * ctx,
         struct ggml_tensor  * as,

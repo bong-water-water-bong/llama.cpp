@@ -74,10 +74,10 @@ kernel.def export("hrx2_rope_neox_f32_freq") @hrx2_rope_neox_f32_freq() {
   %freq_global = buffer.assume.memory_space<global> %freq : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src0_noalias, %pos_noalias, %freq_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %pos_global, %freq_global, %dst_global : buffer, buffer, buffer, buffer
-  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_count]xf32, #dense>
-  %pos_view = buffer.view %pos_noalias[%base] : buffer -> view<[%pos_count]xi32, #dense>
-  %freq_view = buffer.view %freq_noalias[%base] : buffer -> view<[%half_dims]xf32, #dense>
-  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32, #dense>
+  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_count]xf32>
+  %pos_view = buffer.view %pos_noalias[%base] : buffer -> view<[%pos_count]xi32>
+  %freq_view = buffer.view %freq_noalias[%base] : buffer -> view<[%half_dims]xf32>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32>
 
   scf.if %in_bounds {
     %pair = index.rem %linear, %half_cols : index
@@ -101,7 +101,7 @@ kernel.def export("hrx2_rope_neox_f32_freq") @hrx2_rope_neox_f32_freq() {
       %src0_idx1 = index.add %src0_base, %off1 : index
       %dst_idx0 = index.add %dst_base, %pair : index
       %dst_idx1 = index.add %dst_base, %off1 : index
-      %pos_i32 = view.load %pos_view[%pos_idx] : view<[%pos_count]xi32, #dense> -> i32
+      %pos_i32 = view.load %pos_view[%pos_idx] : view<[%pos_count]xi32> -> i32
       %pos_f32 = scalar.sitofp %pos_i32 : i32 to f32
       %n_dims_i32 = index.cast %n_dims_bounded : index to i32
       %n_dims_f32 = scalar.sitofp %n_dims_i32 : i32 to f32
@@ -114,23 +114,23 @@ kernel.def export("hrx2_rope_neox_f32_freq") @hrx2_rope_neox_f32_freq() {
       %log_theta_pow = scalar.mulf<nnan|ninf|nsz> %log_freq_base, %exponent : f32
       %theta_pow = scalar.expf<afn> %log_theta_pow : f32
       %theta_pos = scalar.mulf<nnan|ninf|nsz> %pos_f32, %theta_pow : f32
-      %freq_factor = view.load %freq_view[%pair] : view<[%half_dims]xf32, #dense> -> f32
+      %freq_factor = view.load %freq_view[%pair] : view<[%half_dims]xf32> -> f32
       %theta_div = scalar.divf<nnan|ninf|nsz|arcp> %theta_pos, %freq_factor : f32
       %theta = scalar.mulf<nnan|ninf|nsz> %theta_div, %freq_scale : f32
       %cos0 = scalar.cosf<afn> %theta : f32
       %sin0 = scalar.sinf<afn> %theta : f32
       %cos_theta = scalar.mulf<nnan|ninf|nsz> %cos0, %attn_factor : f32
       %sin_theta = scalar.mulf<nnan|ninf|nsz> %sin0, %attn_factor : f32
-      %x0 = view.load %src0_view[%src0_idx0] : view<[%src0_count]xf32, #dense> -> f32
-      %x1 = view.load %src0_view[%src0_idx1] : view<[%src0_count]xf32, #dense> -> f32
+      %x0 = view.load %src0_view[%src0_idx0] : view<[%src0_count]xf32> -> f32
+      %x1 = view.load %src0_view[%src0_idx1] : view<[%src0_count]xf32> -> f32
       %x0_cos = scalar.mulf<nnan|ninf|nsz> %x0, %cos_theta : f32
       %x1_sin = scalar.mulf<nnan|ninf|nsz> %x1, %sin_theta : f32
       %out0 = scalar.subf<nnan|ninf|nsz> %x0_cos, %x1_sin : f32
       %x0_sin = scalar.mulf<nnan|ninf|nsz> %x0, %sin_theta : f32
       %x1_cos = scalar.mulf<nnan|ninf|nsz> %x1, %cos_theta : f32
       %out1 = scalar.addf<nnan|ninf|nsz> %x0_sin, %x1_cos : f32
-      view.store %out0, %dst_view[%dst_idx0] : f32, view<[%dst_count]xf32, #dense>
-      view.store %out1, %dst_view[%dst_idx1] : f32, view<[%dst_count]xf32, #dense>
+      view.store %out0, %dst_view[%dst_idx0] : f32, view<[%dst_count]xf32>
+      view.store %out1, %dst_view[%dst_idx1] : f32, view<[%dst_count]xf32>
     } else {
       %tail_pair = index.sub %pair, %half_dims : index
       %tail_pair2 = index.mul %tail_pair, %two : index
@@ -140,10 +140,10 @@ kernel.def export("hrx2_rope_neox_f32_freq") @hrx2_rope_neox_f32_freq() {
       %src0_idx1 = index.add %src0_base, %tail1 : index
       %dst_idx0 = index.add %dst_base, %tail0 : index
       %dst_idx1 = index.add %dst_base, %tail1 : index
-      %x0 = view.load %src0_view[%src0_idx0] : view<[%src0_count]xf32, #dense> -> f32
-      %x1 = view.load %src0_view[%src0_idx1] : view<[%src0_count]xf32, #dense> -> f32
-      view.store %x0, %dst_view[%dst_idx0] : f32, view<[%dst_count]xf32, #dense>
-      view.store %x1, %dst_view[%dst_idx1] : f32, view<[%dst_count]xf32, #dense>
+      %x0 = view.load %src0_view[%src0_idx0] : view<[%src0_count]xf32> -> f32
+      %x1 = view.load %src0_view[%src0_idx1] : view<[%src0_count]xf32> -> f32
+      view.store %x0, %dst_view[%dst_idx0] : f32, view<[%dst_count]xf32>
+      view.store %x1, %dst_view[%dst_idx1] : f32, view<[%dst_count]xf32>
     }
   }
   kernel.return
@@ -214,10 +214,10 @@ kernel.def export("hrx2_rope_normal_f32_freq") @hrx2_rope_normal_f32_freq() {
   %freq_global = buffer.assume.memory_space<global> %freq : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src0_noalias, %pos_noalias, %freq_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %pos_global, %freq_global, %dst_global : buffer, buffer, buffer, buffer
-  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_count]xf32, #dense>
-  %pos_view = buffer.view %pos_noalias[%base] : buffer -> view<[%pos_count]xi32, #dense>
-  %freq_view = buffer.view %freq_noalias[%base] : buffer -> view<[%half_dims]xf32, #dense>
-  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32, #dense>
+  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_count]xf32>
+  %pos_view = buffer.view %pos_noalias[%base] : buffer -> view<[%pos_count]xi32>
+  %freq_view = buffer.view %freq_noalias[%base] : buffer -> view<[%half_dims]xf32>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32>
 
   scf.if %in_bounds {
     %pair = index.rem %linear, %half_cols : index
@@ -242,7 +242,7 @@ kernel.def export("hrx2_rope_normal_f32_freq") @hrx2_rope_normal_f32_freq() {
       %src0_idx1 = index.add %src0_base, %off1 : index
       %dst_idx0 = index.add %dst_base, %pair2 : index
       %dst_idx1 = index.add %dst_base, %off1 : index
-      %pos_i32 = view.load %pos_view[%pos_idx] : view<[%pos_count]xi32, #dense> -> i32
+      %pos_i32 = view.load %pos_view[%pos_idx] : view<[%pos_count]xi32> -> i32
       %pos_f32 = scalar.sitofp %pos_i32 : i32 to f32
       %n_dims_i32 = index.cast %n_dims_bounded : index to i32
       %n_dims_f32 = scalar.sitofp %n_dims_i32 : i32 to f32
@@ -250,7 +250,7 @@ kernel.def export("hrx2_rope_normal_f32_freq") @hrx2_rope_normal_f32_freq() {
       %log_freq_base = scalar.logf<afn> %freq_base : f32
       %log_theta_scale = scalar.mulf<nnan|ninf|nsz> %log_freq_base, %theta_scale_exponent : f32
       %theta_scale = scalar.expf<afn> %log_theta_scale : f32
-      %freq_factor = view.load %freq_view[%pair] : view<[%half_dims]xf32, #dense> -> f32
+      %freq_factor = view.load %freq_view[%pair] : view<[%half_dims]xf32> -> f32
       %theta_pos = scf.for %k = [%zero to %pair step %one](%theta_acc = %pos_f32 : f32) -> (f32) {
         %theta_next = scalar.mulf<nnan|ninf|nsz> %theta_acc, %theta_scale : f32
         scf.yield %theta_next : f32
@@ -261,26 +261,26 @@ kernel.def export("hrx2_rope_normal_f32_freq") @hrx2_rope_normal_f32_freq() {
       %sin0 = scalar.sinf<afn> %theta : f32
       %cos_theta = scalar.mulf<nnan|ninf|nsz> %cos0, %attn_factor : f32
       %sin_theta = scalar.mulf<nnan|ninf|nsz> %sin0, %attn_factor : f32
-      %x0 = view.load %src0_view[%src0_idx0] : view<[%src0_count]xf32, #dense> -> f32
-      %x1 = view.load %src0_view[%src0_idx1] : view<[%src0_count]xf32, #dense> -> f32
+      %x0 = view.load %src0_view[%src0_idx0] : view<[%src0_count]xf32> -> f32
+      %x1 = view.load %src0_view[%src0_idx1] : view<[%src0_count]xf32> -> f32
       %x0_cos = scalar.mulf<nnan|ninf|nsz> %x0, %cos_theta : f32
       %x1_sin = scalar.mulf<nnan|ninf|nsz> %x1, %sin_theta : f32
       %out0 = scalar.subf<nnan|ninf|nsz> %x0_cos, %x1_sin : f32
       %x0_sin = scalar.mulf<nnan|ninf|nsz> %x0, %sin_theta : f32
       %x1_cos = scalar.mulf<nnan|ninf|nsz> %x1, %cos_theta : f32
       %out1 = scalar.addf<nnan|ninf|nsz> %x0_sin, %x1_cos : f32
-      view.store %out0, %dst_view[%dst_idx0] : f32, view<[%dst_count]xf32, #dense>
-      view.store %out1, %dst_view[%dst_idx1] : f32, view<[%dst_count]xf32, #dense>
+      view.store %out0, %dst_view[%dst_idx0] : f32, view<[%dst_count]xf32>
+      view.store %out1, %dst_view[%dst_idx1] : f32, view<[%dst_count]xf32>
     } else {
       %tail1 = index.add %pair2, %one : index
       %src0_idx0 = index.add %src0_base, %pair2 : index
       %src0_idx1 = index.add %src0_base, %tail1 : index
       %dst_idx0 = index.add %dst_base, %pair2 : index
       %dst_idx1 = index.add %dst_base, %tail1 : index
-      %x0 = view.load %src0_view[%src0_idx0] : view<[%src0_count]xf32, #dense> -> f32
-      %x1 = view.load %src0_view[%src0_idx1] : view<[%src0_count]xf32, #dense> -> f32
-      view.store %x0, %dst_view[%dst_idx0] : f32, view<[%dst_count]xf32, #dense>
-      view.store %x1, %dst_view[%dst_idx1] : f32, view<[%dst_count]xf32, #dense>
+      %x0 = view.load %src0_view[%src0_idx0] : view<[%src0_count]xf32> -> f32
+      %x1 = view.load %src0_view[%src0_idx1] : view<[%src0_count]xf32> -> f32
+      view.store %x0, %dst_view[%dst_idx0] : f32, view<[%dst_count]xf32>
+      view.store %x1, %dst_view[%dst_idx1] : f32, view<[%dst_count]xf32>
     }
   }
   kernel.return

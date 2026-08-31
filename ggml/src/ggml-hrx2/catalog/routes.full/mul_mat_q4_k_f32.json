@@ -1,0 +1,506 @@
+[
+  {
+    "id": "mul_mat_q4_k_q8_1_x4_vkm64x64_tm2tn2_k3072_8192_r1024_8192_c512_wg128",
+    "family": "mul_mat_q4_k_f32",
+    "op": "MUL_MAT",
+    "target_key": "",
+    "source_id": "mul_mat_q4_k_f32",
+    "artifact_id": "mul_mat_q4_k_f32_static_bc",
+    "root_symbol": "@hrx2_mul_mat_q4_k_q8_1_x4_vkm64x64_tm2tn2_static",
+    "export_name": "hrx2_mul_mat_q4_k_q8_1_x4_vkm64x64_tm2tn2_static",
+    "loader_format": "amdgpu-hsaco",
+    "priority": 218,
+    "abi": {
+      "binding_count": 3,
+      "parameter_count": 3,
+      "constant_byte_length": 0
+    },
+    "dispatch": {
+      "workgroup_size": [
+        128,
+        1,
+        1
+      ],
+      "rows_per_workgroup": 64,
+      "cols_per_workgroup": 64
+    },
+    "shape_domain": {
+      "name": "q8_1_x4_vkm64x64_tm2tn2_k3072_8192_rows1024_8192_cols512_wg128",
+      "k_min": 3072,
+      "k_max": 8192,
+      "rows_min": 1024,
+      "rows_max": 8192,
+      "cols_min": 512,
+      "cols_max": 512
+    },
+    "shape_guards": {
+      "k_multiple_of": 256,
+      "rows_multiple_of": 64,
+      "cols_multiple_of": 64
+    },
+    "specialization": {
+      "mode": "jit_config",
+      "bindings": [
+        {
+          "key": "@hrx2.shape.k",
+          "source": "shape.k"
+        },
+        {
+          "key": "@hrx2.shape.rows",
+          "source": "shape.rows"
+        },
+        {
+          "key": "@hrx2.shape.cols",
+          "source": "shape.cols"
+        },
+        {
+          "key": "@hrx2.tuning.workgroup_size",
+          "value": "128"
+        }
+      ]
+    },
+    "supports": {
+      "src0_type": "Q4_K",
+      "src1_type": "Q8_1",
+      "dst_type": "F32",
+      "layout": "packed_x4_vkm64x64_tm2tn2"
+    },
+    "evidence_summary": {
+      "phase": "phase2b-q4-vkm64x64-tm2tn2-p512-accepted",
+      "algorithm": "loom_pack2_q4_vkm64x64_wg128_wave32_tm2_tn2_with_cooperative_a_b_staging",
+      "selection": "accepted_for_k3072_8192_rows1024_8192_c512_prompt_shape_after_focused_cpu_reference_and_perf_gate",
+      "ggml_cpu_reference": "passed"
+    }
+  },
+  {
+    "id": "mul_mat_q4_k_q8_1_x4_vkm64x64_tm4tn1_k3072_r8192_c64_wg128",
+    "family": "mul_mat_q4_k_f32",
+    "op": "MUL_MAT",
+    "target_key": "",
+    "source_id": "mul_mat_q4_k_f32",
+    "artifact_id": "mul_mat_q4_k_f32_static_bc",
+    "root_symbol": "@hrx2_mul_mat_q4_k_q8_1_x4_vkm64x64_tm4tn1_static",
+    "export_name": "hrx2_mul_mat_q4_k_q8_1_x4_vkm64x64_tm4tn1_static",
+    "loader_format": "amdgpu-hsaco",
+    "priority": 218,
+    "abi": {
+      "binding_count": 3,
+      "parameter_count": 3,
+      "constant_byte_length": 0
+    },
+    "dispatch": {
+      "workgroup_size": [
+        128,
+        1,
+        1
+      ],
+      "rows_per_workgroup": 64,
+      "cols_per_workgroup": 64
+    },
+    "shape_domain": {
+      "name": "q8_1_x4_vkm64x64_tm4tn1_k3072_rows8192_cols64_wg128",
+      "k_min": 3072,
+      "k_max": 3072,
+      "rows_min": 8192,
+      "rows_max": 8192,
+      "cols_min": 64,
+      "cols_max": 64
+    },
+    "shape_guards": {
+      "k_multiple_of": 256,
+      "rows_multiple_of": 64,
+      "cols_multiple_of": 64
+    },
+    "specialization": {
+      "mode": "jit_config",
+      "bindings": [
+        {
+          "key": "@hrx2.shape.k",
+          "source": "shape.k"
+        },
+        {
+          "key": "@hrx2.shape.rows",
+          "source": "shape.rows"
+        },
+        {
+          "key": "@hrx2.shape.cols",
+          "source": "shape.cols"
+        },
+        {
+          "key": "@hrx2.tuning.workgroup_size",
+          "value": "128"
+        }
+      ]
+    },
+    "supports": {
+      "src0_type": "Q4_K",
+      "src1_type": "Q8_1",
+      "dst_type": "F32",
+      "layout": "packed_x4_vkm64x64_tm4tn1"
+    },
+    "evidence_summary": {
+      "phase": "phase2b-q4-vkm64x64-tm4tn1-loom-probe",
+      "algorithm": "loom_pack2_q4_vkm64x64_wg128_wave32_tm4_tn1_with_cooperative_a_b_staging",
+      "selection": "accepted_only_for_k3072_r8192_c64_prompt_shape_after_focused_perf_win; broader_shape_class_and_p512_rejected",
+      "ggml_cpu_reference": "required"
+    }
+  },
+  {
+    "id": "mul_mat_q4_k_q8_1_x4_mmq64x32_k256_32768_r1_32768_c32_512_wg256",
+    "family": "mul_mat_q4_k_f32",
+    "op": "MUL_MAT",
+    "target_key": "",
+    "source_id": "mul_mat_q4_k_f32",
+    "artifact_id": "mul_mat_q4_k_f32_static_bc",
+    "root_symbol": "@hrx2_mul_mat_q4_k_q8_1_x4_mmq64x32_static",
+    "export_name": "hrx2_mul_mat_q4_k_q8_1_x4_mmq64x32_static",
+    "loader_format": "amdgpu-hsaco",
+    "priority": 210,
+    "abi": {
+      "binding_count": 3,
+      "parameter_count": 3,
+      "constant_byte_length": 0
+    },
+    "dispatch": {
+      "workgroup_size": [
+        256,
+        1,
+        1
+      ],
+      "rows_per_workgroup": 64,
+      "cols_per_workgroup": 32
+    },
+    "shape_domain": {
+      "name": "q8_1_x4_mmq64x32_k256_32768_rows32_32768_cols32_512_wg256",
+      "k_min": 256,
+      "k_max": 32768,
+      "rows_min": 32,
+      "rows_max": 32768,
+      "cols_min": 32,
+      "cols_max": 512
+    },
+    "shape_guards": {
+      "k_multiple_of": 256,
+      "cols_multiple_of": 32
+    },
+    "specialization": {
+      "mode": "jit_config",
+      "bindings": [
+        {
+          "key": "@hrx2.shape.k",
+          "source": "shape.k"
+        },
+        {
+          "key": "@hrx2.shape.rows",
+          "source": "shape.rows"
+        },
+        {
+          "key": "@hrx2.shape.cols",
+          "source": "shape.cols"
+        },
+        {
+          "key": "@hrx2.tuning.workgroup_size",
+          "value": "256"
+        }
+      ]
+    },
+    "supports": {
+      "src0_type": "Q4_K",
+      "src1_type": "Q8_1",
+      "dst_type": "F32",
+      "layout": "packed_x4_mmq64x32"
+    },
+    "evidence_summary": {
+      "phase": "phase2a-q8_1-x4-mmq64x32-a-staged",
+      "algorithm": "packed_q8_1_x4_rhs_mmq64x32_stages_rhs_tile_and_q4_a_payload_scale_min_in_workgroup_memory",
+      "selection": "accepted_after_focused_correctness_perf_and_reduced_p64_p512_model_basket",
+      "ggml_cpu_reference": "approximate_prompt_path_only"
+    }
+  },
+  {
+    "id": "mul_mat_q4_k_q8_1_f32_cols4_k256_32768_c4_512_wg256",
+    "family": "mul_mat_q4_k_f32",
+    "op": "MUL_MAT",
+    "target_key": "",
+    "source_id": "mul_mat_q4_k_f32",
+    "artifact_id": "mul_mat_q4_k_f32_static_bc",
+    "root_symbol": "@hrx2_mul_mat_q4_k_q8_1_f32_cols4_static",
+    "export_name": "hrx2_mul_mat_q4_k_q8_1_f32_cols4_static",
+    "loader_format": "amdgpu-hsaco",
+    "priority": 190,
+    "abi": {
+      "binding_count": 3,
+      "parameter_count": 3,
+      "constant_byte_length": 0
+    },
+    "dispatch": {
+      "workgroup_size": [
+        256,
+        1,
+        1
+      ],
+      "rows_per_workgroup": 1,
+      "cols_per_workgroup": 4
+    },
+    "shape_domain": {
+      "name": "q8_1_cols4_k256_32768_rows1_32768_cols4_512_wg256",
+      "k_min": 256,
+      "k_max": 32768,
+      "rows_min": 1,
+      "rows_max": 32768,
+      "cols_min": 4,
+      "cols_max": 512
+    },
+    "shape_guards": {
+      "k_multiple_of": 256,
+      "cols_multiple_of": 4
+    },
+    "specialization": {
+      "mode": "jit_config",
+      "bindings": [
+        {
+          "key": "@hrx2.shape.k",
+          "source": "shape.k"
+        },
+        {
+          "key": "@hrx2.shape.rows",
+          "source": "shape.rows"
+        },
+        {
+          "key": "@hrx2.shape.cols",
+          "source": "shape.cols"
+        },
+        {
+          "key": "@hrx2.tuning.workgroup_size",
+          "value": "256"
+        }
+      ]
+    },
+    "supports": {
+      "src0_type": "Q4_K",
+      "src1_type": "Q8_1",
+      "dst_type": "F32",
+      "layout": "contiguous"
+    },
+    "evidence_summary": {
+      "phase": "phase2a-q8_1-cols4-probe",
+      "algorithm": "direct_q4k_q8_1_dot4_four_prompt_columns_per_workgroup",
+      "selection": "opt_in_prompt_probe; tests whether packed RHS dot4 beats F32 cols4 before larger MMQ work",
+      "ggml_cpu_reference": "approximate_prompt_path_only"
+    }
+  },
+  {
+    "id": "mul_mat_q4_k_q8_1_f32_direct_k256_32768_c1_512_wg256",
+    "family": "mul_mat_q4_k_f32",
+    "op": "MUL_MAT",
+    "target_key": "",
+    "source_id": "mul_mat_q4_k_f32",
+    "artifact_id": "mul_mat_q4_k_f32_static_bc",
+    "root_symbol": "@hrx2_mul_mat_q4_k_q8_1_f32_static",
+    "export_name": "hrx2_mul_mat_q4_k_q8_1_f32_static",
+    "loader_format": "amdgpu-hsaco",
+    "priority": 175,
+    "abi": {
+      "binding_count": 3,
+      "parameter_count": 3,
+      "constant_byte_length": 0
+    },
+    "dispatch": {
+      "workgroup_size": [
+        256,
+        1,
+        1
+      ],
+      "rows_per_workgroup": 1,
+      "cols_per_workgroup": 1
+    },
+    "shape_domain": {
+      "name": "q8_1_direct_k256_32768_rows1_32768_cols1_512_wg256",
+      "k_min": 256,
+      "k_max": 32768,
+      "rows_min": 1,
+      "rows_max": 32768,
+      "cols_min": 1,
+      "cols_max": 512
+    },
+    "shape_guards": {
+      "k_multiple_of": 256
+    },
+    "specialization": {
+      "mode": "jit_config",
+      "bindings": [
+        {
+          "key": "@hrx2.shape.k",
+          "source": "shape.k"
+        },
+        {
+          "key": "@hrx2.shape.rows",
+          "source": "shape.rows"
+        },
+        {
+          "key": "@hrx2.shape.cols",
+          "source": "shape.cols"
+        },
+        {
+          "key": "@hrx2.tuning.workgroup_size",
+          "value": "256"
+        }
+      ]
+    },
+    "supports": {
+      "src0_type": "Q4_K",
+      "src1_type": "Q8_1",
+      "dst_type": "F32",
+      "layout": "contiguous"
+    },
+    "evidence_summary": {
+      "phase": "phase2a-q8_1-backplane",
+      "algorithm": "direct_q4k_q8_1_integer_dot",
+      "selection": "opt_in_prompt_probe; final prompt target remains packed x4/MMQ",
+      "ggml_cpu_reference": "approximate_prompt_path_only"
+    }
+  },
+  {
+    "id": "mul_mat_q4_k_f32_cols8_k256_32768_c8_512_wg256",
+    "family": "mul_mat_q4_k_f32",
+    "op": "MUL_MAT",
+    "target_key": "",
+    "source_id": "mul_mat_q4_k_f32",
+    "artifact_id": "mul_mat_q4_k_f32_static_bc",
+    "root_symbol": "@hrx2_mul_mat_q4_k_f32_cols8_static",
+    "export_name": "hrx2_mul_mat_q4_k_f32_cols8_static",
+    "loader_format": "amdgpu-hsaco",
+    "priority": 160,
+    "abi": {
+      "binding_count": 3,
+      "parameter_count": 3,
+      "constant_byte_length": 0
+    },
+    "dispatch": {
+      "workgroup_size": [
+        256,
+        1,
+        1
+      ],
+      "rows_per_workgroup": 1,
+      "cols_per_workgroup": 8
+    },
+    "shape_domain": {
+      "name": "cols8_k256_32768_rows1_32768_cols8_512_wg256",
+      "k_min": 256,
+      "k_max": 32768,
+      "rows_min": 1,
+      "rows_max": 32768,
+      "cols_min": 8,
+      "cols_max": 512
+    },
+    "shape_guards": {
+      "k_multiple_of": 256,
+      "cols_multiple_of": 8
+    },
+    "specialization": {
+      "mode": "jit_config",
+      "bindings": [
+        {
+          "key": "@hrx2.shape.k",
+          "source": "shape.k"
+        },
+        {
+          "key": "@hrx2.shape.rows",
+          "source": "shape.rows"
+        },
+        {
+          "key": "@hrx2.shape.cols",
+          "source": "shape.cols"
+        },
+        {
+          "key": "@hrx2.tuning.workgroup_size",
+          "value": "256"
+        }
+      ]
+    },
+    "supports": {
+      "src0_type": "Q4_K",
+      "src1_type": "F32",
+      "dst_type": "F32",
+      "layout": "contiguous"
+    },
+    "evidence_summary": {
+      "phase": "phase2a-q4k-prefill-cols8-probe",
+      "algorithm": "direct_q4k_f32_eight_prompt_columns_per_workgroup",
+      "selection": "prompt_cols_ge_8_reuses_q4k_dequant_across_columns",
+      "ggml_cpu_reference": "required"
+    }
+  },
+  {
+    "id": "mul_mat_q4_k_f32_direct_k256_32768_c1_512_wg256",
+    "family": "mul_mat_q4_k_f32",
+    "op": "MUL_MAT",
+    "target_key": "",
+    "source_id": "mul_mat_q4_k_f32",
+    "artifact_id": "mul_mat_q4_k_f32_static_bc",
+    "root_symbol": "@hrx2_mul_mat_q4_k_f32_static",
+    "export_name": "hrx2_mul_mat_q4_k_f32_static",
+    "loader_format": "amdgpu-hsaco",
+    "priority": 100,
+    "abi": {
+      "binding_count": 3,
+      "parameter_count": 3,
+      "constant_byte_length": 0
+    },
+    "dispatch": {
+      "workgroup_size": [
+        256,
+        1,
+        1
+      ],
+      "rows_per_workgroup": 1,
+      "cols_per_workgroup": 1
+    },
+    "shape_domain": {
+      "name": "direct_k256_32768_rows1_32768_cols1_512_wg256",
+      "k_min": 256,
+      "k_max": 32768,
+      "rows_min": 1,
+      "rows_max": 32768,
+      "cols_min": 1,
+      "cols_max": 512
+    },
+    "shape_guards": {
+      "k_multiple_of": 256
+    },
+    "specialization": {
+      "mode": "jit_config",
+      "bindings": [
+        {
+          "key": "@hrx2.shape.k",
+          "source": "shape.k"
+        },
+        {
+          "key": "@hrx2.shape.rows",
+          "source": "shape.rows"
+        },
+        {
+          "key": "@hrx2.shape.cols",
+          "source": "shape.cols"
+        },
+        {
+          "key": "@hrx2.tuning.workgroup_size",
+          "value": "256"
+        }
+      ]
+    },
+    "supports": {
+      "src0_type": "Q4_K",
+      "src1_type": "F32",
+      "dst_type": "F32",
+      "layout": "contiguous"
+    },
+    "evidence_summary": {
+      "phase": "phase1-route-slice-32-q4-k-direct",
+      "algorithm": "direct_q4k_f32_four_values_per_lane",
+      "selection": "coverage_bucket_from_11_model_trace",
+      "ggml_cpu_reference": "required"
+    }
+  }
+]

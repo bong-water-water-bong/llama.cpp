@@ -70,9 +70,9 @@ kernel.def export("hrx2_set_rows_f32_f16") @hrx2_set_rows_f32_f16() {
   %idx_global = buffer.assume.memory_space<global> %idx : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src0_noalias, %idx_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %idx_global, %dst_global : buffer, buffer, buffer
-  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<1073741824xf32, #dense>
-  %idx_view = buffer.view %idx_noalias[%base] : buffer -> view<268435456xi32, #dense>
-  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<1073741824xi16, #dense>
+  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<1073741824xf32>
+  %idx_view = buffer.view %idx_noalias[%base] : buffer -> view<268435456xi32>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<1073741824xi16>
 
   scf.if %in_bounds {
     %i0 = index.rem %linear, %nc : index
@@ -96,7 +96,7 @@ kernel.def export("hrx2_set_rows_f32_f16") @hrx2_set_rows_f32_f16() {
     %idx_element = index.assume %idx_e2 [range(%idx_e2, 0, 134217727)] : index
     %idx_element_i32_raw = index.mul %idx_element, %two : index
     %idx_element_i32 = index.assume %idx_element_i32_raw [range(%idx_element_i32_raw, 0, 268435455)] : index
-    %row_i32 = view.load %idx_view[%idx_element_i32] : view<268435456xi32, #dense> -> i32
+    %row_i32 = view.load %idx_view[%idx_element_i32] : view<268435456xi32> -> i32
     %row = index.cast %row_i32 : i32 to index
     %row_in_bounds = index.cmp ult, %row, %ne1 : index
     scf.if %row_in_bounds {
@@ -113,7 +113,7 @@ kernel.def export("hrx2_set_rows_f32_f16") @hrx2_set_rows_f32_f16() {
       %src0_e3_raw = index.add %src0_m3, %src0_e2 : index
       %src0_e3 = index.assume %src0_e3_raw [range(%src0_e3_raw, 0, 1073741823)] : index
       %src0_element = index.assume %src0_e3 [range(%src0_e3, 0, 1073741823)] : index
-      %value = view.load %src0_view[%src0_element] : view<1073741824xf32, #dense> -> f32
+      %value = view.load %src0_view[%src0_element] : view<1073741824xf32> -> f32
       %dst_m1_raw = index.mul %row, %dst_nb1 : index
       %dst_m1 = index.assume %dst_m1_raw [range(%dst_m1_raw, 0, 1073741823)] : index
       %dst_e1_raw = index.add %dst_m1, %i0 : index
@@ -129,7 +129,7 @@ kernel.def export("hrx2_set_rows_f32_f16") @hrx2_set_rows_f32_f16() {
       %dst_element = index.assume %dst_e3 [range(%dst_e3, 0, 1073741823)] : index
       %half = scalar.fptrunc %value : f32 to f16
       %half_bits = scalar.bitcast %half : f16 to i16
-      view.store %half_bits, %dst_view[%dst_element] : i16, view<1073741824xi16, #dense>
+      view.store %half_bits, %dst_view[%dst_element] : i16, view<1073741824xi16>
     }
   }
   kernel.return
@@ -189,9 +189,9 @@ kernel.def export("hrx2_set_rows_f32_f32") @hrx2_set_rows_f32_f32() {
   %idx_global = buffer.assume.memory_space<global> %idx : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src0_noalias, %idx_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %idx_global, %dst_global : buffer, buffer, buffer
-  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<1073741824xf32, #dense>
-  %idx_view = buffer.view %idx_noalias[%base] : buffer -> view<268435456xi32, #dense>
-  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<1073741824xf32, #dense>
+  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<1073741824xf32>
+  %idx_view = buffer.view %idx_noalias[%base] : buffer -> view<268435456xi32>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<1073741824xf32>
 
   scf.if %in_bounds {
     %i0 = index.rem %linear, %nc : index
@@ -215,7 +215,7 @@ kernel.def export("hrx2_set_rows_f32_f32") @hrx2_set_rows_f32_f32() {
     %idx_element = index.assume %idx_e2 [range(%idx_e2, 0, 134217727)] : index
     %idx_element_i32_raw = index.mul %idx_element, %two : index
     %idx_element_i32 = index.assume %idx_element_i32_raw [range(%idx_element_i32_raw, 0, 268435455)] : index
-    %row_i32 = view.load %idx_view[%idx_element_i32] : view<268435456xi32, #dense> -> i32
+    %row_i32 = view.load %idx_view[%idx_element_i32] : view<268435456xi32> -> i32
     %row = index.cast %row_i32 : i32 to index
     %row_in_bounds = index.cmp ult, %row, %ne1 : index
     scf.if %row_in_bounds {
@@ -232,7 +232,7 @@ kernel.def export("hrx2_set_rows_f32_f32") @hrx2_set_rows_f32_f32() {
       %src0_e3_raw = index.add %src0_m3, %src0_e2 : index
       %src0_e3 = index.assume %src0_e3_raw [range(%src0_e3_raw, 0, 1073741823)] : index
       %src0_element = index.assume %src0_e3 [range(%src0_e3, 0, 1073741823)] : index
-      %value = view.load %src0_view[%src0_element] : view<1073741824xf32, #dense> -> f32
+      %value = view.load %src0_view[%src0_element] : view<1073741824xf32> -> f32
       %dst_m1_raw = index.mul %row, %dst_nb1 : index
       %dst_m1 = index.assume %dst_m1_raw [range(%dst_m1_raw, 0, 1073741823)] : index
       %dst_e1_raw = index.add %dst_m1, %i0 : index
@@ -246,7 +246,7 @@ kernel.def export("hrx2_set_rows_f32_f32") @hrx2_set_rows_f32_f32() {
       %dst_e3_raw = index.add %dst_m3, %dst_e2 : index
       %dst_e3 = index.assume %dst_e3_raw [range(%dst_e3_raw, 0, 1073741823)] : index
       %dst_element = index.assume %dst_e3 [range(%dst_e3, 0, 1073741823)] : index
-      view.store %value, %dst_view[%dst_element] : f32, view<1073741824xf32, #dense>
+      view.store %value, %dst_view[%dst_element] : f32, view<1073741824xf32>
     }
   }
   kernel.return

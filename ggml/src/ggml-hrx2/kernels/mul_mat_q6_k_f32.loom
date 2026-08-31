@@ -72,10 +72,10 @@ kernel.def export("hrx2_mul_mat_q6_k_f32_static") @hrx2_mul_mat_q6_k_f32_static(
   %src1_global = buffer.assume.memory_space<global> %src1 : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src0_noalias, %src1_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %src1_global, %dst_global : buffer, buffer, buffer
-  %src0_i8_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_i8_count]xi8, #dense>
-  %src0_f16_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_f16_count]xf16, #dense>
-  %src1_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_count]xf32, #dense>
-  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32, #dense>
+  %src0_i8_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_i8_count]xi8>
+  %src0_f16_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_f16_count]xf16>
+  %src1_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_count]xf32>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32>
 
   %row_block_base = index.mul %row, %blocks_per_row : index
   %src1_col_base = index.mul %col, %k_bounded : index
@@ -85,13 +85,13 @@ kernel.def export("hrx2_mul_mat_q6_k_f32_static") @hrx2_mul_mat_q6_k_f32_static(
     %block_byte_base = index.mul %linear_block, %block_bytes : index
     %block_f16_base = index.mul %linear_block, %block_f16s : index
     %d_index = index.add %block_f16_base, %d_f16_offset : index
-    %d_f16 = view.load %src0_f16_view[%d_index] : view<[%src0_f16_count]xf16, #dense> -> f16
+    %d_f16 = view.load %src0_f16_view[%d_index] : view<[%src0_f16_count]xf16> -> f16
     %d = scalar.extf %d_f16 : f16 to f32
     %qh_block_base0 = index.add %block_byte_base, %qh_offset : index
     %qh_byte_index = index.add %qh_block_base0, %qh_lane_base : index
     %qh_offset_dynamic = index.cast %qh_byte_index : index to offset
-    %qh_word_view = buffer.view %src0_noalias[%qh_offset_dynamic] : buffer -> view<1xi32, #dense>
-    %qh_word = vector.load %qh_word_view[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
+    %qh_word_view = buffer.view %src0_noalias[%qh_offset_dynamic] : buffer -> view<1xi32>
+    %qh_word = vector.load %qh_word_view[%zero_index] : view<1xi32> -> vector<1xi32>
     %qh_byte_vec = vector.bitfield.extractu %qh_word {offset = 0, width = 8} : vector<1xi32> -> vector<1xi32>
     %qh_byte = vector.extract %qh_byte_vec[0] : vector<1xi32> -> i32
 
@@ -101,8 +101,8 @@ kernel.def export("hrx2_mul_mat_q6_k_f32_static") @hrx2_mul_mat_q6_k_f32_static(
       %ql_lane = index.add %ql_lane_base, %ql_pair_add : index
       %ql_byte_index = index.add %block_byte_base, %ql_lane : index
       %ql_offset_dynamic = index.cast %ql_byte_index : index to offset
-      %ql_word_view = buffer.view %src0_noalias[%ql_offset_dynamic] : buffer -> view<1xi32, #dense>
-      %ql_word = vector.load %ql_word_view[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
+      %ql_word_view = buffer.view %src0_noalias[%ql_offset_dynamic] : buffer -> view<1xi32>
+      %ql_word = vector.load %ql_word_view[%zero_index] : view<1xi32> -> vector<1xi32>
       %ql_byte_vec = vector.bitfield.extractu %ql_word {offset = 0, width = 8} : vector<1xi32> -> vector<1xi32>
       %ql_byte = vector.extract %ql_byte_vec[0] : vector<1xi32> -> i32
       %part_div2 = index.div %part, %two : index
@@ -122,13 +122,13 @@ kernel.def export("hrx2_mul_mat_q6_k_f32_static") @hrx2_mul_mat_q6_k_f32_static(
       %scale_lane = index.add %scale_base0, %scale_part_add : index
       %scale_block_base = index.add %block_byte_base, %scales_offset : index
       %scale_index = index.add %scale_block_base, %scale_lane : index
-      %scale_i8 = view.load %src0_i8_view[%scale_index] : view<[%src0_i8_count]xi8, #dense> -> i8
+      %scale_i8 = view.load %src0_i8_view[%scale_index] : view<[%src0_i8_count]xi8> -> i8
       %scale_f32 = scalar.sitofp %scale_i8 : i8 to f32
       %src_part_add = index.mul %part, %thirtytwo : index
       %src_part = index.add %src_part_base, %src_part_add : index
       %src_offset = index.add %src_base_block, %src_part : index
       %src1_index = index.add %src1_col_base, %src_offset : index
-      %rhs = view.load %src1_view[%src1_index] : view<[%src1_count]xf32, #dense> -> f32
+      %rhs = view.load %src1_view[%src1_index] : view<[%src1_count]xf32> -> f32
       %dq0 = scalar.mulf<reassoc|nnan|ninf|nsz> %d, %scale_f32 : f32
       %dq = scalar.mulf<reassoc|nnan|ninf|nsz> %dq0, %q_f32 : f32
       %product = scalar.mulf<reassoc|nnan|ninf|nsz> %dq, %rhs : f32
@@ -145,7 +145,7 @@ kernel.def export("hrx2_mul_mat_q6_k_f32_static") @hrx2_mul_mat_q6_k_f32_static(
   %zero_i32 = scalar.constant 0 : i32
   %is_lane0 = scalar.cmpi eq, %lane_i32, %zero_i32 : i32
   scf.if %is_lane0 {
-    view.store %dot, %dst_view[%dst_index] : f32, view<[%dst_count]xf32, #dense>
+    view.store %dot, %dst_view[%dst_index] : f32, view<[%dst_count]xf32>
   }
   kernel.return
 }
@@ -240,11 +240,11 @@ kernel.def export("hrx2_mul_mat_q6_k_q8_1_wg32_static") @hrx2_mul_mat_q6_k_q8_1_
   %src1_global = buffer.assume.memory_space<global> %src1_q8 : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src0_noalias, %src1_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %src1_global, %dst_global : buffer, buffer, buffer
-  %src0_i8_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_i8_count]xi8, #dense>
-  %src0_f16_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_f16_count]xf16, #dense>
-  %src1_i8_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_i8_count]xi8, #dense>
-  %src1_f16_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_f16_count]xf16, #dense>
-  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32, #dense>
+  %src0_i8_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_i8_count]xi8>
+  %src0_f16_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_f16_count]xf16>
+  %src1_i8_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_i8_count]xi8>
+  %src1_f16_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_f16_count]xf16>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32>
 
   %row_block_base = index.mul %row, %blocks_per_row : index
   %src1_col_base = index.mul %col, %q8_blocks_per_col : index
@@ -253,11 +253,11 @@ kernel.def export("hrx2_mul_mat_q6_k_q8_1_wg32_static") @hrx2_mul_mat_q6_k_q8_1_
     %block_byte_base = index.mul %linear_block, %block_bytes : index
     %block_f16_base = index.mul %linear_block, %block_f16s : index
     %d_index = index.add %block_f16_base, %d_f16_offset : index
-    %d_f16 = view.load %src0_f16_view[%d_index] : view<[%src0_f16_count]xf16, #dense> -> f16
+    %d_f16 = view.load %src0_f16_view[%d_index] : view<[%src0_f16_count]xf16> -> f16
     %d0 = scalar.extf %d_f16 : f16 to f32
     %scale_base = index.add %block_byte_base, %scales_offset : index
     %scale_index = index.add %scale_base, %scale_rel : index
-    %scale_i8 = view.load %src0_i8_view[%scale_index] : view<[%src0_i8_count]xi8, #dense> -> i8
+    %scale_i8 = view.load %src0_i8_view[%scale_index] : view<[%src0_i8_count]xi8> -> i8
     %scale_f32 = scalar.sitofp %scale_i8 : i8 to f32
     %d = scalar.mulf<reassoc|nnan|ninf|nsz> %d0, %scale_f32 : f32
 
@@ -272,14 +272,14 @@ kernel.def export("hrx2_mul_mat_q6_k_q8_1_wg32_static") @hrx2_mul_mat_q6_k_q8_1_
     %ql1_offset = index.cast %ql1_index : index to offset
     %qh0_offset = index.cast %qh0_index : index to offset
     %qh1_offset = index.cast %qh1_index : index to offset
-    %ql0_view = buffer.view %src0_noalias[%ql0_offset] : buffer -> view<1xi32, #dense>
-    %ql1_view = buffer.view %src0_noalias[%ql1_offset] : buffer -> view<1xi32, #dense>
-    %qh0_view = buffer.view %src0_noalias[%qh0_offset] : buffer -> view<1xi32, #dense>
-    %qh1_view = buffer.view %src0_noalias[%qh1_offset] : buffer -> view<1xi32, #dense>
-    %ql0_vec = vector.load %ql0_view[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
-    %ql1_vec = vector.load %ql1_view[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
-    %qh0_vec = vector.load %qh0_view[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
-    %qh1_vec = vector.load %qh1_view[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
+    %ql0_view = buffer.view %src0_noalias[%ql0_offset] : buffer -> view<1xi32>
+    %ql1_view = buffer.view %src0_noalias[%ql1_offset] : buffer -> view<1xi32>
+    %qh0_view = buffer.view %src0_noalias[%qh0_offset] : buffer -> view<1xi32>
+    %qh1_view = buffer.view %src0_noalias[%qh1_offset] : buffer -> view<1xi32>
+    %ql0_vec = vector.load %ql0_view[%zero_index] : view<1xi32> -> vector<1xi32>
+    %ql1_vec = vector.load %ql1_view[%zero_index] : view<1xi32> -> vector<1xi32>
+    %qh0_vec = vector.load %qh0_view[%zero_index] : view<1xi32> -> vector<1xi32>
+    %qh1_vec = vector.load %qh1_view[%zero_index] : view<1xi32> -> vector<1xi32>
     %ql0_word = vector.extract %ql0_vec[0] : vector<1xi32> -> i32
     %ql1_word = vector.extract %ql1_vec[0] : vector<1xi32> -> i32
     %qh0_word = vector.extract %qh0_vec[0] : vector<1xi32> -> i32
@@ -340,9 +340,9 @@ kernel.def export("hrx2_mul_mat_q6_k_q8_1_wg32_static") @hrx2_mul_mat_q6_k_q8_1_
     %q8_qs1_offset0 = index.mul %iqs1, %four : index
     %q8_qs0_index = index.add %q8_qs_payload, %q8_qs0_offset0 : index
     %q8_qs1_index = index.add %q8_qs_payload, %q8_qs1_offset0 : index
-    %q8_vec0 = vector.load %src1_i8_view[%q8_qs0_index] : view<[%src1_i8_count]xi8, #dense> -> vector<4xi8>
-    %q8_vec1 = vector.load %src1_i8_view[%q8_qs1_index] : view<[%src1_i8_count]xi8, #dense> -> vector<4xi8>
-    %q8_d_f16 = view.load %src1_f16_view[%q8_f16_base] : view<[%src1_f16_count]xf16, #dense> -> f16
+    %q8_vec0 = vector.load %src1_i8_view[%q8_qs0_index] : view<[%src1_i8_count]xi8> -> vector<4xi8>
+    %q8_vec1 = vector.load %src1_i8_view[%q8_qs1_index] : view<[%src1_i8_count]xi8> -> vector<4xi8>
+    %q8_d_f16 = view.load %src1_f16_view[%q8_f16_base] : view<[%src1_f16_count]xf16> -> f16
     %q8_d = scalar.extf %q8_d_f16 : f16 to f32
     %dot_vec0 = vector.dot4i<s8s8> %q6_vec0, %q8_vec0, %zero_i32v : vector<4xi8>, vector<4xi8>, vector<1xi32>
     %dot_vec1 = vector.dot4i<s8s8> %q6_vec1, %q8_vec1, %zero_i32v : vector<4xi8>, vector<4xi8>, vector<1xi32>
@@ -362,7 +362,7 @@ kernel.def export("hrx2_mul_mat_q6_k_q8_1_wg32_static") @hrx2_mul_mat_q6_k_q8_1_
   %tid_i32 = index.cast %tid : index to i32
   %is_lane0 = scalar.cmpi eq, %tid_i32, %zero_i32 : i32
   scf.if %is_lane0 {
-    view.store %dot, %dst_view[%dst_index] : f32, view<[%dst_count]xf32, #dense>
+    view.store %dot, %dst_view[%dst_index] : f32, view<[%dst_count]xf32>
   }
   kernel.return
 }
@@ -453,19 +453,23 @@ kernel.def export("hrx2_mul_mat_q6_k_q8_1_x4_mmq64x32_static") @hrx2_mul_mat_q6_
   %src1_global = buffer.assume.memory_space<global> %src1_q8_x4 : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src0_noalias, %src1_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %src1_global, %dst_global : buffer, buffer, buffer
-  %src0_i8_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_i8_count]xi8, #dense>
-  %src0_f16_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_f16_count]xf16, #dense>
-  %src1_i8_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_i8_count]xi8, #dense>
-  %src1_f16_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_f16_count]xf16, #dense>
-  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32, #dense>
-  %bq_scratch = buffer.alloca %bq_bytes {base_alignment = 64, memory_space = workgroup} : buffer
-  %bd_scratch = buffer.alloca %bd_bytes {base_alignment = 64, memory_space = workgroup} : buffer
-  %bq_view = buffer.view %bq_scratch[%base] : buffer -> view<256xi32, #dense>
-  %bd_view = buffer.view %bd_scratch[%base] : buffer -> view<32xf16, #dense>
+  %src0_i8_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_i8_count]xi8>
+  %src0_f16_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_f16_count]xf16>
+  %src1_i8_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_i8_count]xi8>
+  %src1_f16_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_f16_count]xf16>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32>
+  %bq_scratch = buffer.alloca<workgroup> align(64) %bq_bytes : buffer
+  %bd_scratch = buffer.alloca<workgroup> align(64) %bd_bytes : buffer
+  %bq_view = buffer.view %bq_scratch[%base] : buffer -> view<256xi32>
+  %bd_view = buffer.view %bd_scratch[%base] : buffer -> view<32xf16>
 
-  scf.if %row_in_bounds {
-    %row_block_base = index.mul %row, %blocks_per_row : index
-    %col_block_base = index.mul %col_tile, %thirtytwo : index
+  %row_safe = scf.if %row_in_bounds -> (index) {
+    scf.yield %row : index
+  } else {
+    scf.yield %zero_index : index
+  }
+  %row_block_base = index.mul %row_safe, %blocks_per_row : index
+  %col_block_base = index.mul %col_tile, %thirtytwo : index
     %sum0, %sum1, %sum2, %sum3, %sum4, %sum5, %sum6, %sum7 = scf.for %kb = [%zero_index to %q8_blocks_per_col step %one](
         %acc0 = %zero_f32 : f32,
         %acc1 = %zero_f32 : f32,
@@ -490,20 +494,20 @@ kernel.def export("hrx2_mul_mat_q6_k_q8_1_x4_mmq64x32_static") @hrx2_mul_mat_q6_
         %q8_iqs_bytes = index.mul %load_iqs, %four : index
         %q8_word_index = index.add %q8_payload_base, %q8_iqs_bytes : index
         %q8_word_offset = index.cast %q8_word_index : index to offset
-        %q8_word_view = buffer.view %src1_noalias[%q8_word_offset] : buffer -> view<1xi32, #dense>
-        %q8_word_vec = vector.load %q8_word_view[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
+        %q8_word_view = buffer.view %src1_noalias[%q8_word_offset] : buffer -> view<1xi32>
+        %q8_word_vec = vector.load %q8_word_view[%zero_index] : view<1xi32> -> vector<1xi32>
         %q8_word = vector.extract %q8_word_vec[0] : vector<1xi32> -> i32
-        view.store %q8_word, %bq_view[%load_idx] : i32, view<256xi32, #dense>
+        view.store %q8_word, %bq_view[%load_idx] : i32, view<256xi32>
         %is_iqs0 = index.cmp eq, %load_iqs, %zero_index : index
         scf.if %is_iqs0 {
           %q8_f16_group_base = index.mul %q8_x4_block, %q8_block_f16s : index
           %q8_inner_f16_offset = index.mul %q8_inner, %two : index
           %q8_f16_base = index.add %q8_f16_group_base, %q8_inner_f16_offset : index
-          %q8_d = view.load %src1_f16_view[%q8_f16_base] : view<[%src1_f16_count]xf16, #dense> -> f16
-          view.store %q8_d, %bd_view[%load_col] : f16, view<32xf16, #dense>
+          %q8_d = view.load %src1_f16_view[%q8_f16_base] : view<[%src1_f16_count]xf16> -> f16
+          view.store %q8_d, %bd_view[%load_col] : f16, view<32xf16>
         }
       }
-      kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+      kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
 
       %q6_block_in_row = index.div %kb, %eight : index
       %q6_block = index.add %row_block_base, %q6_block_in_row : index
@@ -511,7 +515,7 @@ kernel.def export("hrx2_mul_mat_q6_k_q8_1_x4_mmq64x32_static") @hrx2_mul_mat_q6_
       %block_byte_base = index.mul %q6_block, %block_bytes : index
       %block_f16_base = index.mul %q6_block, %block_f16s : index
       %d_index = index.add %block_f16_base, %d_f16_offset : index
-      %d_f16 = view.load %src0_f16_view[%d_index] : view<[%src0_f16_count]xf16, #dense> -> f16
+      %d_f16 = view.load %src0_f16_view[%d_index] : view<[%src0_f16_count]xf16> -> f16
       %d0 = scalar.extf %d_f16 : f16 to f32
       %half = index.div %group, %four : index
       %group_in_half = index.rem %group, %four : index
@@ -550,10 +554,10 @@ kernel.def export("hrx2_mul_mat_q6_k_q8_1_x4_mmq64x32_static") @hrx2_mul_mat_q6_
         %qh_index = index.add %qh_payload1, %iqs4 : index
         %ql_offset = index.cast %ql_index : index to offset
         %qh_offset_v = index.cast %qh_index : index to offset
-        %ql_view = buffer.view %src0_noalias[%ql_offset] : buffer -> view<1xi32, #dense>
-        %qh_view = buffer.view %src0_noalias[%qh_offset_v] : buffer -> view<1xi32, #dense>
-        %ql_vec = vector.load %ql_view[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
-        %qh_vec = vector.load %qh_view[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
+        %ql_view = buffer.view %src0_noalias[%ql_offset] : buffer -> view<1xi32>
+        %qh_view = buffer.view %src0_noalias[%qh_offset_v] : buffer -> view<1xi32>
+        %ql_vec = vector.load %ql_view[%zero_index] : view<1xi32> -> vector<1xi32>
+        %qh_vec = vector.load %qh_view[%zero_index] : view<1xi32> -> vector<1xi32>
         %ql_word = vector.extract %ql_vec[0] : vector<1xi32> -> i32
         %qh_word = vector.extract %qh_vec[0] : vector<1xi32> -> i32
         %ql_shifted = scalar.shrui %ql_word, %ql_shift : i32
@@ -581,7 +585,7 @@ kernel.def export("hrx2_mul_mat_q6_k_q8_1_x4_mmq64x32_static") @hrx2_mul_mat_q6_
         %iqs_div4 = index.div %iqs, %four : index
         %scale_rel = index.add %scale_base0, %iqs_div4 : index
         %scale_index = index.add %scale_block_base, %scale_rel : index
-        %scale_i8 = view.load %src0_i8_view[%scale_index] : view<[%src0_i8_count]xi8, #dense> -> i8
+        %scale_i8 = view.load %src0_i8_view[%scale_index] : view<[%src0_i8_count]xi8> -> i8
         %scale_f32 = scalar.sitofp %scale_i8 : i8 to f32
         %d = scalar.mulf<reassoc|nnan|ninf|nsz> %d0, %scale_f32 : f32
 
@@ -609,14 +613,14 @@ kernel.def export("hrx2_mul_mat_q6_k_q8_1_x4_mmq64x32_static") @hrx2_mul_mat_q6_
         %b_idx5 = index.add %b_base5, %iqs : index
         %b_idx6 = index.add %b_base6, %iqs : index
         %b_idx7 = index.add %b_base7, %iqs : index
-        %b0 = view.load %bq_view[%b_idx0] : view<256xi32, #dense> -> i32
-        %b1 = view.load %bq_view[%b_idx1] : view<256xi32, #dense> -> i32
-        %b2 = view.load %bq_view[%b_idx2] : view<256xi32, #dense> -> i32
-        %b3 = view.load %bq_view[%b_idx3] : view<256xi32, #dense> -> i32
-        %b4 = view.load %bq_view[%b_idx4] : view<256xi32, #dense> -> i32
-        %b5 = view.load %bq_view[%b_idx5] : view<256xi32, #dense> -> i32
-        %b6 = view.load %bq_view[%b_idx6] : view<256xi32, #dense> -> i32
-        %b7 = view.load %bq_view[%b_idx7] : view<256xi32, #dense> -> i32
+        %b0 = view.load %bq_view[%b_idx0] : view<256xi32> -> i32
+        %b1 = view.load %bq_view[%b_idx1] : view<256xi32> -> i32
+        %b2 = view.load %bq_view[%b_idx2] : view<256xi32> -> i32
+        %b3 = view.load %bq_view[%b_idx3] : view<256xi32> -> i32
+        %b4 = view.load %bq_view[%b_idx4] : view<256xi32> -> i32
+        %b5 = view.load %bq_view[%b_idx5] : view<256xi32> -> i32
+        %b6 = view.load %bq_view[%b_idx6] : view<256xi32> -> i32
+        %b7 = view.load %bq_view[%b_idx7] : view<256xi32> -> i32
         %bvec0 = vector.from_elements %b0 : vector<1xi32>
         %bvec1 = vector.from_elements %b1 : vector<1xi32>
         %bvec2 = vector.from_elements %b2 : vector<1xi32>
@@ -657,14 +661,14 @@ kernel.def export("hrx2_mul_mat_q6_k_q8_1_x4_mmq64x32_static") @hrx2_mul_mat_q6_
         %df5 = scalar.sitofp %di5 : i32 to f32
         %df6 = scalar.sitofp %di6 : i32 to f32
         %df7 = scalar.sitofp %di7 : i32 to f32
-        %bd0 = view.load %bd_view[%b_col0] : view<32xf16, #dense> -> f16
-        %bd1 = view.load %bd_view[%b_col1] : view<32xf16, #dense> -> f16
-        %bd2 = view.load %bd_view[%b_col2] : view<32xf16, #dense> -> f16
-        %bd3 = view.load %bd_view[%b_col3] : view<32xf16, #dense> -> f16
-        %bd4 = view.load %bd_view[%b_col4] : view<32xf16, #dense> -> f16
-        %bd5 = view.load %bd_view[%b_col5] : view<32xf16, #dense> -> f16
-        %bd6 = view.load %bd_view[%b_col6] : view<32xf16, #dense> -> f16
-        %bd7 = view.load %bd_view[%b_col7] : view<32xf16, #dense> -> f16
+        %bd0 = view.load %bd_view[%b_col0] : view<32xf16> -> f16
+        %bd1 = view.load %bd_view[%b_col1] : view<32xf16> -> f16
+        %bd2 = view.load %bd_view[%b_col2] : view<32xf16> -> f16
+        %bd3 = view.load %bd_view[%b_col3] : view<32xf16> -> f16
+        %bd4 = view.load %bd_view[%b_col4] : view<32xf16> -> f16
+        %bd5 = view.load %bd_view[%b_col5] : view<32xf16> -> f16
+        %bd6 = view.load %bd_view[%b_col6] : view<32xf16> -> f16
+        %bd7 = view.load %bd_view[%b_col7] : view<32xf16> -> f16
         %bd0f = scalar.extf %bd0 : f16 to f32
         %bd1f = scalar.extf %bd1 : f16 to f32
         %bd2f = scalar.extf %bd2 : f16 to f32
@@ -699,7 +703,7 @@ kernel.def export("hrx2_mul_mat_q6_k_q8_1_x4_mmq64x32_static") @hrx2_mul_mat_q6_
         %o7 = scalar.addf<reassoc|nnan|ninf|nsz> %a7, %s7 : f32
         scf.yield %o0, %o1, %o2, %o3, %o4, %o5, %o6, %o7 : f32, f32, f32, f32, f32, f32, f32, f32
       }
-      kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+      kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
       scf.yield %next0, %next1, %next2, %next3, %next4, %next5, %next6, %next7 : f32, f32, f32, f32, f32, f32, f32, f32
     }
 
@@ -727,14 +731,22 @@ kernel.def export("hrx2_mul_mat_q6_k_q8_1_x4_mmq64x32_static") @hrx2_mul_mat_q6_
     %dst5 = index.add %dst_base5, %row : index
     %dst6 = index.add %dst_base6, %row : index
     %dst7 = index.add %dst_base7, %row : index
-    view.store %sum0, %dst_view[%dst0] : f32, view<[%dst_count]xf32, #dense>
-    view.store %sum1, %dst_view[%dst1] : f32, view<[%dst_count]xf32, #dense>
-    view.store %sum2, %dst_view[%dst2] : f32, view<[%dst_count]xf32, #dense>
-    view.store %sum3, %dst_view[%dst3] : f32, view<[%dst_count]xf32, #dense>
-    view.store %sum4, %dst_view[%dst4] : f32, view<[%dst_count]xf32, #dense>
-    view.store %sum5, %dst_view[%dst5] : f32, view<[%dst_count]xf32, #dense>
-    view.store %sum6, %dst_view[%dst6] : f32, view<[%dst_count]xf32, #dense>
-    view.store %sum7, %dst_view[%dst7] : f32, view<[%dst_count]xf32, #dense>
+    view.store %sum0, %dst_view[%dst0] : f32, view<[%dst_count]xf32>
+    view.store %sum1, %dst_view[%dst1] : f32, view<[%dst_count]xf32>
+    view.store %sum2, %dst_view[%dst2] : f32, view<[%dst_count]xf32>
+    view.store %sum3, %dst_view[%dst3] : f32, view<[%dst_count]xf32>
+    view.store %sum4, %dst_view[%dst4] : f32, view<[%dst_count]xf32>
+    view.store %sum5, %dst_view[%dst5] : f32, view<[%dst_count]xf32>
+    view.store %sum6, %dst_view[%dst6] : f32, view<[%dst_count]xf32>
+  scf.if %row_in_bounds {
+    view.store %sum0, %dst_view[%dst0] : f32, view<[%dst_count]xf32>
+    view.store %sum1, %dst_view[%dst1] : f32, view<[%dst_count]xf32>
+    view.store %sum2, %dst_view[%dst2] : f32, view<[%dst_count]xf32>
+    view.store %sum3, %dst_view[%dst3] : f32, view<[%dst_count]xf32>
+    view.store %sum4, %dst_view[%dst4] : f32, view<[%dst_count]xf32>
+    view.store %sum5, %dst_view[%dst5] : f32, view<[%dst_count]xf32>
+    view.store %sum6, %dst_view[%dst6] : f32, view<[%dst_count]xf32>
+    view.store %sum7, %dst_view[%dst7] : f32, view<[%dst_count]xf32>
   }
   kernel.return
 }
@@ -835,11 +847,11 @@ kernel.def export("hrx2_mul_mat_q6_k_q8_1_x4_direct_cols4_static") @hrx2_mul_mat
   %src1_global = buffer.assume.memory_space<global> %src1_q8_x4 : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src0_noalias, %src1_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %src1_global, %dst_global : buffer, buffer, buffer
-  %src0_i8_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_i8_count]xi8, #dense>
-  %src0_f16_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_f16_count]xf16, #dense>
-  %src1_i8_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_i8_count]xi8, #dense>
-  %src1_f16_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_f16_count]xf16, #dense>
-  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32, #dense>
+  %src0_i8_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_i8_count]xi8>
+  %src0_f16_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_f16_count]xf16>
+  %src1_i8_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_i8_count]xi8>
+  %src1_f16_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_f16_count]xf16>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32>
 
   %row_block_base = index.mul %row, %blocks_per_row : index
   %src1_col_base0 = index.mul %col0, %q8_blocks_per_col : index
@@ -851,11 +863,11 @@ kernel.def export("hrx2_mul_mat_q6_k_q8_1_x4_direct_cols4_static") @hrx2_mul_mat
     %block_byte_base = index.mul %linear_block, %block_bytes : index
     %block_f16_base = index.mul %linear_block, %block_f16s : index
     %d_index = index.add %block_f16_base, %d_f16_offset : index
-    %d_f16 = view.load %src0_f16_view[%d_index] : view<[%src0_f16_count]xf16, #dense> -> f16
+    %d_f16 = view.load %src0_f16_view[%d_index] : view<[%src0_f16_count]xf16> -> f16
     %d0 = scalar.extf %d_f16 : f16 to f32
     %scale_block_base = index.add %block_byte_base, %scales_offset : index
     %scale_index = index.add %scale_block_base, %scale_lane : index
-    %scale_i8 = view.load %src0_i8_view[%scale_index] : view<[%src0_i8_count]xi8, #dense> -> i8
+    %scale_i8 = view.load %src0_i8_view[%scale_index] : view<[%src0_i8_count]xi8> -> i8
     %scale_f32 = scalar.sitofp %scale_i8 : i8 to f32
     %d = scalar.mulf<reassoc|nnan|ninf|nsz> %d0, %scale_f32 : f32
 
@@ -868,14 +880,14 @@ kernel.def export("hrx2_mul_mat_q6_k_q8_1_x4_direct_cols4_static") @hrx2_mul_mat
     %qh_index1 = index.add %qh_index0, %one : index
     %qh_index2 = index.add %qh_index0, %two : index
     %qh_index3 = index.add %qh_index0, %three : index
-    %ql0_i8 = view.load %src0_i8_view[%ql_index0] : view<[%src0_i8_count]xi8, #dense> -> i8
-    %ql1_i8 = view.load %src0_i8_view[%ql_index1] : view<[%src0_i8_count]xi8, #dense> -> i8
-    %ql2_i8 = view.load %src0_i8_view[%ql_index2] : view<[%src0_i8_count]xi8, #dense> -> i8
-    %ql3_i8 = view.load %src0_i8_view[%ql_index3] : view<[%src0_i8_count]xi8, #dense> -> i8
-    %qh0_i8 = view.load %src0_i8_view[%qh_index0] : view<[%src0_i8_count]xi8, #dense> -> i8
-    %qh1_i8 = view.load %src0_i8_view[%qh_index1] : view<[%src0_i8_count]xi8, #dense> -> i8
-    %qh2_i8 = view.load %src0_i8_view[%qh_index2] : view<[%src0_i8_count]xi8, #dense> -> i8
-    %qh3_i8 = view.load %src0_i8_view[%qh_index3] : view<[%src0_i8_count]xi8, #dense> -> i8
+    %ql0_i8 = view.load %src0_i8_view[%ql_index0] : view<[%src0_i8_count]xi8> -> i8
+    %ql1_i8 = view.load %src0_i8_view[%ql_index1] : view<[%src0_i8_count]xi8> -> i8
+    %ql2_i8 = view.load %src0_i8_view[%ql_index2] : view<[%src0_i8_count]xi8> -> i8
+    %ql3_i8 = view.load %src0_i8_view[%ql_index3] : view<[%src0_i8_count]xi8> -> i8
+    %qh0_i8 = view.load %src0_i8_view[%qh_index0] : view<[%src0_i8_count]xi8> -> i8
+    %qh1_i8 = view.load %src0_i8_view[%qh_index1] : view<[%src0_i8_count]xi8> -> i8
+    %qh2_i8 = view.load %src0_i8_view[%qh_index2] : view<[%src0_i8_count]xi8> -> i8
+    %qh3_i8 = view.load %src0_i8_view[%qh_index3] : view<[%src0_i8_count]xi8> -> i8
     %ql0_u = scalar.extui %ql0_i8 : i8 to i32
     %ql1_u = scalar.extui %ql1_i8 : i8 to i32
     %ql2_u = scalar.extui %ql2_i8 : i8 to i32
@@ -964,14 +976,14 @@ kernel.def export("hrx2_mul_mat_q6_k_q8_1_x4_direct_cols4_static") @hrx2_mul_mat
     %q8_qs_index1 = index.add %q8_qs_payload1, %lane_q : index
     %q8_qs_index2 = index.add %q8_qs_payload2, %lane_q : index
     %q8_qs_index3 = index.add %q8_qs_payload3, %lane_q : index
-    %q8_vec0 = vector.load %src1_i8_view[%q8_qs_index0] : view<[%src1_i8_count]xi8, #dense> -> vector<4xi8>
-    %q8_vec1 = vector.load %src1_i8_view[%q8_qs_index1] : view<[%src1_i8_count]xi8, #dense> -> vector<4xi8>
-    %q8_vec2 = vector.load %src1_i8_view[%q8_qs_index2] : view<[%src1_i8_count]xi8, #dense> -> vector<4xi8>
-    %q8_vec3 = vector.load %src1_i8_view[%q8_qs_index3] : view<[%src1_i8_count]xi8, #dense> -> vector<4xi8>
-    %q8_d_f16_0 = view.load %src1_f16_view[%q8_f16_base0] : view<[%src1_f16_count]xf16, #dense> -> f16
-    %q8_d_f16_1 = view.load %src1_f16_view[%q8_f16_base1] : view<[%src1_f16_count]xf16, #dense> -> f16
-    %q8_d_f16_2 = view.load %src1_f16_view[%q8_f16_base2] : view<[%src1_f16_count]xf16, #dense> -> f16
-    %q8_d_f16_3 = view.load %src1_f16_view[%q8_f16_base3] : view<[%src1_f16_count]xf16, #dense> -> f16
+    %q8_vec0 = vector.load %src1_i8_view[%q8_qs_index0] : view<[%src1_i8_count]xi8> -> vector<4xi8>
+    %q8_vec1 = vector.load %src1_i8_view[%q8_qs_index1] : view<[%src1_i8_count]xi8> -> vector<4xi8>
+    %q8_vec2 = vector.load %src1_i8_view[%q8_qs_index2] : view<[%src1_i8_count]xi8> -> vector<4xi8>
+    %q8_vec3 = vector.load %src1_i8_view[%q8_qs_index3] : view<[%src1_i8_count]xi8> -> vector<4xi8>
+    %q8_d_f16_0 = view.load %src1_f16_view[%q8_f16_base0] : view<[%src1_f16_count]xf16> -> f16
+    %q8_d_f16_1 = view.load %src1_f16_view[%q8_f16_base1] : view<[%src1_f16_count]xf16> -> f16
+    %q8_d_f16_2 = view.load %src1_f16_view[%q8_f16_base2] : view<[%src1_f16_count]xf16> -> f16
+    %q8_d_f16_3 = view.load %src1_f16_view[%q8_f16_base3] : view<[%src1_f16_count]xf16> -> f16
     %q8_d0 = scalar.extf %q8_d_f16_0 : f16 to f32
     %q8_d1 = scalar.extf %q8_d_f16_1 : f16 to f32
     %q8_d2 = scalar.extf %q8_d_f16_2 : f16 to f32
@@ -1018,10 +1030,10 @@ kernel.def export("hrx2_mul_mat_q6_k_q8_1_x4_direct_cols4_static") @hrx2_mul_mat
   %lane_i32 = index.cast %lane : index to i32
   %is_lane0 = scalar.cmpi eq, %lane_i32, %zero_i32 : i32
   scf.if %is_lane0 {
-    view.store %dot0, %dst_view[%dst_index0] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot1, %dst_view[%dst_index1] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot2, %dst_view[%dst_index2] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot3, %dst_view[%dst_index3] : f32, view<[%dst_count]xf32, #dense>
+    view.store %dot0, %dst_view[%dst_index0] : f32, view<[%dst_count]xf32>
+    view.store %dot1, %dst_view[%dst_index1] : f32, view<[%dst_count]xf32>
+    view.store %dot2, %dst_view[%dst_index2] : f32, view<[%dst_count]xf32>
+    view.store %dot3, %dst_view[%dst_index3] : f32, view<[%dst_count]xf32>
   }
   kernel.return
 }
@@ -1099,10 +1111,10 @@ kernel.def export("hrx2_mul_mat_q6_k_f32_rows2_wg32_static") @hrx2_mul_mat_q6_k_
   %src1_global = buffer.assume.memory_space<global> %src1 : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src0_noalias, %src1_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %src1_global, %dst_global : buffer, buffer, buffer
-  %src0_i8_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_i8_count]xi8, #dense>
-  %src0_f16_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_f16_count]xf16, #dense>
-  %src1_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_count]xf32, #dense>
-  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32, #dense>
+  %src0_i8_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_i8_count]xi8>
+  %src0_f16_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_f16_count]xf16>
+  %src1_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_count]xf32>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32>
 
   %itid = index.rem %tid, %sixteen : index
   %block_slot = index.div %tid, %sixteen : index
@@ -1135,16 +1147,16 @@ kernel.def export("hrx2_mul_mat_q6_k_f32_rows2_wg32_static") @hrx2_mul_mat_q6_k_
     %src_index32 = index.add %src_index0, %thirtytwo : index
     %src_index64 = index.add %src_index0, %sixtyfour : index
     %src_index96 = index.add %src_index0, %ninetysix : index
-    %by0 = vector.load %src1_view[%src_index0] : view<[%src1_count]xf32, #dense> -> vector<4xf32>
-    %by32 = vector.load %src1_view[%src_index32] : view<[%src1_count]xf32, #dense> -> vector<4xf32>
-    %by64 = vector.load %src1_view[%src_index64] : view<[%src1_count]xf32, #dense> -> vector<4xf32>
-    %by96 = vector.load %src1_view[%src_index96] : view<[%src1_count]xf32, #dense> -> vector<4xf32>
+    %by0 = vector.load %src1_view[%src_index0] : view<[%src1_count]xf32> -> vector<4xf32>
+    %by32 = vector.load %src1_view[%src_index32] : view<[%src1_count]xf32> -> vector<4xf32>
+    %by64 = vector.load %src1_view[%src_index64] : view<[%src1_count]xf32> -> vector<4xf32>
+    %by96 = vector.load %src1_view[%src_index96] : view<[%src1_count]xf32> -> vector<4xf32>
 
     %linear_block0 = index.add %row0_block_base, %block_idx : index
     %block_byte_base0 = index.mul %linear_block0, %block_bytes : index
     %block_f16_base0 = index.mul %linear_block0, %block_f16s : index
     %d_index0 = index.add %block_f16_base0, %d_f16_offset : index
-    %d_f160 = view.load %src0_f16_view[%d_index0] : view<[%src0_f16_count]xf16, #dense> -> f16
+    %d_f160 = view.load %src0_f16_view[%d_index0] : view<[%src0_f16_count]xf16> -> f16
     %d0 = scalar.extf %d_f160 : f16 to f32
     %ql0_base0 = index.add %block_byte_base0, %ql_offset_base : index
     %ql32_base0 = index.add %ql0_base0, %thirtytwo : index
@@ -1153,12 +1165,12 @@ kernel.def export("hrx2_mul_mat_q6_k_f32_rows2_wg32_static") @hrx2_mul_mat_q6_k_
     %ql0_off0 = index.cast %ql0_base0 : index to offset
     %ql32_off0 = index.cast %ql32_base0 : index to offset
     %qh_off0 = index.cast %qh_base0 : index to offset
-    %ql0_word_view0 = buffer.view %src0_noalias[%ql0_off0] : buffer -> view<1xi32, #dense>
-    %ql32_word_view0 = buffer.view %src0_noalias[%ql32_off0] : buffer -> view<1xi32, #dense>
-    %qh_word_view0 = buffer.view %src0_noalias[%qh_off0] : buffer -> view<1xi32, #dense>
-    %ql0_vec0 = vector.load %ql0_word_view0[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
-    %ql32_vec0 = vector.load %ql32_word_view0[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
-    %qh_vec0 = vector.load %qh_word_view0[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
+    %ql0_word_view0 = buffer.view %src0_noalias[%ql0_off0] : buffer -> view<1xi32>
+    %ql32_word_view0 = buffer.view %src0_noalias[%ql32_off0] : buffer -> view<1xi32>
+    %qh_word_view0 = buffer.view %src0_noalias[%qh_off0] : buffer -> view<1xi32>
+    %ql0_vec0 = vector.load %ql0_word_view0[%zero_index] : view<1xi32> -> vector<1xi32>
+    %ql32_vec0 = vector.load %ql32_word_view0[%zero_index] : view<1xi32> -> vector<1xi32>
+    %qh_vec0 = vector.load %qh_word_view0[%zero_index] : view<1xi32> -> vector<1xi32>
     %ql0_word0 = vector.extract %ql0_vec0[0] : vector<1xi32> -> i32
     %ql32_word0 = vector.extract %ql32_vec0[0] : vector<1xi32> -> i32
     %qh_word0 = vector.extract %qh_vec0[0] : vector<1xi32> -> i32
@@ -1186,10 +1198,10 @@ kernel.def export("hrx2_mul_mat_q6_k_f32_rows2_wg32_static") @hrx2_mul_mat_q6_k_
     %s1_index0 = index.add %s0_index0, %two : index
     %s2_index0 = index.add %s0_index0, %four : index
     %s3_index0 = index.add %s2_index0, %two : index
-    %s0_i80 = view.load %src0_i8_view[%s0_index0] : view<[%src0_i8_count]xi8, #dense> -> i8
-    %s1_i80 = view.load %src0_i8_view[%s1_index0] : view<[%src0_i8_count]xi8, #dense> -> i8
-    %s2_i80 = view.load %src0_i8_view[%s2_index0] : view<[%src0_i8_count]xi8, #dense> -> i8
-    %s3_i80 = view.load %src0_i8_view[%s3_index0] : view<[%src0_i8_count]xi8, #dense> -> i8
+    %s0_i80 = view.load %src0_i8_view[%s0_index0] : view<[%src0_i8_count]xi8> -> i8
+    %s1_i80 = view.load %src0_i8_view[%s1_index0] : view<[%src0_i8_count]xi8> -> i8
+    %s2_i80 = view.load %src0_i8_view[%s2_index0] : view<[%src0_i8_count]xi8> -> i8
+    %s3_i80 = view.load %src0_i8_view[%s3_index0] : view<[%src0_i8_count]xi8> -> i8
     %s0_f0 = scalar.sitofp %s0_i80 : i8 to f32
     %s1_f0 = scalar.sitofp %s1_i80 : i8 to f32
     %s2_f0 = scalar.sitofp %s2_i80 : i8 to f32
@@ -1279,7 +1291,7 @@ kernel.def export("hrx2_mul_mat_q6_k_f32_rows2_wg32_static") @hrx2_mul_mat_q6_k_
       %block_byte_base1 = index.mul %linear_block1, %block_bytes : index
       %block_f16_base1 = index.mul %linear_block1, %block_f16s : index
       %d_index1 = index.add %block_f16_base1, %d_f16_offset : index
-      %d_f161 = view.load %src0_f16_view[%d_index1] : view<[%src0_f16_count]xf16, #dense> -> f16
+      %d_f161 = view.load %src0_f16_view[%d_index1] : view<[%src0_f16_count]xf16> -> f16
       %d1 = scalar.extf %d_f161 : f16 to f32
       %ql0_base1 = index.add %block_byte_base1, %ql_offset_base : index
       %ql32_base1 = index.add %ql0_base1, %thirtytwo : index
@@ -1288,12 +1300,12 @@ kernel.def export("hrx2_mul_mat_q6_k_f32_rows2_wg32_static") @hrx2_mul_mat_q6_k_
       %ql0_off1 = index.cast %ql0_base1 : index to offset
       %ql32_off1 = index.cast %ql32_base1 : index to offset
       %qh_off1 = index.cast %qh_base1 : index to offset
-      %ql0_word_view1 = buffer.view %src0_noalias[%ql0_off1] : buffer -> view<1xi32, #dense>
-      %ql32_word_view1 = buffer.view %src0_noalias[%ql32_off1] : buffer -> view<1xi32, #dense>
-      %qh_word_view1 = buffer.view %src0_noalias[%qh_off1] : buffer -> view<1xi32, #dense>
-      %ql0_vec1 = vector.load %ql0_word_view1[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
-      %ql32_vec1 = vector.load %ql32_word_view1[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
-      %qh_vec1 = vector.load %qh_word_view1[%zero_index] : view<1xi32, #dense> -> vector<1xi32>
+      %ql0_word_view1 = buffer.view %src0_noalias[%ql0_off1] : buffer -> view<1xi32>
+      %ql32_word_view1 = buffer.view %src0_noalias[%ql32_off1] : buffer -> view<1xi32>
+      %qh_word_view1 = buffer.view %src0_noalias[%qh_off1] : buffer -> view<1xi32>
+      %ql0_vec1 = vector.load %ql0_word_view1[%zero_index] : view<1xi32> -> vector<1xi32>
+      %ql32_vec1 = vector.load %ql32_word_view1[%zero_index] : view<1xi32> -> vector<1xi32>
+      %qh_vec1 = vector.load %qh_word_view1[%zero_index] : view<1xi32> -> vector<1xi32>
       %ql0_word1 = vector.extract %ql0_vec1[0] : vector<1xi32> -> i32
       %ql32_word1 = vector.extract %ql32_vec1[0] : vector<1xi32> -> i32
       %qh_word1 = vector.extract %qh_vec1[0] : vector<1xi32> -> i32
@@ -1321,10 +1333,10 @@ kernel.def export("hrx2_mul_mat_q6_k_f32_rows2_wg32_static") @hrx2_mul_mat_q6_k_
       %s1_index1 = index.add %s0_index1, %two : index
       %s2_index1 = index.add %s0_index1, %four : index
       %s3_index1 = index.add %s2_index1, %two : index
-      %s0_i81 = view.load %src0_i8_view[%s0_index1] : view<[%src0_i8_count]xi8, #dense> -> i8
-      %s1_i81 = view.load %src0_i8_view[%s1_index1] : view<[%src0_i8_count]xi8, #dense> -> i8
-      %s2_i81 = view.load %src0_i8_view[%s2_index1] : view<[%src0_i8_count]xi8, #dense> -> i8
-      %s3_i81 = view.load %src0_i8_view[%s3_index1] : view<[%src0_i8_count]xi8, #dense> -> i8
+      %s0_i81 = view.load %src0_i8_view[%s0_index1] : view<[%src0_i8_count]xi8> -> i8
+      %s1_i81 = view.load %src0_i8_view[%s1_index1] : view<[%src0_i8_count]xi8> -> i8
+      %s2_i81 = view.load %src0_i8_view[%s2_index1] : view<[%src0_i8_count]xi8> -> i8
+      %s3_i81 = view.load %src0_i8_view[%s3_index1] : view<[%src0_i8_count]xi8> -> i8
       %s0_f1 = scalar.sitofp %s0_i81 : i8 to f32
       %s1_f1 = scalar.sitofp %s1_i81 : i8 to f32
       %s2_f1 = scalar.sitofp %s2_i81 : i8 to f32
@@ -1419,9 +1431,9 @@ kernel.def export("hrx2_mul_mat_q6_k_f32_rows2_wg32_static") @hrx2_mul_mat_q6_k_
   %tid_i32 = index.cast %tid : index to i32
   %is_lane0 = scalar.cmpi eq, %tid_i32, %zero_i32 : i32
   scf.if %is_lane0 {
-    view.store %dot0, %dst_view[%dst_index0] : f32, view<[%dst_count]xf32, #dense>
+    view.store %dot0, %dst_view[%dst_index0] : f32, view<[%dst_count]xf32>
     scf.if %row1_in_bounds {
-      view.store %dot1, %dst_view[%dst_index1] : f32, view<[%dst_count]xf32, #dense>
+      view.store %dot1, %dst_view[%dst_index1] : f32, view<[%dst_count]xf32>
     }
   }
   kernel.return

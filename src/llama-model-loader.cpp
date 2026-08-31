@@ -871,10 +871,17 @@ const struct ggml_tensor * llama_model_loader::check_tensor_dims(const std::stri
 
     {
         bool is_ok = true;
-        for (size_t i = 0; i < GGML_MAX_DIMS; ++i) {
-            if ((i < ne.size() && ne[i] != cur->ne[i]) || (i >= ne.size() && cur->ne[i] != 1)) {
-                is_ok = false;
-                break;
+        // 1bit-MONSTER Q4NX weights are stored tile-major as [8192, n_tiles]
+        // (each 8192-element row = one 5120-byte tile); the model dims are
+        // [ne0 = in, ne1 = out] with n_tiles = (out/32)*(in/256). Skip the
+        // shape comparison for Q4NX tensors; the graph builder derives the
+        // logical dims from the op (ggml_mul_mat_q4nx) using src1->ne[0].
+        if (cur->type != GGML_TYPE_Q4NX) {
+            for (size_t i = 0; i < GGML_MAX_DIMS; ++i) {
+                if ((i < ne.size() && ne[i] != cur->ne[i]) || (i >= ne.size() && cur->ne[i] != 1)) {
+                    is_ok = false;
+                    break;
+                }
             }
         }
         if (!is_ok) {

@@ -33,6 +33,96 @@ static inline int best_index_int8(int n, const int8_t * val, float x) {
 }
 
 // reference implementation for deterministic creation of model files
+
+// Q4NX reference quantizer + dequantizer (1bit-MONSTER engine semantics).
+// One block = one 5120-byte tile = [32 x 256]; k must be a multiple of 8192
+// (a tensor of ne=[256, nrows] holds nrows/32 tiles). Row-major element
+// order within the block: e -> row = e/256, col = e%256.
+// Layout (engine dequant_q4nx.cpp / q4nx_raw.h, lane-packed signed int4):
+//   scales[row*8 + col/32] BF16, zeros same; clamps: non-finite/|x|>100 -> 0
+//   packed: lane=row/16; byte = lane*2048 + col*8 + (row%16)/2; low nibble =
+//   even row; q = nibble two's-complement (0..7, -8..-1); out = q*scale + zp
+
+static inline float ggml_bf16_bytes_to_f32(const uint8_t * p) {
+    const uint16_t v = (uint16_t) p[0] | ((uint16_t) p[1] << 8);
+    const uint32_t bits = (uint32_t) v << 16;
+    float f;
+    memcpy(&f, &bits, sizeof(f));
+    return f;
+}
+
+void quantize_row_q4nx_ref(const float * GGML_RESTRICT x, block_q4nx * GGML_RESTRICT y, int64_t k) {
+    static const int qk = QK4NX;
+    assert(k % qk == 0);
+    const int nb = k / qk;
+    for (int i = 0; i < nb; i++) {
+        block_q4nx * b = &y[i];
+        memset(b, 0, sizeof(*b));
+        // per-(row, col-group) BF16 scale/zp from the f32 block
+        for (int r = 0; r < QK4NX_TILE_ROWS; r++) {
+            for (int g = 0; g < 8; g++) {
+                float smax = 0.0f;
+                for (int c = g*32; c < g*32+32; c++) {
+                    smax = fmaxf(smax, fabsf(x[i*qk + r*QK4NX_TILE_COLS + c]));
+                }
+                // /7 keeps |v/scale| <= 7 so the signed nibble never hits the
+                // q=8 <-> val=-8 edge of the two's-complement mapping
+                const float scale = smax / 7.0f;
+                const ggml_bf16_t sb = ggml_fp32_to_bf16(scale);
+                memcpy(b->scales + (r*8+g)*2, &sb, 2);
+                // symmetric: zero point 0
+            }
+        }
+        // packed int4, lane order
+        for (int r = 0; r < QK4NX_TILE_ROWS; r++) {
+            const int lane = r / 16, lane_row = r % 16;
+            const int byte_idx = lane_row / 2;
+            const int nib = r % 2;
+            for (int c = 0; c < QK4NX_TILE_COLS; c++) {
+                const float v = x[i*qk + r*QK4NX_TILE_COLS + c];
+                const int g = c / 32;
+                ggml_bf16_t sb;
+                memcpy(&sb, b->scales + (r*8+g)*2, 2);
+                const float scale = ggml_bf16_to_fp32(sb);
+                const int q = (int) roundf(v / scale);        // expected [-7, 7]
+                const int q2 = q < 0 ? q + 16 : q;            // two's-complement nibble
+                const int clamped = q2 < 0 ? 0 : (q2 > 15 ? 15 : q2);
+                uint8_t * byte = &b->packed[lane*2048 + c*8 + byte_idx];
+                if (nib == 0) {
+                    *byte = (uint8_t)((*byte & 0xF0) | (clamped & 0x0F));
+                } else {
+                    *byte = (uint8_t)((*byte & 0x0F) | ((clamped & 0x0F) << 4));
+                }
+            }
+        }
+    }
+}
+
+void dequantize_row_q4nx(const block_q4nx * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    static const int qk = QK4NX;
+    assert(k % qk == 0);
+    const int nb = k / qk;
+    for (int i = 0; i < nb; i++) {
+        const block_q4nx * b = &x[i];
+        for (int e = 0; e < qk; e++) {
+            const int r = e / QK4NX_TILE_COLS;
+            const int c = e % QK4NX_TILE_COLS;
+            const int g = c / 32;
+            float scale = ggml_bf16_bytes_to_f32(b->scales + (r*8+g)*2);
+            float zp    = ggml_bf16_bytes_to_f32(b->zeros  + (r*8+g)*2);
+            if (!isfinite(scale) || fabsf(scale) > 100.0f) scale = 0.0f;
+            if (!isfinite(zp) || fabsf(zp) > 100.0f) zp = 0.0f;
+            const int lane = r / 16, lane_row = r % 16;
+            const int byte_idx = lane_row / 2;
+            const int nib = r % 2;
+            const uint8_t byte = b->packed[lane*2048 + c*8 + byte_idx];
+            const int q = nib == 0 ? (byte & 0x0F) : ((byte >> 4) & 0x0F);
+            const int8_t val = (int8_t)(q < 8 ? q : q - 16);
+            y[i*qk + e] = (float) val * scale + zp;
+        }
+    }
+}
+
 void quantize_row_q1_0_ref(const float * GGML_RESTRICT x, block_q1_0 * GGML_RESTRICT y, int64_t k) {
     static const int qk = QK1_0;
 

@@ -7,15 +7,17 @@
 #include <cstring>
 #include <memory>
 #include <new>
+#include <vector>
+#include <string>
 
 #include "loomc/loomc.h"
+#include "loomc/byte_sequence.h"
 #include "loomc/target/amdgpu.h"
 
 struct ggml_hrx2_loom_jit_amdgpu_s {
   loomc_target_environment_t* target_environment = nullptr;
   loomc_context_t* context = nullptr;
   loomc_target_profile_t* target_profile = nullptr;
-  loomc_target_selection_t* target_selection = nullptr;
   loomc_compiler_t* compiler = nullptr;
   loomc_pass_program_t* pass_program = nullptr;
 };
@@ -158,15 +160,40 @@ hrx_status_t ggml_hrx2_loom_jit_copy_artifact_bytes(
   if (!artifact || !out_data || !out_size) {
     return hrx_ok_status();
   }
-  void* copy = ggml_hrx2_loom_jit_malloc_copy(artifact->contents.data,
-                                        artifact->contents.data_length,
-                                        nul_terminate);
+  // 1bit-MONSTER: loomc_byte_sequence_t is opaque in the current loomc;
+  // copy the artifact bytes via the length/enumerate API.
+  const size_t seq_len = (size_t) loomc_byte_sequence_length(artifact->contents);
+  if (seq_len == 0) {
+    return ggml_hrx2_loom_jit_make_status(HRX_STATUS_FAILED_PRECONDITION,
+                                    "Loom artifact has no contents");
+  }
+  std::vector<uint8_t> tmp(seq_len);
+  struct copy_ctx_t {
+    uint8_t* dst;
+    size_t off;
+  } ctx = { tmp.data(), 0 };
+  loomc_byte_sequence_callback_t cb = {};
+  cb.user_data = &ctx;
+  cb.fn = [](void* user_data, loomc_byte_span_t segment) -> loomc_status_t {
+    auto& c = *static_cast<copy_ctx_t*>(user_data);
+    if (segment.data_length > 0 && segment.data) {
+      std::memcpy(c.dst + c.off, segment.data, segment.data_length);
+      c.off += segment.data_length;
+    }
+    return loomc_ok_status();
+  };
+  const loomc_status_t est = loomc_byte_sequence_enumerate(artifact->contents, cb);
+  if (!loomc_status_is_ok(est)) {
+    return ggml_hrx2_loom_jit_make_status(HRX_STATUS_FAILED_PRECONDITION,
+                                    "failed to enumerate Loom artifact");
+  }
+  void* copy = ggml_hrx2_loom_jit_malloc_copy(tmp.data(), seq_len, nul_terminate);
   if (!copy) {
     return ggml_hrx2_loom_jit_make_status(HRX_STATUS_OUT_OF_MEMORY,
                                     "failed to copy Loom artifact");
   }
   *out_data = copy;
-  *out_size = artifact->contents.data_length;
+  *out_size = seq_len;
   return hrx_ok_status();
 }
 
@@ -216,11 +243,28 @@ hrx_status_t ggml_hrx2_loom_jit_amdgpu_create(
     return ggml_hrx2_loom_jit_status_from_loom(status, "create Loom context");
   }
 
+  // Normalize the bare architecture name (e.g. "gfx1151") into a full HSA
+  // target id ("amdgcn-amd-amdhsa--gfx1151") as required by the identity API.
+  std::string hsa_isa_name;
+  if (options->processor) {
+    const std::string processor = options->processor;
+    const std::string prefix = "amdgcn-amd-amdhsa--";
+    hsa_isa_name = processor.compare(0, prefix.size(), prefix) == 0
+                       ? processor
+                       : prefix + processor;
+  }
+  loomc_amdgpu_target_identity_t target_identity = {};
+  status = loomc_amdgpu_target_identity_from_hsa_isa_name(
+      loomc_make_cstring_view(hsa_isa_name.c_str()), 0, &target_identity);
+  if (!loomc_status_is_ok(status)) {
+    return ggml_hrx2_loom_jit_status_from_loom(status,
+                                         "resolve AMDGPU target identity");
+  }
   loomc_amdgpu_profile_options_t profile_options = {};
   profile_options.type = LOOMC_STRUCTURE_TYPE_AMDGPU_PROFILE_OPTIONS;
   profile_options.structure_size = sizeof(profile_options);
   profile_options.identifier = loomc_make_cstring_view(options->identifier);
-  profile_options.processor = loomc_make_cstring_view(options->processor);
+  profile_options.identity = target_identity;
   status = loomc_target_profile_create_amdgpu(
       jit->target_environment, &profile_options, loomc_allocator_system(),
       &jit->target_profile);
@@ -228,25 +272,15 @@ hrx_status_t ggml_hrx2_loom_jit_amdgpu_create(
     return ggml_hrx2_loom_jit_status_from_loom(status,
                                          "create AMDGPU target profile");
   }
-  status = loomc_target_selection_create_from_profile(
-      jit->target_profile, loomc_allocator_system(), &jit->target_selection);
-  if (!loomc_status_is_ok(status)) {
-    return ggml_hrx2_loom_jit_status_from_loom(status, "create target selection");
-  }
   status = loomc_compiler_create(jit->context, nullptr, loomc_allocator_system(),
                                  &jit->compiler);
   if (!loomc_status_is_ok(status)) {
     return ggml_hrx2_loom_jit_status_from_loom(status, "create Loom compiler");
   }
 
-  loomc_target_selection_options_t pipeline_target_options = {};
-  pipeline_target_options.type = LOOMC_STRUCTURE_TYPE_TARGET_SELECTION_OPTIONS;
-  pipeline_target_options.structure_size = sizeof(pipeline_target_options);
-  pipeline_target_options.target_selection = jit->target_selection;
   loomc_target_pipeline_options_t pipeline_options = {};
   pipeline_options.type = LOOMC_STRUCTURE_TYPE_TARGET_PIPELINE_OPTIONS;
   pipeline_options.structure_size = sizeof(pipeline_options);
-  pipeline_options.next = &pipeline_target_options;
   pipeline_options.identifier =
       loomc_make_cstring_view("ggml-hrx2-amdgpu-jit-prepared-low");
   pipeline_options.kind = LOOMC_TARGET_PIPELINE_KIND_PREPARED_LOW;
@@ -274,7 +308,6 @@ void ggml_hrx2_loom_jit_amdgpu_release(ggml_hrx2_loom_jit_amdgpu_t jit) {
   }
   loomc_pass_program_release(jit->pass_program);
   loomc_compiler_release(jit->compiler);
-  loomc_target_selection_release(jit->target_selection);
   loomc_target_profile_release(jit->target_profile);
   loomc_context_release(jit->context);
   loomc_target_environment_release(jit->target_environment);
@@ -395,22 +428,19 @@ hrx_status_t ggml_hrx2_loom_jit_amdgpu_compile(
     return ggml_hrx2_loom_jit_status_from_loom(status, "create Loom linker");
   }
 
-  loomc_target_selection_options_t link_target_options = {};
-  link_target_options.type = LOOMC_STRUCTURE_TYPE_TARGET_SELECTION_OPTIONS;
-  link_target_options.structure_size = sizeof(link_target_options);
-  link_target_options.target_selection = jit->target_selection;
   const loomc_string_view_t root_symbols[] = {
       loomc_make_cstring_view(options->root_symbol),
   };
   loomc_link_options_t link_options = {};
   link_options.type = LOOMC_STRUCTURE_TYPE_LINK_OPTIONS;
   link_options.structure_size = sizeof(link_options);
-  link_options.next = &link_target_options;
+
+  link_options.mode = LOOMC_LINK_MODE_LINK;
   link_options.link_index = link_index.get();
   link_options.module_name = loomc_make_cstring_view(options->module_name);
   link_options.root_symbols = root_symbols;
   link_options.root_symbol_count = 1;
-  link_options.flags = LOOMC_LINK_FLAG_STRIP_CHECK_SYMBOLS;
+  link_options.flags = LOOMC_LINK_FLAG_STRIP_TEST_SYMBOLS;
   status = loomc_link_module(linker.get(), workspace.get(), &link_options,
                              module.out(), result.out());
   if (!loomc_status_is_ok(status)) {
@@ -422,10 +452,15 @@ hrx_status_t ggml_hrx2_loom_jit_amdgpu_compile(
   }
   result.reset();
 
-  loomc_target_selection_options_t compile_target_options = {};
-  compile_target_options.type = LOOMC_STRUCTURE_TYPE_TARGET_SELECTION_OPTIONS;
+  loomc_target_specialization_t specialization = {
+      .function_symbol = loomc_make_cstring_view(options->root_symbol),
+      .target_profile = jit->target_profile,
+  };
+  loomc_target_specialization_options_t compile_target_options = {};
+  compile_target_options.type = LOOMC_STRUCTURE_TYPE_TARGET_SPECIALIZATION_OPTIONS;
   compile_target_options.structure_size = sizeof(compile_target_options);
-  compile_target_options.target_selection = jit->target_selection;
+  compile_target_options.specializations = &specialization;
+  compile_target_options.specialization_count = 1;
   loomc_compile_options_t compile_options = {};
   compile_options.type = LOOMC_STRUCTURE_TYPE_COMPILE_OPTIONS;
   compile_options.structure_size = sizeof(compile_options);
@@ -433,8 +468,7 @@ hrx_status_t ggml_hrx2_loom_jit_amdgpu_compile(
   compile_options.module_name = loomc_make_cstring_view(options->module_name);
   compile_options.config.bindings = config_bindings.get();
   compile_options.config.binding_count = options->config_binding_count;
-  compile_options.config.flags = LOOMC_CONFIG_POLICY_FLAG_REJECT_UNKNOWN |
-                                 LOOMC_CONFIG_POLICY_FLAG_REQUIRE_RESOLVED;
+  compile_options.config.flags = LOOMC_CONFIG_POLICY_FLAG_REQUIRE_RESOLVED;
   status = loomc_compile_module(jit->compiler, workspace.get(),
                                 jit->pass_program, module.get(),
                                 &compile_options, loomc_allocator_system(),
@@ -458,14 +492,9 @@ hrx_status_t ggml_hrx2_loom_jit_amdgpu_compile(
   }
   result.reset();
 
-  loomc_target_selection_options_t emit_target_options = {};
-  emit_target_options.type = LOOMC_STRUCTURE_TYPE_TARGET_SELECTION_OPTIONS;
-  emit_target_options.structure_size = sizeof(emit_target_options);
-  emit_target_options.target_selection = jit->target_selection;
   loomc_amdgpu_emit_options_t amdgpu_options = {};
   amdgpu_options.type = LOOMC_STRUCTURE_TYPE_AMDGPU_EMIT_OPTIONS;
   amdgpu_options.structure_size = sizeof(amdgpu_options);
-  amdgpu_options.next = &emit_target_options;
   const loomc_option_entry_t emit_entries[] = {
       {
           loomc_make_cstring_view(LOOMC_EMIT_OPTION_KEY_IDENTIFIER),

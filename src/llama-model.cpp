@@ -1005,6 +1005,25 @@ void llama_model::load_hparams(llama_model_loader & ml) {
                     default: type = LLM_TYPE_UNKNOWN;
                 }
             } break;
+        case LLM_ARCH_ZAYA:
+            {
+                ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps, false);
+                if (hparams.f_norm_rms_eps == 0.0f) {
+                    hparams.f_norm_rms_eps = 1e-5f; // zaya reference (zaya_decode.cpp rmsnorm default)
+                }
+                ml.get_key(LLM_KV_SSM_CONV_KERNEL, hparams.ssm_d_conv);
+                ml.get_key(LLM_KV_EXPERT_FEED_FORWARD_LENGTH, hparams.n_ff_exp, false);
+                hparams.n_rot_full = hparams.n_embd_head_k() / 2;
+                hparams.n_rot_swa  = hparams.n_embd_head_k() / 2;
+                const uint32_t n_qk = (hparams.n_head() + hparams.n_head_kv()) * hparams.n_embd_head_k();
+                hparams.ssm_d_inner = 2*n_qk + hparams.n_embd;
+                hparams.ssm_d_state = 1;
+                hparams.ssm_n_group = 0;
+                switch (hparams.n_layer) {
+                    case 40: type = LLM_TYPE_8B; break;
+                    default: type = LLM_TYPE_UNKNOWN;
+                }
+            } break;
         case LLM_ARCH_QWEN3VL:
             {
                 ml.get_key(LLM_KV_NUM_DEEPSTACK_LAYERS, hparams.n_deepstack_layers, false);
@@ -3707,6 +3726,78 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                         layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", i), {n_embd,   n_ff}, 0);
                         layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", i), {  n_ff, n_embd}, 0);
                         layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd,   n_ff}, 0);
+                    }
+                } break;
+            case LLM_ARCH_ZAYA:
+                {
+                    const int64_t n_embd_head = hparams.n_embd_head_k();
+                    const int64_t n_ff_exp    = hparams.n_ff_exp;
+                    const int64_t d_conv      = hparams.ssm_d_conv;
+
+                    tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, 0);
+
+                    output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), {n_embd}, 0);
+                    output      = create_tensor(tn(LLM_TENSOR_OUTPUT,      "weight"), {n_embd, n_vocab}, TENSOR_NOT_REQUIRED);
+                    if (output == NULL) {
+                        output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, TENSOR_DUPLICATED);
+                    }
+
+                    zaya_input_hs_scale = create_tensor(tn(LLM_TENSOR_INPUT_HIDDEN_STATES_SCALE, "weight"), {n_embd}, TENSOR_NOT_REQUIRED);
+                    zaya_input_hs_bias  = create_tensor(tn(LLM_TENSOR_INPUT_HIDDEN_STATES_SCALE, "bias"),   {n_embd}, TENSOR_NOT_REQUIRED);
+
+                    zaya_res_scale_hs    = create_tensor(tn(LLM_TENSOR_RES_SCALE_HS_FINAL,  "weight"), {n_embd}, TENSOR_NOT_REQUIRED);
+                    zaya_res_scale_hs_b  = create_tensor(tn(LLM_TENSOR_RES_SCALE_HS_FINAL,  "bias"),   {n_embd}, TENSOR_NOT_REQUIRED);
+                    zaya_res_scale_res   = create_tensor(tn(LLM_TENSOR_RES_SCALE_RES_FINAL, "weight"), {n_embd}, TENSOR_NOT_REQUIRED);
+                    zaya_res_scale_res_b = create_tensor(tn(LLM_TENSOR_RES_SCALE_RES_FINAL, "bias"),   {n_embd}, TENSOR_NOT_REQUIRED);
+
+                    for (int i = 0; i < n_layer; ++i) {
+                        auto & layer = layers[i];
+
+                        const int64_t n_head    = hparams.n_head(i);
+                        const int64_t n_head_kv = hparams.n_head_kv(i);
+                        const int64_t n_embd_q  = n_head    * n_embd_head;
+                        const int64_t n_embd_k  = n_head_kv * n_embd_head;
+                        const int64_t n_qk      = n_embd_q + n_embd_k;
+                        const int64_t n_groups  = n_head + n_head_kv;
+                        const int64_t n_ff      = hparams.n_ff(i);
+                        const int64_t n_expert  = hparams.n_expert;
+
+                        layer.attn_norm = create_tensor(tn(LLM_TENSOR_ATTN_NORM, "weight", i), {n_embd}, 0);
+                        layer.post_attn_norm = create_tensor(tn(LLM_TENSOR_POST_ATTN_NORM, "weight", i), {n_embd}, TENSOR_NOT_REQUIRED);
+
+                        // Zaya 8B: EVERY layer has BOTH CCA attention and MoE.
+                        layer.wq = create_tensor(tn(LLM_TENSOR_ATTN_Q, "weight", i), {n_embd, n_embd_q}, 0);
+                        layer.wk = create_tensor(tn(LLM_TENSOR_ATTN_K, "weight", i), {n_embd, n_embd_k}, 0);
+                        layer.cca_val_proj1 = create_tensor(tn(LLM_TENSOR_CCA_VAL_PROJ1, "weight", i), {n_embd, n_embd_k / 2}, 0);
+                        layer.cca_val_proj2 = create_tensor(tn(LLM_TENSOR_CCA_VAL_PROJ2, "weight", i), {n_embd, n_embd_k / 2}, 0);
+                        layer.wo = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight", i), {n_embd_q, n_embd}, 0);
+                        layer.ssm_conv1d   = create_tensor(tn(LLM_TENSOR_SSM_CONV1D, "weight", i), {d_conv, n_qk}, 0);
+                        layer.ssm_conv1d_b = create_tensor(tn(LLM_TENSOR_SSM_CONV1D, "bias", i), {n_qk}, TENSOR_NOT_REQUIRED);
+                        layer.cca_conv_grp   = create_tensor(tn(LLM_TENSOR_CCA_CONV_GRP, "weight", i), {d_conv, n_qk / n_groups, n_qk}, 0);
+                        layer.cca_conv_grp_b = create_tensor(tn(LLM_TENSOR_CCA_CONV_GRP, "bias", i), {n_qk}, 0);
+                        layer.cca_k_scale = create_tensor(tn(LLM_TENSOR_CCA_K_SCALE, "weight", i), {n_head_kv}, 0);
+
+                        layer.ffn_gate_inp   = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP, "weight", i), {n_embd, n_ff_exp}, 0);
+                        layer.ffn_gate_inp_b = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP, "bias", i), {n_ff_exp}, TENSOR_NOT_REQUIRED);
+                        layer.ffn_norm   = create_tensor(tn(LLM_TENSOR_FFN_NORM, "weight", i), {n_ff_exp}, 0);
+                        layer.ffn_gate   = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", i), {n_ff_exp, n_ff_exp}, 0);
+                        layer.ffn_gate_b = create_tensor(tn(LLM_TENSOR_FFN_GATE, "bias", i), {n_ff_exp}, TENSOR_NOT_REQUIRED);
+                        layer.zaya_router_mlp2   = create_tensor(tn(LLM_TENSOR_ZAYA_ROUTER_MLP2, "weight", i), {n_ff_exp, n_ff_exp}, 0);
+                        layer.zaya_router_mlp2_b = create_tensor(tn(LLM_TENSOR_ZAYA_ROUTER_MLP2, "bias", i), {n_ff_exp}, TENSOR_NOT_REQUIRED);
+                        layer.zaya_router_mlp4   = create_tensor(tn(LLM_TENSOR_ZAYA_ROUTER_MLP4, "weight", i), {n_ff_exp, n_expert + 1}, 0);
+                        layer.zaya_router_biases = create_tensor(tn(LLM_TENSOR_ZAYA_ROUTER_BIASES, "weight", i), {n_expert + 1}, TENSOR_NOT_REQUIRED);
+                        layer.zaya_router_eda_scale = create_tensor(tn(LLM_TENSOR_ZAYA_ROUTER_EDA_SCALE, "weight", i), {n_ff_exp}, TENSOR_NOT_REQUIRED);
+                        layer.ffn_gate_up_exps = create_tensor(tn(LLM_TENSOR_FFN_GATE_UP_EXPS, "weight", i), {n_embd, n_ff * 2, n_expert}, 0);
+                        layer.ffn_down_exps    = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i), {n_embd, n_ff, n_expert}, 0);
+
+                        layer.res_scale_hs      = create_tensor(tn(LLM_TENSOR_RES_SCALE_HS, "weight", i), {n_embd}, TENSOR_NOT_REQUIRED);
+                        layer.res_scale_hs_b    = create_tensor(tn(LLM_TENSOR_RES_SCALE_HS, "bias", i), {n_embd}, TENSOR_NOT_REQUIRED);
+                        layer.res_scale_res     = create_tensor(tn(LLM_TENSOR_RES_SCALE_RES, "weight", i), {n_embd}, TENSOR_NOT_REQUIRED);
+                        layer.res_scale_res_b   = create_tensor(tn(LLM_TENSOR_RES_SCALE_RES, "bias", i), {n_embd}, TENSOR_NOT_REQUIRED);
+                        layer.res_scale_hs_mlp    = create_tensor(tn(LLM_TENSOR_RES_SCALE_HS_MLP, "weight", i), {n_embd}, TENSOR_NOT_REQUIRED);
+                        layer.res_scale_hs_mlp_b  = create_tensor(tn(LLM_TENSOR_RES_SCALE_HS_MLP, "bias", i), {n_embd}, TENSOR_NOT_REQUIRED);
+                        layer.res_scale_res_mlp   = create_tensor(tn(LLM_TENSOR_RES_SCALE_RES_MLP, "weight", i), {n_embd}, TENSOR_NOT_REQUIRED);
+                        layer.res_scale_res_mlp_b = create_tensor(tn(LLM_TENSOR_RES_SCALE_RES_MLP, "bias", i), {n_embd}, TENSOR_NOT_REQUIRED);
                     }
                 } break;
             case LLM_ARCH_QWEN3MOE:
@@ -8317,6 +8408,11 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                     if (arch == LLM_ARCH_FALCON_H1) {
                         filter_attn = [&](int32_t) { return true; };
                         filter_recr = [&](int32_t) { return true; };
+                    } else if (arch == LLM_ARCH_ZAYA) {
+                        // Zaya 8B: every layer is a hybrid (CCA attention AND
+                        // MoE with recurrent conv/prev-hs state).
+                        filter_attn = [&](int32_t) { return true; };
+                        filter_recr = [&](int32_t) { return true; };
                     } else if (arch == LLM_ARCH_NEMOTRON_H || arch == LLM_ARCH_NEMOTRON_H_MOE) {
                         filter_attn = [&](int32_t il) {
                             return !hparams.is_recurrent(il) && hparams.n_ff(il) == 0;
@@ -8542,6 +8638,10 @@ ggml_cgraph * llama_model::build_graph(const llm_graph_params & params) const {
         case LLM_ARCH_QWEN3MOE:
             {
                 llm = std::make_unique<llm_build_qwen3moe>(*this, params);
+            } break;
+        case LLM_ARCH_ZAYA:
+            {
+                llm = std::make_unique<llm_build_zaya>(*this, params);
             } break;
         case LLM_ARCH_QWEN3VL:
             {
@@ -9175,6 +9275,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_QWEN3NEXT:
         case LLM_ARCH_MIMO2:
         case LLM_ARCH_STEP35:
+        case LLM_ARCH_ZAYA:
             return LLAMA_ROPE_TYPE_NEOX;
 
         case LLM_ARCH_QWEN2VL:

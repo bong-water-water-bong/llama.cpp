@@ -31,21 +31,21 @@ kernel.def export("hrx2_add_rms_norm_mul_f32_static_vector_tail") @hrx2_add_rms_
   %add_dst_global = buffer.assume.memory_space<global> %add_dst : buffer
   %weight_global = buffer.assume.memory_space<global> %weight : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
-  %src0_view = buffer.view %src0_global[%base] : buffer -> view<[%element_count]xf32, #dense>
-  %src1_view = buffer.view %src1_global[%base] : buffer -> view<[%element_count]xf32, #dense>
-  %add_dst_view = buffer.view %add_dst_global[%base] : buffer -> view<[%element_count]xf32, #dense>
-  %weight_view = buffer.view %weight_global[%base] : buffer -> view<[%ncols_bounded]xf32, #dense>
-  %dst_view = buffer.view %dst_global[%base] : buffer -> view<[%element_count]xf32, #dense>
+  %src0_view = buffer.view %src0_global[%base] : buffer -> view<[%element_count]xf32>
+  %src1_view = buffer.view %src1_global[%base] : buffer -> view<[%element_count]xf32>
+  %add_dst_view = buffer.view %add_dst_global[%base] : buffer -> view<[%element_count]xf32>
+  %weight_view = buffer.view %weight_global[%base] : buffer -> view<[%ncols_bounded]xf32>
+  %dst_view = buffer.view %dst_global[%base] : buffer -> view<[%element_count]xf32>
   %row_base = index.mul %row, %ncols_bounded : index
 
   %sum_vec = scf.for %vcol = [%lane to %logical_cols step %workgroup_size](%acc = %zero_f32 : f32) -> (f32) {
     %col0 = index.mul %vcol, %vector_width_bounded : index
     %linear0 = index.add %row_base, %col0 : index
     %linear = index.assume %linear0 [range(%linear0, 0, 67108863)] : index
-    %a = vector.load %src0_view[%linear] : view<[%element_count]xf32, #dense> -> vector<[%vector_width_bounded]xf32>
-    %b = vector.load %src1_view[%linear] : view<[%element_count]xf32, #dense> -> vector<[%vector_width_bounded]xf32>
+    %a = vector.load %src0_view[%linear] : view<[%element_count]xf32> -> vector<[%vector_width_bounded]xf32>
+    %b = vector.load %src1_view[%linear] : view<[%element_count]xf32> -> vector<[%vector_width_bounded]xf32>
     %added = vector.addf<nnan|ninf|nsz> %a, %b : vector<[%vector_width_bounded]xf32>
-    vector.store %added, %add_dst_view[%linear] : vector<[%vector_width_bounded]xf32>, view<[%element_count]xf32, #dense>
+    vector.store %added, %add_dst_view[%linear] : vector<[%vector_width_bounded]xf32>, view<[%element_count]xf32>
     %squares = vector.mulf<reassoc|nnan|ninf|nsz> %added, %added : vector<[%vector_width_bounded]xf32>
     %next = vector.reduce<addf, reassoc|nnan|ninf|nsz> %squares, %acc : vector<[%vector_width_bounded]xf32>, f32
     scf.yield %next : f32
@@ -55,10 +55,10 @@ kernel.def export("hrx2_add_rms_norm_mul_f32_static_vector_tail") @hrx2_add_rms_
   %sum = scf.for %col = [%tail_lane0 to %ncols_bounded step %workgroup_size](%acc = %sum_vec : f32) -> (f32) {
     %linear0 = index.add %row_base, %col : index
     %linear = index.assume %linear0 [range(%linear0, 0, 67108863)] : index
-    %a = view.load %src0_view[%linear] : view<[%element_count]xf32, #dense> -> f32
-    %b = view.load %src1_view[%linear] : view<[%element_count]xf32, #dense> -> f32
+    %a = view.load %src0_view[%linear] : view<[%element_count]xf32> -> f32
+    %b = view.load %src1_view[%linear] : view<[%element_count]xf32> -> f32
     %added = scalar.addf<nnan|ninf|nsz> %a, %b : f32
-    view.store %added, %add_dst_view[%linear] : f32, view<[%element_count]xf32, #dense>
+    view.store %added, %add_dst_view[%linear] : f32, view<[%element_count]xf32>
     %square = scalar.mulf<reassoc|nnan|ninf|nsz> %added, %added : f32
     %next = scalar.addf<reassoc|nnan|ninf|nsz> %acc, %square : f32
     scf.yield %next : f32
@@ -76,21 +76,21 @@ kernel.def export("hrx2_add_rms_norm_mul_f32_static_vector_tail") @hrx2_add_rms_
     %col0 = index.mul %vcol, %vector_width_bounded : index
     %linear0 = index.add %row_base, %col0 : index
     %linear = index.assume %linear0 [range(%linear0, 0, 67108863)] : index
-    %values = vector.load %add_dst_view[%linear] : view<[%element_count]xf32, #dense> -> vector<[%vector_width_bounded]xf32>
-    %weights = vector.load %weight_view[%col0] : view<[%ncols_bounded]xf32, #dense> -> vector<[%vector_width_bounded]xf32>
+    %values = vector.load %add_dst_view[%linear] : view<[%element_count]xf32> -> vector<[%vector_width_bounded]xf32>
+    %weights = vector.load %weight_view[%col0] : view<[%ncols_bounded]xf32> -> vector<[%vector_width_bounded]xf32>
     %normed = vector.mulf<nnan|ninf|nsz> %values, %scale_vector : vector<[%vector_width_bounded]xf32>
     %result = vector.mulf<nnan|ninf|nsz> %normed, %weights : vector<[%vector_width_bounded]xf32>
-    vector.store %result, %dst_view[%linear] : vector<[%vector_width_bounded]xf32>, view<[%element_count]xf32, #dense>
+    vector.store %result, %dst_view[%linear] : vector<[%vector_width_bounded]xf32>, view<[%element_count]xf32>
   }
 
   scf.for %col = [%tail_lane0 to %ncols_bounded step %workgroup_size] {
     %linear0 = index.add %row_base, %col : index
     %linear = index.assume %linear0 [range(%linear0, 0, 67108863)] : index
-    %value = view.load %add_dst_view[%linear] : view<[%element_count]xf32, #dense> -> f32
-    %weight_value = view.load %weight_view[%col] : view<[%ncols_bounded]xf32, #dense> -> f32
+    %value = view.load %add_dst_view[%linear] : view<[%element_count]xf32> -> f32
+    %weight_value = view.load %weight_view[%col] : view<[%ncols_bounded]xf32> -> f32
     %normed = scalar.mulf<nnan|ninf|nsz> %value, %scale : f32
     %result = scalar.mulf<nnan|ninf|nsz> %normed, %weight_value : f32
-    view.store %result, %dst_view[%linear] : f32, view<[%element_count]xf32, #dense>
+    view.store %result, %dst_view[%linear] : f32, view<[%element_count]xf32>
   }
   kernel.return
 }

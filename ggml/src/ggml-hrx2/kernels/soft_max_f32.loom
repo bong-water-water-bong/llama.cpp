@@ -32,8 +32,8 @@ kernel.def export("hrx2_soft_max_f32") @hrx2_soft_max_f32() {
   %src0_global = buffer.assume.memory_space<global> %src0 : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src0_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %dst_global : buffer, buffer
-  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<1073741824xf32, #dense>
-  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<1073741824xf32, #dense>
+  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<1073741824xf32>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<1073741824xf32>
 
   %row_offset0 = index.mul %row, %ncols_bounded : index
   %row_offset = index.assume %row_offset0 [range(%row_offset0, 0, 1073741823)] : index
@@ -41,7 +41,7 @@ kernel.def export("hrx2_soft_max_f32") @hrx2_soft_max_f32() {
   %input_value = scf.if %col_in_bounds -> (f32) {
     %idx0 = index.add %row_offset, %lane : index
     %idx = index.assume %idx0 [range(%idx0, 0, 1073741823)] : index
-    %x = view.load %src0_view[%idx] : view<1073741824xf32, #dense> -> f32
+    %x = view.load %src0_view[%idx] : view<1073741824xf32> -> f32
     %scaled = scalar.mulf<nnan|ninf|nsz> %x, %scale : f32
     scf.yield %scaled : f32
   } else {
@@ -61,7 +61,7 @@ kernel.def export("hrx2_soft_max_f32") @hrx2_soft_max_f32() {
   scf.if %col_in_bounds {
     %idx0 = index.add %row_offset, %lane : index
     %idx = index.assume %idx0 [range(%idx0, 0, 1073741823)] : index
-    view.store %norm, %dst_view[%idx] : f32, view<1073741824xf32, #dense>
+    view.store %norm, %dst_view[%idx] : f32, view<1073741824xf32>
   }
   kernel.return
 }
@@ -105,9 +105,9 @@ kernel.def export("hrx2_soft_max_f32_mask") @hrx2_soft_max_f32_mask() {
   %mask_global = buffer.assume.memory_space<global> %mask : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src0_noalias, %mask_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %mask_global, %dst_global : buffer, buffer, buffer
-  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<1073741824xf32, #dense>
-  %mask_view = buffer.view %mask_noalias[%base] : buffer -> view<1073741824xf32, #dense>
-  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<1073741824xf32, #dense>
+  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<1073741824xf32>
+  %mask_view = buffer.view %mask_noalias[%base] : buffer -> view<1073741824xf32>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<1073741824xf32>
 
   %row_offset0 = index.mul %row, %ncols_bounded : index
   %row_offset = index.assume %row_offset0 [range(%row_offset0, 0, 1073741823)] : index
@@ -133,8 +133,8 @@ kernel.def export("hrx2_soft_max_f32_mask") @hrx2_soft_max_f32_mask() {
     %idx = index.assume %idx0 [range(%idx0, 0, 1073741823)] : index
     %mask_idx0 = index.add %mask_base, %lane : index
     %mask_idx = index.assume %mask_idx0 [range(%mask_idx0, 0, 1073741823)] : index
-    %x = view.load %src0_view[%idx] : view<1073741824xf32, #dense> -> f32
-    %m = view.load %mask_view[%mask_idx] : view<1073741824xf32, #dense> -> f32
+    %x = view.load %src0_view[%idx] : view<1073741824xf32> -> f32
+    %m = view.load %mask_view[%mask_idx] : view<1073741824xf32> -> f32
     %scaled = scalar.mulf<nnan|ninf|nsz> %x, %scale : f32
     %biased = scalar.addf<nnan|ninf|nsz> %scaled, %m : f32
     scf.yield %biased : f32
@@ -155,7 +155,7 @@ kernel.def export("hrx2_soft_max_f32_mask") @hrx2_soft_max_f32_mask() {
   scf.if %col_in_bounds {
     %idx0 = index.add %row_offset, %lane : index
     %idx = index.assume %idx0 [range(%idx0, 0, 1073741823)] : index
-    view.store %norm, %dst_view[%idx] : f32, view<1073741824xf32, #dense>
+    view.store %norm, %dst_view[%idx] : f32, view<1073741824xf32>
   }
   kernel.return
 }

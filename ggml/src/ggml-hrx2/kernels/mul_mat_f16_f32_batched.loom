@@ -88,9 +88,9 @@ kernel.def export("hrx2_mul_mat_f16_f32_batched") @hrx2_mul_mat_f16_f32_batched(
   %src1_global = buffer.assume.memory_space<global> %src1 : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src0_noalias, %src1_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %src1_global, %dst_global : buffer, buffer, buffer
-  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_count]xf16, #dense>
-  %src1_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_count]xf32, #dense>
-  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32, #dense>
+  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_count]xf16>
+  %src1_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_count]xf32>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32>
 
   %src0_row_byte0 = index.mul %row, %src0_stride_row : index
   %src0_i02_byte = index.mul %src0_i02, %src0_stride_ne2 : index
@@ -107,9 +107,9 @@ kernel.def export("hrx2_mul_mat_f16_f32_batched") @hrx2_mul_mat_f16_f32_batched(
   %sum = scf.for %i = [%lane to %k step %workgroup_size](%acc = %zero_f32 : f32) -> (f32) {
     %src0_index = index.add %src0_row_elem, %i : index
     %src1_index = index.add %src1_col_elem, %i : index
-    %a_f16 = view.load %src0_view[%src0_index] : view<[%src0_count]xf16, #dense> -> f16
+    %a_f16 = view.load %src0_view[%src0_index] : view<[%src0_count]xf16> -> f16
     %a = scalar.extf %a_f16 : f16 to f32
-    %b = view.load %src1_view[%src1_index] : view<[%src1_count]xf32, #dense> -> f32
+    %b = view.load %src1_view[%src1_index] : view<[%src1_count]xf32> -> f32
     %product = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b : f32
     %next = scalar.addf<reassoc|nnan|ninf|nsz> %acc, %product : f32
     scf.yield %next : f32
@@ -127,7 +127,7 @@ kernel.def export("hrx2_mul_mat_f16_f32_batched") @hrx2_mul_mat_f16_f32_batched(
   %lane_i32 = index.cast %lane : index to i32
   %is_lane0 = scalar.cmpi eq, %lane_i32, %zero_i32 : i32
   scf.if %is_lane0 {
-    view.store %dot, %dst_view[%dst_index] : f32, view<[%dst_count]xf32, #dense>
+    view.store %dot, %dst_view[%dst_index] : f32, view<[%dst_count]xf32>
   }
   kernel.return
 }
@@ -213,9 +213,9 @@ kernel.def export("hrx2_mul_mat_f16_f32_batched_cols8") @hrx2_mul_mat_f16_f32_ba
   %src1_global = buffer.assume.memory_space<global> %src1 : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src0_noalias, %src1_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %src1_global, %dst_global : buffer, buffer, buffer
-  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_count]xf16, #dense>
-  %src1_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_count]xf32, #dense>
-  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32, #dense>
+  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_count]xf16>
+  %src1_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_count]xf32>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32>
 
   %src0_row_byte0 = index.mul %row, %src0_stride_row : index
   %src0_i02_byte = index.mul %src0_i02, %src0_stride_ne2 : index
@@ -237,7 +237,7 @@ kernel.def export("hrx2_mul_mat_f16_f32_batched_cols8") @hrx2_mul_mat_f16_f32_ba
         %acc4 = %zero_f32, %acc5 = %zero_f32, %acc6 = %zero_f32, %acc7 = %zero_f32 :
         f32, f32, f32, f32, f32, f32, f32, f32) -> (f32, f32, f32, f32, f32, f32, f32, f32) {
     %src0_index = index.add %src0_row_elem, %i : index
-    %a_f16 = view.load %src0_view[%src0_index] : view<[%src0_count]xf16, #dense> -> f16
+    %a_f16 = view.load %src0_view[%src0_index] : view<[%src0_count]xf16> -> f16
     %a = scalar.extf %a_f16 : f16 to f32
     %rhs0 = index.add %src1_col_elem, %i : index
     %rhs1_col = index.add %src1_col_elem, %src1_stride_col_elem : index
@@ -261,14 +261,14 @@ kernel.def export("hrx2_mul_mat_f16_f32_batched_cols8") @hrx2_mul_mat_f16_f32_ba
     %rhs7_col = index.add %src1_col_elem, %src1_stride_col7 : index
     %rhs7 = index.add %rhs7_col, %i : index
 
-    %b0 = view.load %src1_view[%rhs0] : view<[%src1_count]xf32, #dense> -> f32
-    %b1 = view.load %src1_view[%rhs1] : view<[%src1_count]xf32, #dense> -> f32
-    %b2 = view.load %src1_view[%rhs2] : view<[%src1_count]xf32, #dense> -> f32
-    %b3 = view.load %src1_view[%rhs3] : view<[%src1_count]xf32, #dense> -> f32
-    %b4 = view.load %src1_view[%rhs4] : view<[%src1_count]xf32, #dense> -> f32
-    %b5 = view.load %src1_view[%rhs5] : view<[%src1_count]xf32, #dense> -> f32
-    %b6 = view.load %src1_view[%rhs6] : view<[%src1_count]xf32, #dense> -> f32
-    %b7 = view.load %src1_view[%rhs7] : view<[%src1_count]xf32, #dense> -> f32
+    %b0 = view.load %src1_view[%rhs0] : view<[%src1_count]xf32> -> f32
+    %b1 = view.load %src1_view[%rhs1] : view<[%src1_count]xf32> -> f32
+    %b2 = view.load %src1_view[%rhs2] : view<[%src1_count]xf32> -> f32
+    %b3 = view.load %src1_view[%rhs3] : view<[%src1_count]xf32> -> f32
+    %b4 = view.load %src1_view[%rhs4] : view<[%src1_count]xf32> -> f32
+    %b5 = view.load %src1_view[%rhs5] : view<[%src1_count]xf32> -> f32
+    %b6 = view.load %src1_view[%rhs6] : view<[%src1_count]xf32> -> f32
+    %b7 = view.load %src1_view[%rhs7] : view<[%src1_count]xf32> -> f32
     %p0 = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b0 : f32
     %p1 = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b1 : f32
     %p2 = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b2 : f32
@@ -322,14 +322,14 @@ kernel.def export("hrx2_mul_mat_f16_f32_batched_cols8") @hrx2_mul_mat_f16_f32_ba
   %lane_i32 = index.cast %lane : index to i32
   %is_lane0 = scalar.cmpi eq, %lane_i32, %zero_i32 : i32
   scf.if %is_lane0 {
-    view.store %dot0, %dst_view[%dst_index] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot1, %dst_view[%dst1] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot2, %dst_view[%dst2] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot3, %dst_view[%dst3] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot4, %dst_view[%dst4] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot5, %dst_view[%dst5] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot6, %dst_view[%dst6] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot7, %dst_view[%dst7] : f32, view<[%dst_count]xf32, #dense>
+    view.store %dot0, %dst_view[%dst_index] : f32, view<[%dst_count]xf32>
+    view.store %dot1, %dst_view[%dst1] : f32, view<[%dst_count]xf32>
+    view.store %dot2, %dst_view[%dst2] : f32, view<[%dst_count]xf32>
+    view.store %dot3, %dst_view[%dst3] : f32, view<[%dst_count]xf32>
+    view.store %dot4, %dst_view[%dst4] : f32, view<[%dst_count]xf32>
+    view.store %dot5, %dst_view[%dst5] : f32, view<[%dst_count]xf32>
+    view.store %dot6, %dst_view[%dst6] : f32, view<[%dst_count]xf32>
+    view.store %dot7, %dst_view[%dst7] : f32, view<[%dst_count]xf32>
   }
   kernel.return
 }
@@ -421,9 +421,9 @@ kernel.def export("hrx2_mul_mat_f16_f32_batched_rows2_cols8") @hrx2_mul_mat_f16_
   %src1_global = buffer.assume.memory_space<global> %src1 : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src0_noalias, %src1_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %src1_global, %dst_global : buffer, buffer, buffer
-  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_count]xf16, #dense>
-  %src1_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_count]xf32, #dense>
-  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32, #dense>
+  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_count]xf16>
+  %src1_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_count]xf32>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32>
 
   %src0_row_byte0 = index.mul %row_base, %src0_stride_row : index
   %src0_i02_byte = index.mul %src0_i02, %src0_stride_ne2 : index
@@ -452,8 +452,8 @@ kernel.def export("hrx2_mul_mat_f16_f32_batched_rows2_cols8") @hrx2_mul_mat_f16_
         (f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32) {
     %src0_index0 = index.add %src0_row0_elem, %i : index
     %src0_index1 = index.add %src0_row1_elem, %i : index
-    %a0_f16 = view.load %src0_view[%src0_index0] : view<[%src0_count]xf16, #dense> -> f16
-    %a1_f16 = view.load %src0_view[%src0_index1] : view<[%src0_count]xf16, #dense> -> f16
+    %a0_f16 = view.load %src0_view[%src0_index0] : view<[%src0_count]xf16> -> f16
+    %a1_f16 = view.load %src0_view[%src0_index1] : view<[%src0_count]xf16> -> f16
     %a0 = scalar.extf %a0_f16 : f16 to f32
     %a1 = scalar.extf %a1_f16 : f16 to f32
     %rhs0 = index.add %src1_col_elem, %i : index
@@ -478,14 +478,14 @@ kernel.def export("hrx2_mul_mat_f16_f32_batched_rows2_cols8") @hrx2_mul_mat_f16_
     %rhs7_col = index.add %src1_col_elem, %src1_stride_col7 : index
     %rhs7 = index.add %rhs7_col, %i : index
 
-    %b0 = view.load %src1_view[%rhs0] : view<[%src1_count]xf32, #dense> -> f32
-    %b1 = view.load %src1_view[%rhs1] : view<[%src1_count]xf32, #dense> -> f32
-    %b2 = view.load %src1_view[%rhs2] : view<[%src1_count]xf32, #dense> -> f32
-    %b3 = view.load %src1_view[%rhs3] : view<[%src1_count]xf32, #dense> -> f32
-    %b4 = view.load %src1_view[%rhs4] : view<[%src1_count]xf32, #dense> -> f32
-    %b5 = view.load %src1_view[%rhs5] : view<[%src1_count]xf32, #dense> -> f32
-    %b6 = view.load %src1_view[%rhs6] : view<[%src1_count]xf32, #dense> -> f32
-    %b7 = view.load %src1_view[%rhs7] : view<[%src1_count]xf32, #dense> -> f32
+    %b0 = view.load %src1_view[%rhs0] : view<[%src1_count]xf32> -> f32
+    %b1 = view.load %src1_view[%rhs1] : view<[%src1_count]xf32> -> f32
+    %b2 = view.load %src1_view[%rhs2] : view<[%src1_count]xf32> -> f32
+    %b3 = view.load %src1_view[%rhs3] : view<[%src1_count]xf32> -> f32
+    %b4 = view.load %src1_view[%rhs4] : view<[%src1_count]xf32> -> f32
+    %b5 = view.load %src1_view[%rhs5] : view<[%src1_count]xf32> -> f32
+    %b6 = view.load %src1_view[%rhs6] : view<[%src1_count]xf32> -> f32
+    %b7 = view.load %src1_view[%rhs7] : view<[%src1_count]xf32> -> f32
     %p00 = scalar.mulf<reassoc|nnan|ninf|nsz> %a0, %b0 : f32
     %p01 = scalar.mulf<reassoc|nnan|ninf|nsz> %a0, %b1 : f32
     %p02 = scalar.mulf<reassoc|nnan|ninf|nsz> %a0, %b2 : f32
@@ -576,22 +576,22 @@ kernel.def export("hrx2_mul_mat_f16_f32_batched_rows2_cols8") @hrx2_mul_mat_f16_
   %lane_i32 = index.cast %lane : index to i32
   %is_lane0 = scalar.cmpi eq, %lane_i32, %zero_i32 : i32
   scf.if %is_lane0 {
-    view.store %dot00, %dst_view[%dst_index0] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot01, %dst_view[%dst0_1] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot02, %dst_view[%dst0_2] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot03, %dst_view[%dst0_3] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot04, %dst_view[%dst0_4] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot05, %dst_view[%dst0_5] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot06, %dst_view[%dst0_6] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot07, %dst_view[%dst0_7] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot10, %dst_view[%dst_index1] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot11, %dst_view[%dst1_1] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot12, %dst_view[%dst1_2] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot13, %dst_view[%dst1_3] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot14, %dst_view[%dst1_4] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot15, %dst_view[%dst1_5] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot16, %dst_view[%dst1_6] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot17, %dst_view[%dst1_7] : f32, view<[%dst_count]xf32, #dense>
+    view.store %dot00, %dst_view[%dst_index0] : f32, view<[%dst_count]xf32>
+    view.store %dot01, %dst_view[%dst0_1] : f32, view<[%dst_count]xf32>
+    view.store %dot02, %dst_view[%dst0_2] : f32, view<[%dst_count]xf32>
+    view.store %dot03, %dst_view[%dst0_3] : f32, view<[%dst_count]xf32>
+    view.store %dot04, %dst_view[%dst0_4] : f32, view<[%dst_count]xf32>
+    view.store %dot05, %dst_view[%dst0_5] : f32, view<[%dst_count]xf32>
+    view.store %dot06, %dst_view[%dst0_6] : f32, view<[%dst_count]xf32>
+    view.store %dot07, %dst_view[%dst0_7] : f32, view<[%dst_count]xf32>
+    view.store %dot10, %dst_view[%dst_index1] : f32, view<[%dst_count]xf32>
+    view.store %dot11, %dst_view[%dst1_1] : f32, view<[%dst_count]xf32>
+    view.store %dot12, %dst_view[%dst1_2] : f32, view<[%dst_count]xf32>
+    view.store %dot13, %dst_view[%dst1_3] : f32, view<[%dst_count]xf32>
+    view.store %dot14, %dst_view[%dst1_4] : f32, view<[%dst_count]xf32>
+    view.store %dot15, %dst_view[%dst1_5] : f32, view<[%dst_count]xf32>
+    view.store %dot16, %dst_view[%dst1_6] : f32, view<[%dst_count]xf32>
+    view.store %dot17, %dst_view[%dst1_7] : f32, view<[%dst_count]xf32>
   }
   kernel.return
 }
@@ -673,9 +673,9 @@ kernel.def export("hrx2_mul_mat_f16_f32_batched_cols8_contiguous") @hrx2_mul_mat
   %src1_global = buffer.assume.memory_space<global> %src1 : buffer
   %dst_global = buffer.assume.memory_space<global> %dst : buffer
   %src0_noalias, %src1_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %src1_global, %dst_global : buffer, buffer, buffer
-  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_count]xf16, #dense>
-  %src1_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_count]xf32, #dense>
-  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32, #dense>
+  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_count]xf16>
+  %src1_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_count]xf32>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32>
 
   %src0_row_byte0 = index.mul %row, %src0_stride_row : index
   %src0_i02_byte = index.mul %src0_i02, %src0_stride_ne2 : index
@@ -697,7 +697,7 @@ kernel.def export("hrx2_mul_mat_f16_f32_batched_cols8_contiguous") @hrx2_mul_mat
         %acc4 = %zero_f32, %acc5 = %zero_f32, %acc6 = %zero_f32, %acc7 = %zero_f32 :
         f32, f32, f32, f32, f32, f32, f32, f32) -> (f32, f32, f32, f32, f32, f32, f32, f32) {
     %src0_index = index.add %src0_row_elem, %i : index
-    %a_f16 = view.load %src0_view[%src0_index] : view<[%src0_count]xf16, #dense> -> f16
+    %a_f16 = view.load %src0_view[%src0_index] : view<[%src0_count]xf16> -> f16
     %a = scalar.extf %a_f16 : f16 to f32
     %rhs0 = index.add %src1_col_elem, %i : index
     %rhs1_col = index.add %src1_col_elem, %src1_stride_col_elem : index
@@ -721,14 +721,14 @@ kernel.def export("hrx2_mul_mat_f16_f32_batched_cols8_contiguous") @hrx2_mul_mat
     %rhs7_col = index.add %src1_col_elem, %src1_stride_col7 : index
     %rhs7 = index.add %rhs7_col, %i : index
 
-    %b0 = view.load %src1_view[%rhs0] : view<[%src1_count]xf32, #dense> -> f32
-    %b1 = view.load %src1_view[%rhs1] : view<[%src1_count]xf32, #dense> -> f32
-    %b2 = view.load %src1_view[%rhs2] : view<[%src1_count]xf32, #dense> -> f32
-    %b3 = view.load %src1_view[%rhs3] : view<[%src1_count]xf32, #dense> -> f32
-    %b4 = view.load %src1_view[%rhs4] : view<[%src1_count]xf32, #dense> -> f32
-    %b5 = view.load %src1_view[%rhs5] : view<[%src1_count]xf32, #dense> -> f32
-    %b6 = view.load %src1_view[%rhs6] : view<[%src1_count]xf32, #dense> -> f32
-    %b7 = view.load %src1_view[%rhs7] : view<[%src1_count]xf32, #dense> -> f32
+    %b0 = view.load %src1_view[%rhs0] : view<[%src1_count]xf32> -> f32
+    %b1 = view.load %src1_view[%rhs1] : view<[%src1_count]xf32> -> f32
+    %b2 = view.load %src1_view[%rhs2] : view<[%src1_count]xf32> -> f32
+    %b3 = view.load %src1_view[%rhs3] : view<[%src1_count]xf32> -> f32
+    %b4 = view.load %src1_view[%rhs4] : view<[%src1_count]xf32> -> f32
+    %b5 = view.load %src1_view[%rhs5] : view<[%src1_count]xf32> -> f32
+    %b6 = view.load %src1_view[%rhs6] : view<[%src1_count]xf32> -> f32
+    %b7 = view.load %src1_view[%rhs7] : view<[%src1_count]xf32> -> f32
     %p0 = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b0 : f32
     %p1 = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b1 : f32
     %p2 = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b2 : f32
@@ -780,14 +780,14 @@ kernel.def export("hrx2_mul_mat_f16_f32_batched_cols8_contiguous") @hrx2_mul_mat
   %lane_i32 = index.cast %lane : index to i32
   %is_lane0 = scalar.cmpi eq, %lane_i32, %zero_i32 : i32
   scf.if %is_lane0 {
-    view.store %dot0, %dst_view[%dst_index] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot1, %dst_view[%dst1] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot2, %dst_view[%dst2] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot3, %dst_view[%dst3] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot4, %dst_view[%dst4] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot5, %dst_view[%dst5] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot6, %dst_view[%dst6] : f32, view<[%dst_count]xf32, #dense>
-    view.store %dot7, %dst_view[%dst7] : f32, view<[%dst_count]xf32, #dense>
+    view.store %dot0, %dst_view[%dst_index] : f32, view<[%dst_count]xf32>
+    view.store %dot1, %dst_view[%dst1] : f32, view<[%dst_count]xf32>
+    view.store %dot2, %dst_view[%dst2] : f32, view<[%dst_count]xf32>
+    view.store %dot3, %dst_view[%dst3] : f32, view<[%dst_count]xf32>
+    view.store %dot4, %dst_view[%dst4] : f32, view<[%dst_count]xf32>
+    view.store %dot5, %dst_view[%dst5] : f32, view<[%dst_count]xf32>
+    view.store %dot6, %dst_view[%dst6] : f32, view<[%dst_count]xf32>
+    view.store %dot7, %dst_view[%dst7] : f32, view<[%dst_count]xf32>
   }
   kernel.return
 }

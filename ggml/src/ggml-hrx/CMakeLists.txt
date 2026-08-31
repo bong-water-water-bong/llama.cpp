@@ -72,6 +72,20 @@ function(ggml_hrx_add_kernel_source)
         list(APPEND GGML_HRX_KERNEL_COMPILE_FLAGS -mwavefrontsize64)
     endif()
     list(APPEND GGML_HRX_KERNEL_COMPILE_FLAGS ${ARG_FLAGS})
+    # A system hip-runtime-amd package (/usr/include/hip) shadows TheRock's
+    # HIP headers: amdclang++ auto-adds the SDK include dir with -idirafter,
+    # which loses to /usr/include, so <hip/...> resolves to headers whose
+    # __ocml_* builtins this clang does not declare (same fix as 1bit-MONSTER
+    # commit 78af6199). Force TheRock's include dir ahead of system dirs.
+    foreach(_cand IN ITEMS
+            "${GGML_HRX_ROCM_PATH}/lib/python3.14/site-packages/_rocm_sdk_core/include"
+            "${GGML_HRX_ROCM_PATH}/lib/python3.14/site-packages/_rocm_sdk_devel/include")
+        if (EXISTS "${_cand}/hip/hip_runtime.h")
+            list(APPEND GGML_HRX_KERNEL_COMPILE_FLAGS -isystem "${_cand}")
+            message(STATUS "HRX kernel HIP headers: ${_cand}")
+            break()
+        endif()
+    endforeach()
 
     foreach(GGML_HRX_AMDGPU_TARGET IN LISTS GGML_HRX_AMDGPU_TARGET_LIST_CANONICAL)
         if (ARG_ARCH_PREFIXES)
@@ -96,7 +110,7 @@ function(ggml_hrx_add_kernel_source)
                 --offload-device-only
                 --no-gpu-bundle-output
                 "--offload-arch=${GGML_HRX_AMDGPU_TARGET}"
-                -O2
+                -O3
                 ${GGML_HRX_KERNEL_COMPILE_FLAGS}
                 -c "${ARG_SOURCE}"
                 -o "${GGML_HRX_HSACO_OUTPUT}"
