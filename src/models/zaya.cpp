@@ -142,10 +142,6 @@ llm_build_zaya::llm_build_zaya(const llama_model & model, const llm_graph_params
 
         cur = build_norm(residual, layer.attn_norm, nullptr, LLM_NORM_RMS, il);
         cb(cur, "input_norm", il);
-        if (il == 0 && getenv("ZAYA_DUMP")) {
-            FILE * f = fopen("/tmp/zaya_inpnorm0.bin", "wb");
-            if (f) { fwrite(cur->data, 1, ggml_nbytes(cur), f); fclose(f); }
-        }
 
         // ===== CCA attention (every layer) =====
 
@@ -170,10 +166,6 @@ llm_build_zaya::llm_build_zaya(const llama_model & model, const llm_graph_params
 
         ggml_tensor * Qraw = ggml_mul_mat(ctx0, layer.wq, cur);
         cb(Qraw, "Qraw", il);
-        if (il == 0 && getenv("ZAYA_DUMP")) {
-            FILE * f = fopen("/tmp/zaya_qraw0.bin", "wb");
-            if (f) { fwrite(Qraw->data, 1, ggml_nbytes(Qraw), f); fclose(f); }
-        }
         ggml_tensor * Kraw = ggml_mul_mat(ctx0, layer.wk, cur);
         cb(Kraw, "Kraw", il);
 

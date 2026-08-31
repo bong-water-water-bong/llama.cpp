@@ -10830,52 +10830,31 @@ static ggml_backend_t ggml_backend_hrx2_device_init_backend(ggml_backend_dev_t d
 }
 
 static bool ggml_backend_hrx2_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
+    // EXPERIMENT (HRX2_Q4NX_ONLY): claim ONLY the Q4NX matmuls; every F32-side
+    // op (pointwise, norm, rope, softmax, conv, router) stays on CPU. The
+    // CPU-only F32 port measures tg32 16.5 t/s vs 11.0 with the hybrid split
+    // (CPU<->HRX2 shuttling is net-negative), so minimize HRX2 participation
+    // to exactly the ops that require it.
     switch (op->op) {
+        case GGML_OP_MUL_MAT_Q4NX:
+            return ggml_backend_hrx2_supports_mul_mat_q4nx_route(ggml_backend_hrx2_get_device_context(dev), op);
+        case GGML_OP_MUL_MAT_ID_Q4NX:
+            return ggml_backend_hrx2_supports_mul_mat_id_q4nx_route(ggml_backend_hrx2_get_device_context(dev), op);
         case GGML_OP_NONE:
         case GGML_OP_RESHAPE:
         case GGML_OP_VIEW:
         case GGML_OP_PERMUTE:
         case GGML_OP_TRANSPOSE:
-            return true;
-        case GGML_OP_MUL_MAT_Q4NX:
-            return ggml_backend_hrx2_supports_mul_mat_q4nx_route(ggml_backend_hrx2_get_device_context(dev), op);
-        case GGML_OP_MUL_MAT_ID_Q4NX:
-            return ggml_backend_hrx2_supports_mul_mat_id_q4nx_route(ggml_backend_hrx2_get_device_context(dev), op);
-        case GGML_OP_RMS_NORM:
-            return ggml_backend_hrx2_supports_rms_norm_route(ggml_backend_hrx2_get_device_context(dev), op);
-        case GGML_OP_ADD:
-        case GGML_OP_MUL:
-        case GGML_OP_DIV:
+            return true;   // metadata-only, no data movement
         case GGML_OP_SCALE:
-        case GGML_OP_CLAMP:
-            return ggml_backend_hrx2_supports_pointwise_route(ggml_backend_hrx2_get_device_context(dev), op);
-        case GGML_OP_SUM_ROWS:
-            return ggml_backend_hrx2_supports_sum_rows_route(ggml_backend_hrx2_get_device_context(dev), op);
-        case GGML_OP_GET_ROWS:
-            return false;
-        case GGML_OP_ROPE:
-            return ggml_backend_hrx2_supports_rope_route(ggml_backend_hrx2_get_device_context(dev), op);
-        case GGML_OP_SOFT_MAX:
-            return ggml_backend_hrx2_supports_soft_max_route(ggml_backend_hrx2_get_device_context(dev), op);
-        case GGML_OP_CONT:
-            return ggml_backend_hrx2_supports_cont_route(ggml_backend_hrx2_get_device_context(dev), op);
         case GGML_OP_CPY:
-            return ggml_backend_hrx2_supports_cpy(ggml_backend_hrx2_get_device_context(dev), op);
         case GGML_OP_SET_ROWS:
-            return ggml_backend_hrx2_supports_set_rows_route(ggml_backend_hrx2_get_device_context(dev), op);
-        case GGML_OP_ARGSORT:
-            return ggml_backend_hrx2_supports_argsort_route(ggml_backend_hrx2_get_device_context(dev), op);
-        case GGML_OP_GLU:
-            return ggml_backend_hrx2_supports_swiglu_route(ggml_backend_hrx2_get_device_context(dev), op);
-        case GGML_OP_MUL_MAT:
-            // F32/Q4_K etc. MUL_MAT stays on CPU: the naive generic f32 mm
-            // kernel on HRX2 measures slower than the CPU AVX-512 path for
-            // the zaya attention shapes (9.87 vs 10.93 t/s decode).
-            return false;
-        case GGML_OP_MUL_MAT_ID:
-            return ggml_backend_hrx2_supports_mul_mat_id_q4_k_route(ggml_backend_hrx2_get_device_context(dev), op) ||
-                   ggml_backend_hrx2_supports_mul_mat_id_q5_k_route(ggml_backend_hrx2_get_device_context(dev), op) ||
-                   ggml_backend_hrx2_supports_mul_mat_id_q6_k_route(ggml_backend_hrx2_get_device_context(dev), op);
+            // the recurrent state (cache_s_l0) lives on HRX2, so its data
+            // ops must run there; everything else stays on CPU to minimize
+            // CPU<->HRX2 shuttling (all-CPU F32: 16.5 vs hybrid 11.0 t/s).
+            return ggml_backend_hrx2_supports_pointwise_route(ggml_backend_hrx2_get_device_context(dev), op) ||
+                   ggml_backend_hrx2_supports_cpy(ggml_backend_hrx2_get_device_context(dev), op) ||
+                   ggml_backend_hrx2_supports_set_rows_route(ggml_backend_hrx2_get_device_context(dev), op);
         default:
             return false;
     }

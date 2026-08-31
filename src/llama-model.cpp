@@ -8410,7 +8410,11 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                         filter_recr = [&](int32_t) { return true; };
                     } else if (arch == LLM_ARCH_ZAYA) {
                         // Zaya 8B: every layer is a hybrid (CCA attention AND
-                        // MoE with recurrent conv/prev-hs state).
+                        // MoE with recurrent conv/prev-hs state). The state
+                        // stays on HRX2 (where the Q4NX backend claims its
+                        // SCALE/CPY/SET_ROWS ops); everything else is CPU to
+                        // minimize hybrid-split shuttling (all-CPU F32: 16.5
+                        // vs hybrid 11.0 t/s decode).
                         filter_attn = [&](int32_t) { return true; };
                         filter_recr = [&](int32_t) { return true; };
                     } else if (arch == LLM_ARCH_NEMOTRON_H || arch == LLM_ARCH_NEMOTRON_H_MOE) {
