@@ -103,6 +103,8 @@ struct ggml_backend_hrx2_device_context {
     size_t q4nx_w_cap = 0;
     hrx_buffer_t q4nx_ids = nullptr;   // host-visible scratch for MUL_MAT_ID_Q4NX ids
     size_t q4nx_ids_cap = 0;
+    hrx_buffer_t q4nx_tbl = nullptr;   // device scratch: tbl-tiled mm src1_cols/dst_cols tables
+    size_t q4nx_tbl_cap = 0;
     // Grown-out q4nx scratch buffers, freed only after a stream sync. The
     // kernels reading q4nx_scl/q4nx_w/q4nx_ids are async on the stream; the
     // allocator unmaps/recycles a released buffer immediately, so releasing on
@@ -202,6 +204,7 @@ struct ggml_backend_hrx2_reg_context {
             if (device_context->q4nx_scl) hrx_buffer_release(device_context->q4nx_scl);
             if (device_context->q4nx_w)   hrx_buffer_release(device_context->q4nx_w);
             if (device_context->q4nx_ids) hrx_buffer_release(device_context->q4nx_ids);
+            if (device_context->q4nx_tbl) hrx_buffer_release(device_context->q4nx_tbl);
             for (hrx_buffer_t b : device_context->q4nx_retired) hrx_buffer_release(b);
             device_context->q4nx_retired.clear();
             if (device_context->device) {
@@ -8288,8 +8291,7 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_grouped(
         uint32_t nselected,   // total selected per token (unused; kept for signature stability)
         const int32_t * src1_cols,  // src1 column (token index) per group slot
         const int32_t * dst_cols) { // dst column (i + t*nselected) per group slot
-    (void) ntokens;
-    (void) nselected;
+
     ggml_backend_hrx2_device_context * device_context = context->device_context;
     const uint32_t n_tc    = k / GGML_Q4NX_TILE_COLS;
     const uint32_t wg_size = 256;
@@ -8352,13 +8354,94 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_grouped(
         return GGML_STATUS_FAILED;
     }
 
-    // one proven per-slot mm per group member, all reading the SAME b_w:
-    // dequant once per distinct expert (the expensive part), scatter via the
-    // per-slot src1/dst column offsets. NOTE: a single table-scatter mm would
-    // be even better, but index.min/max/rem have no amdgpu lowering in this
-    // loom build (round 20's tbl kernel silently never used its tables — the
-    // `ne %use_tbl, %unit` condition folded the table branch dead at JIT
-    // time, so the 2-token verification passed because slot==token there).
+    // Prefer ONE table-scatter tiled mm per group: b_w x src1[:, src1_cols[*]]
+    // -> dst[:, dst_cols[*]] with 8 columns per workgroup, so b_w is read once
+    // per 8 output columns (per-slot mms re-read b_w once per token = 32x for
+    // a 32-token group). Round 20's tbl kernel failed because index.min/max/rem
+    // have no amdgpu lowering (bounds could not be proven -> JIT miscompile /
+    // subrange errors) and its use_col_tables condition folded dead. This
+    // kernel instead uses TRUTHFUL index.assume predicates with config-derived
+    // bounds (src1_cols < ntokens, dst_cols < nselected*ntokens) and the same
+    // JIT-constant column guards as the proven tiled kernel; the tables are
+    // uploaded with async host->device copies, no host round-trip.
+    const ggml_backend_hrx2_kernel_route * tbl_route = nullptr;
+    for (const auto * r : device_context->mul_mat_f32_f32_routes) {
+        if (r->id == "mul_mat_f32_f32_ggml_tbl_tiled") { tbl_route = r; break; }
+    }
+    if (tbl_route) {
+        // The kernel reads table slots [0, ceil(cols/8)*8) unconditionally
+        // (the per-slot guards only protect src1/dst, not the table loads),
+        // so pad the tables to the workgroup column grid with zeros.
+        const uint32_t cols_padded = (cols + 7) / 8 * 8;
+        const size_t tbl_bytes = (size_t) cols_padded * sizeof(int32_t) * 2;
+        if (!ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_tbl, &device_context->q4nx_tbl_cap, tbl_bytes)) {
+            return GGML_STATUS_FAILED;
+        }
+        hrx_buffer_t b_tbl = device_context->q4nx_tbl;
+        std::vector<int32_t> s1c_pad(cols_padded, 0);
+        std::vector<int32_t> dc_pad(cols_padded, 0);
+        for (uint32_t c = 0; c < cols; ++c) {
+            s1c_pad[c] = src1_cols[c];
+            dc_pad[c] = dst_cols[c];
+        }
+        if (!GGML_HRX2_CHECK(hrx_stream_update_buffer(
+                context->stream, s1c_pad.data(), (size_t) cols_padded * sizeof(int32_t),
+                b_tbl, 0))) {
+            return GGML_STATUS_FAILED;
+        }
+        if (!GGML_HRX2_CHECK(hrx_stream_update_buffer(
+                context->stream, dc_pad.data(), (size_t) cols_padded * sizeof(int32_t),
+                b_tbl, (size_t) cols_padded * sizeof(int32_t)))) {
+            return GGML_STATUS_FAILED;
+        }
+
+        // tbl-tiled mm provider (mul_mat_f32_f32_ggml_tbl_tiled, 5 bindings)
+        std::vector<ggml_backend_hrx2_config_binding> tbl_cfg;
+        tbl_cfg.push_back({"@hrx2.shape.k", std::to_string(k)});
+        tbl_cfg.push_back({"@hrx2.shape.rows", std::to_string(rows)});
+        tbl_cfg.push_back({"@hrx2.shape.cols", std::to_string(cols)});
+        tbl_cfg.push_back({"@hrx2.shape.ntokens", std::to_string(ntokens)});
+        tbl_cfg.push_back({"@hrx2.shape.nselected", std::to_string(nselected)});
+        tbl_cfg.push_back({"@hrx2.tuning.workgroup_size", std::to_string(wg_size)});
+        const std::string tbl_key = ggml_backend_hrx2_base_cache_key(device_context, tbl_route) +
+            "-q4nx-tbl-r" + std::to_string(rows) + "-c" + std::to_string(cols) +
+            "-k" + std::to_string(k) + "-nt" + std::to_string(ntokens) +
+            "-ns" + std::to_string(nselected) + "-wg" + std::to_string(wg_size);
+        auto * tbl = ggml_backend_hrx2_get_provider(device_context, tbl_route, tbl_cfg, tbl_key);
+        if (!tbl) {
+            GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX tbl-tiled provider unavailable\n");
+            return GGML_STATUS_FAILED;
+        }
+        if (tbl->route.constant_byte_length != 0) {
+            GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX tbl-tiled route has unsupported constants\n");
+            return GGML_STATUS_FAILED;
+        }
+
+        // bindings: b_w, FULL src1, FULL dst, src1_cols table, dst_cols table
+        hrx_buffer_ref_t tbl_bindings[5] = {
+            { b_w,    0, w_bytes },
+            { src1_ref.buffer, src1_ref.offset, (size_t) k * ntokens * sizeof(float) },
+            { dst_ref.buffer,  dst_ref.offset,  (size_t) rows * nselected * ntokens * sizeof(float) },
+            { b_tbl,  0, (size_t) cols_padded * sizeof(int32_t) },
+            { b_tbl, (size_t) cols_padded * sizeof(int32_t), (size_t) cols_padded * sizeof(int32_t) },
+        };
+        const uint32_t tbl_col_groups = (cols + 7) / 8;
+        hrx_dispatch_config_t tbl_config = {
+            { rows, tbl_col_groups, 1 },
+            { tbl->export_info.workgroup_size[0] ? tbl->export_info.workgroup_size[0] : tbl->route.workgroup_size[0], 1, 1 },
+            0,
+        };
+        if (!GGML_HRX2_CHECK(hrx_stream_dispatch(
+                context->stream, tbl->executable, tbl->export_ordinal,
+                &tbl_config, nullptr, 0, tbl_bindings, 5, HRX_DISPATCH_FLAG_NONE))) {
+            return GGML_STATUS_FAILED;
+        }
+        return GGML_STATUS_SUCCESS;
+    }
+
+    // fallback: one proven per-slot mm per group member, all reading the SAME
+    // b_w (dequant once per distinct expert; per-slot src1/dst offsets). Kept
+    // only if the tbl_tiled route is missing.
     for (uint32_t c = 0; c < cols; ++c) {
         if (ggml_backend_hrx2_dispatch_mul_mat_q4nx_mm(
                 context, b_w, w_bytes, src1_ref, dst_ref,

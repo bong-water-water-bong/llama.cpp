@@ -103,5 +103,8 @@
  },
  "mul_mat_f32_f32_ggml_tiled": {
   "path": "kernels/mul_mat_f32_f32_ggml_tiled.loom"
+ },
+ "mul_mat_f32_f32_ggml_tbl_tiled": {
+  "path": "kernels/mul_mat_f32_f32_ggml_tbl_tiled.loom"
  }
 }

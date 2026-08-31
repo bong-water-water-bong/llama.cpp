@@ -1,0 +1,322 @@
+config.decl @hrx2.shape.k : %value: index where [range(%value, 1, 8192)]
+config.decl @hrx2.shape.rows : %value: index where [range(%value, 1, 8192)]
+config.decl @hrx2.shape.cols : %value: index where [range(%value, 1, 512)]
+config.decl @hrx2.shape.ntokens : %value: index where [range(%value, 1, 4194304)]
+config.decl @hrx2.shape.nselected : %value: index where [range(%value, 1, 64)]
+config.decl @hrx2.tuning.workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
+
+// ggml-layout f32 matmul with per-column source/destination offset TABLES,
+// 8 output columns per workgroup (1bit-MONSTER grouped MoE: one dequant +
+// ONE table-scatter mm per distinct expert instead of 32 per-slot mms).
+//
+// Same math as hrx2_mul_mat_f32_f32_ggml_tiled_static (src1 [k, ntokens]
+// ggml col-major, dst [rows, nselected*ntokens] ggml col-major, src0
+// row-major [rows, k]) but column c of this slice reads src1 column
+// src1_cols[c] (a TOKEN index < ntokens) and writes dst column dst_cols[c]
+// (a SELECTED index i + t*nselected < nselected*ntokens). The tables let
+// one workgroup-row reuse the src0 row across 8 DIFFERENT tokens, so the
+// dequantized weight is read once per 8 output columns (per-slot mms re-read
+// b_w once per token = 32x for a 32-token group).
+//
+// Bounds: table values are bounded by TRUTHFUL index.assume predicates with
+// config-derived limits (src1_cols < ntokens, dst_cols < nselected*ntokens),
+// NOT by index.min/max/rem (which have no amdgpu lowering in this loom build
+// — round 20's tbl kernel silently miscompiled because of them). The JIT
+// subrange proof trusts the assume facts, and the host guarantees the tables
+// hold in-range values (same guarantee the per-slot path relies on).
+kernel.def export("hrx2_mul_mat_f32_f32_ggml_tbl_tiled_static") @hrx2_mul_mat_f32_f32_ggml_tbl_tiled_static() {
+  %unit = index.constant 1 : index
+  %rows = config.get @hrx2.shape.rows : index
+  %cols = config.get @hrx2.shape.cols : index
+  %workgroup_size = config.get @hrx2.tuning.workgroup_size : index
+  %seven = index.constant 7 : index
+  %eight = index.constant 8 : index
+  %col_groups_round = index.add %cols, %seven : index
+  %col_groups = index.div %col_groups_round, %eight : index
+  kernel.launch.config workgroups(%rows, %col_groups, %unit) workgroup_size(%workgroup_size, %unit, %unit) : index
+} launch(%src0: buffer, %src1: buffer, %dst: buffer, %src1_cols: buffer, %dst_cols: buffer) {
+  %base = index.constant 0 : offset
+  %zero_f32 = scalar.constant 0.0 : f32
+  %zero_i32 = scalar.constant 0 : i32
+  %zero = index.constant 0 : index
+  %unit = index.constant 1 : index
+  %two = index.constant 2 : index
+  %four = index.constant 4 : index
+  %seven = index.constant 7 : index
+  %eight = index.constant 8 : index
+
+  %k = config.get @hrx2.shape.k : index
+  %rows = config.get @hrx2.shape.rows : index
+  %cols = config.get @hrx2.shape.cols : index
+  %ntokens = config.get @hrx2.shape.ntokens : index
+  %nselected = config.get @hrx2.shape.nselected : index
+  %workgroup_size = config.get @hrx2.tuning.workgroup_size : index
+  %k_bounded = index.assume %k [range(%k, 1, 8192)] : index
+  %rows_bounded = index.assume %rows [range(%rows, 1, 8192)] : index
+  %cols_bounded = index.assume %cols [range(%cols, 1, 512)] : index
+  // table views are padded to the workgroup column grid (ceil(cols/8)*8) so
+  // the unconditional table loads at slots >= cols stay in bounds (the slot
+  // guards %v0..%v7 prevent those slots from touching src1/dst).
+  %seven_c = index.constant 7 : index
+  %eight_c = index.constant 8 : index
+  %cols_round = index.add %cols_bounded, %seven_c : index
+  %cols_groups = index.div %cols_round, %eight_c : index
+  %cols_padded = index.mul %cols_groups, %eight_c : index
+  %cols_padded_b = index.assume %cols_padded [range(%cols_padded, 1, 512)] : index
+  %ntokens_bounded = index.assume %ntokens [range(%ntokens, 1, 4194304)] : index
+  %nselected_bounded = index.assume %nselected [range(%nselected, 1, 64)] : index
+  // truthful tight upper bounds for the table-derived indices: a src1_cols
+  // entry is a TOKEN index t in [0, ntokens-1]; a dst_cols entry is a
+  // SELECTED index i + t*nselected in [0, nselected*ntokens-1]. Assumed
+  // (not min/max-clamped — those have no amdgpu lowering in this build).
+  // The host guarantees the tables hold in-range values, so t*k + i stays
+  // < ntokens*k = src1_count and d*rows + row stays < dst_count; unlike
+  // round 20's `assume [0,4194303]`, these bounds are tight enough that the
+  // JIT subrange proof for the loads below succeeds instead of trusting an
+  // overflowing range.
+  %ntokens_m1 = index.sub %ntokens_bounded, %unit : index
+  %sel_total = index.mul %nselected_bounded, %ntokens_bounded : index
+  %sel_total_m1 = index.sub %sel_total, %unit : index
+
+  %row0 = kernel.workgroup.id<x> : index
+  %row = index.assume %row0 [range(%row0, 0, 8191)] : index
+  %cg0 = kernel.workgroup.id<y> : index
+  %col_block0 = index.mul %cg0, %eight : index
+  %col_block = index.assume %col_block0 [range(%col_block0, 0, 511)] : index
+  %lane0 = kernel.workitem.id<x> : index
+  %lane = index.assume %lane0 [range(%lane0, 0, 1023)] : index
+
+  %src0_count = index.mul %rows_bounded, %k_bounded : index
+  %src1_count = index.mul %k_bounded, %ntokens_bounded : index
+  %dst_count = index.mul %rows_bounded, %sel_total : index
+
+  %src0_global = buffer.assume.memory_space<global> %src0 : buffer
+  %src1_global = buffer.assume.memory_space<global> %src1 : buffer
+  %dst_global = buffer.assume.memory_space<global> %dst : buffer
+  %s1c_global = buffer.assume.memory_space<global> %src1_cols : buffer
+  %dc_global = buffer.assume.memory_space<global> %dst_cols : buffer
+  %src0_noalias, %src1_noalias, %dst_noalias, %s1c_noalias, %dc_noalias =
+      buffer.assume.noalias %src0_global, %src1_global, %dst_global, %s1c_global, %dc_global : buffer, buffer, buffer, buffer, buffer
+  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_count]xf32>
+  %src1_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_count]xf32>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32>
+  %s1c_view = buffer.view %s1c_noalias[%base] : buffer -> view<[%cols_padded_b]xi32>
+  %dc_view = buffer.view %dc_noalias[%base] : buffer -> view<[%cols_padded_b]xi32>
+
+  // absolute slot column within the slice for each of the 8 lanes, and
+  // whether it is < cols (JIT-constant guards, like the plain tiled kernel)
+  %c0 = index.add %col_block, %zero : index
+  %c1 = index.add %col_block, %unit : index
+  %c2 = index.add %col_block, %two : index
+  %c3 = index.add %c2, %unit : index
+  %c4 = index.add %c3, %unit : index
+  %c5 = index.add %c4, %unit : index
+  %c6 = index.add %c5, %unit : index
+  %c7 = index.add %c6, %unit : index
+  %v0 = index.cmp ult, %c0, %cols_bounded : index
+  %v1 = index.cmp ult, %c1, %cols_bounded : index
+  %v2 = index.cmp ult, %c2, %cols_bounded : index
+  %v3 = index.cmp ult, %c3, %cols_bounded : index
+  %v4 = index.cmp ult, %c4, %cols_bounded : index
+  %v5 = index.cmp ult, %c5, %cols_bounded : index
+  %v6 = index.cmp ult, %c6, %cols_bounded : index
+  %v7 = index.cmp ult, %c7, %cols_bounded : index
+
+  // table-derived src1 column (token index) and dst column (selected index)
+  // for each slot; bound TRUTHFULLY via assume (config-derived limits).
+  %tc0 = view.load %s1c_view[%c0] : view<[%cols_padded_b]xi32> -> i32
+  %tc0_i = index.cast %tc0 : i32 to index
+  %t0 = index.assume %tc0_i [range(%tc0_i, 0, %ntokens_m1)] : index
+  %tc1 = view.load %s1c_view[%c1] : view<[%cols_padded_b]xi32> -> i32
+  %tc1_i = index.cast %tc1 : i32 to index
+  %t1 = index.assume %tc1_i [range(%tc1_i, 0, %ntokens_m1)] : index
+  %tc2 = view.load %s1c_view[%c2] : view<[%cols_padded_b]xi32> -> i32
+  %tc2_i = index.cast %tc2 : i32 to index
+  %t2 = index.assume %tc2_i [range(%tc2_i, 0, %ntokens_m1)] : index
+  %tc3 = view.load %s1c_view[%c3] : view<[%cols_padded_b]xi32> -> i32
+  %tc3_i = index.cast %tc3 : i32 to index
+  %t3 = index.assume %tc3_i [range(%tc3_i, 0, %ntokens_m1)] : index
+  %tc4 = view.load %s1c_view[%c4] : view<[%cols_padded_b]xi32> -> i32
+  %tc4_i = index.cast %tc4 : i32 to index
+  %t4 = index.assume %tc4_i [range(%tc4_i, 0, %ntokens_m1)] : index
+  %tc5 = view.load %s1c_view[%c5] : view<[%cols_padded_b]xi32> -> i32
+  %tc5_i = index.cast %tc5 : i32 to index
+  %t5 = index.assume %tc5_i [range(%tc5_i, 0, %ntokens_m1)] : index
+  %tc6 = view.load %s1c_view[%c6] : view<[%cols_padded_b]xi32> -> i32
+  %tc6_i = index.cast %tc6 : i32 to index
+  %t6 = index.assume %tc6_i [range(%tc6_i, 0, %ntokens_m1)] : index
+  %tc7 = view.load %s1c_view[%c7] : view<[%cols_padded_b]xi32> -> i32
+  %tc7_i = index.cast %tc7 : i32 to index
+  %t7 = index.assume %tc7_i [range(%tc7_i, 0, %ntokens_m1)] : index
+
+  %dc0 = view.load %dc_view[%c0] : view<[%cols_padded_b]xi32> -> i32
+  %dc0_i = index.cast %dc0 : i32 to index
+  %d0 = index.assume %dc0_i [range(%dc0_i, 0, %sel_total_m1)] : index
+  %dc1 = view.load %dc_view[%c1] : view<[%cols_padded_b]xi32> -> i32
+  %dc1_i = index.cast %dc1 : i32 to index
+  %d1 = index.assume %dc1_i [range(%dc1_i, 0, %sel_total_m1)] : index
+  %dc2 = view.load %dc_view[%c2] : view<[%cols_padded_b]xi32> -> i32
+  %dc2_i = index.cast %dc2 : i32 to index
+  %d2 = index.assume %dc2_i [range(%dc2_i, 0, %sel_total_m1)] : index
+  %dc3 = view.load %dc_view[%c3] : view<[%cols_padded_b]xi32> -> i32
+  %dc3_i = index.cast %dc3 : i32 to index
+  %d3 = index.assume %dc3_i [range(%dc3_i, 0, %sel_total_m1)] : index
+  %dc4 = view.load %dc_view[%c4] : view<[%cols_padded_b]xi32> -> i32
+  %dc4_i = index.cast %dc4 : i32 to index
+  %d4 = index.assume %dc4_i [range(%dc4_i, 0, %sel_total_m1)] : index
+  %dc5 = view.load %dc_view[%c5] : view<[%cols_padded_b]xi32> -> i32
+  %dc5_i = index.cast %dc5 : i32 to index
+  %d5 = index.assume %dc5_i [range(%dc5_i, 0, %sel_total_m1)] : index
+  %dc6 = view.load %dc_view[%c6] : view<[%cols_padded_b]xi32> -> i32
+  %dc6_i = index.cast %dc6 : i32 to index
+  %d6 = index.assume %dc6_i [range(%dc6_i, 0, %sel_total_m1)] : index
+  %dc7 = view.load %dc_view[%c7] : view<[%cols_padded_b]xi32> -> i32
+  %dc7_i = index.cast %dc7 : i32 to index
+  %d7 = index.assume %dc7_i [range(%dc7_i, 0, %sel_total_m1)] : index
+
+  %src0_row_base = index.mul %row, %k_bounded : index
+  %s1b0 = index.mul %t0, %k_bounded : index
+  %s1b1 = index.mul %t1, %k_bounded : index
+  %s1b2 = index.mul %t2, %k_bounded : index
+  %s1b3 = index.mul %t3, %k_bounded : index
+  %s1b4 = index.mul %t4, %k_bounded : index
+  %s1b5 = index.mul %t5, %k_bounded : index
+  %s1b6 = index.mul %t6, %k_bounded : index
+  %s1b7 = index.mul %t7, %k_bounded : index
+  %db0 = index.mul %d0, %rows_bounded : index
+  %db1 = index.mul %d1, %rows_bounded : index
+  %db2 = index.mul %d2, %rows_bounded : index
+  %db3 = index.mul %d3, %rows_bounded : index
+  %db4 = index.mul %d4, %rows_bounded : index
+  %db5 = index.mul %d5, %rows_bounded : index
+  %db6 = index.mul %d6, %rows_bounded : index
+  %db7 = index.mul %d7, %rows_bounded : index
+
+  %sum0, %sum1, %sum2, %sum3, %sum4, %sum5, %sum6, %sum7 =
+    scf.for %i = [%lane to %k_bounded step %workgroup_size](
+        %acc0 = %zero_f32, %acc1 = %zero_f32, %acc2 = %zero_f32, %acc3 = %zero_f32,
+        %acc4 = %zero_f32, %acc5 = %zero_f32, %acc6 = %zero_f32, %acc7 = %zero_f32 :
+        f32, f32, f32, f32, f32, f32, f32, f32) -> (f32, f32, f32, f32, f32, f32, f32, f32) {
+    %src0_index = index.add %src0_row_base, %i : index
+    %a = view.load %src0_view[%src0_index] : view<[%src0_count]xf32> -> f32
+    %r0 = index.add %s1b0, %i : index
+    %r1 = index.add %s1b1, %i : index
+    %r2 = index.add %s1b2, %i : index
+    %r3 = index.add %s1b3, %i : index
+    %r4 = index.add %s1b4, %i : index
+    %r5 = index.add %s1b5, %i : index
+    %r6 = index.add %s1b6, %i : index
+    %r7 = index.add %s1b7, %i : index
+    %n0 = scf.if %v0 -> (f32) {
+      %b0 = view.load %src1_view[%r0] : view<[%src1_count]xf32> -> f32
+      %p0 = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b0 : f32
+      %q0 = scalar.addf<reassoc|nnan|ninf|nsz> %acc0, %p0 : f32
+      scf.yield %q0 : f32
+    } else {
+      scf.yield %acc0 : f32
+    }
+    %n1 = scf.if %v1 -> (f32) {
+      %b1 = view.load %src1_view[%r1] : view<[%src1_count]xf32> -> f32
+      %p1 = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b1 : f32
+      %q1 = scalar.addf<reassoc|nnan|ninf|nsz> %acc1, %p1 : f32
+      scf.yield %q1 : f32
+    } else {
+      scf.yield %acc1 : f32
+    }
+    %n2 = scf.if %v2 -> (f32) {
+      %b2 = view.load %src1_view[%r2] : view<[%src1_count]xf32> -> f32
+      %p2 = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b2 : f32
+      %q2 = scalar.addf<reassoc|nnan|ninf|nsz> %acc2, %p2 : f32
+      scf.yield %q2 : f32
+    } else {
+      scf.yield %acc2 : f32
+    }
+    %n3 = scf.if %v3 -> (f32) {
+      %b3 = view.load %src1_view[%r3] : view<[%src1_count]xf32> -> f32
+      %p3 = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b3 : f32
+      %q3 = scalar.addf<reassoc|nnan|ninf|nsz> %acc3, %p3 : f32
+      scf.yield %q3 : f32
+    } else {
+      scf.yield %acc3 : f32
+    }
+    %n4 = scf.if %v4 -> (f32) {
+      %b4 = view.load %src1_view[%r4] : view<[%src1_count]xf32> -> f32
+      %p4 = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b4 : f32
+      %q4 = scalar.addf<reassoc|nnan|ninf|nsz> %acc4, %p4 : f32
+      scf.yield %q4 : f32
+    } else {
+      scf.yield %acc4 : f32
+    }
+    %n5 = scf.if %v5 -> (f32) {
+      %b5 = view.load %src1_view[%r5] : view<[%src1_count]xf32> -> f32
+      %p5 = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b5 : f32
+      %q5 = scalar.addf<reassoc|nnan|ninf|nsz> %acc5, %p5 : f32
+      scf.yield %q5 : f32
+    } else {
+      scf.yield %acc5 : f32
+    }
+    %n6 = scf.if %v6 -> (f32) {
+      %b6 = view.load %src1_view[%r6] : view<[%src1_count]xf32> -> f32
+      %p6 = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b6 : f32
+      %q6 = scalar.addf<reassoc|nnan|ninf|nsz> %acc6, %p6 : f32
+      scf.yield %q6 : f32
+    } else {
+      scf.yield %acc6 : f32
+    }
+    %n7 = scf.if %v7 -> (f32) {
+      %b7 = view.load %src1_view[%r7] : view<[%src1_count]xf32> -> f32
+      %p7 = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b7 : f32
+      %q7 = scalar.addf<reassoc|nnan|ninf|nsz> %acc7, %p7 : f32
+      scf.yield %q7 : f32
+    } else {
+      scf.yield %acc7 : f32
+    }
+    scf.yield %n0, %n1, %n2, %n3, %n4, %n5, %n6, %n7 : f32, f32, f32, f32, f32, f32, f32, f32
+  }
+  %dot0 = kernel.workgroup.reduce<addf> %sum0 : f32
+  %dot1 = kernel.workgroup.reduce<addf> %sum1 : f32
+  %dot2 = kernel.workgroup.reduce<addf> %sum2 : f32
+  %dot3 = kernel.workgroup.reduce<addf> %sum3 : f32
+  %dot4 = kernel.workgroup.reduce<addf> %sum4 : f32
+  %dot5 = kernel.workgroup.reduce<addf> %sum5 : f32
+  %dot6 = kernel.workgroup.reduce<addf> %sum6 : f32
+  %dot7 = kernel.workgroup.reduce<addf> %sum7 : f32
+
+  %dst0 = index.add %db0, %row : index
+  %dst1 = index.add %db1, %row : index
+  %dst2 = index.add %db2, %row : index
+  %dst3 = index.add %db3, %row : index
+  %dst4 = index.add %db4, %row : index
+  %dst5 = index.add %db5, %row : index
+  %dst6 = index.add %db6, %row : index
+  %dst7 = index.add %db7, %row : index
+  %lane_i32 = index.cast %lane : index to i32
+  %is_lane0 = scalar.cmpi eq, %lane_i32, %zero_i32 : i32
+  scf.if %is_lane0 {
+    scf.if %v0 {
+      view.store %dot0, %dst_view[%dst0] : f32, view<[%dst_count]xf32>
+    }
+    scf.if %v1 {
+      view.store %dot1, %dst_view[%dst1] : f32, view<[%dst_count]xf32>
+    }
+    scf.if %v2 {
+      view.store %dot2, %dst_view[%dst2] : f32, view<[%dst_count]xf32>
+    }
+    scf.if %v3 {
+      view.store %dot3, %dst_view[%dst3] : f32, view<[%dst_count]xf32>
+    }
+    scf.if %v4 {
+      view.store %dot4, %dst_view[%dst4] : f32, view<[%dst_count]xf32>
+    }
+    scf.if %v5 {
+      view.store %dot5, %dst_view[%dst5] : f32, view<[%dst_count]xf32>
+    }
+    scf.if %v6 {
+      view.store %dot6, %dst_view[%dst6] : f32, view<[%dst_count]xf32>
+    }
+    scf.if %v7 {
+      view.store %dot7, %dst_view[%dst7] : f32, view<[%dst_count]xf32>
+    }
+  }
+  kernel.return
+}
