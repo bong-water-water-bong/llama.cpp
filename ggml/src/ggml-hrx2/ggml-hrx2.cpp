@@ -193,6 +193,7 @@ struct ggml_backend_hrx2_reg_context {
             }
             if (device_context->q4nx_scl) hrx_buffer_release(device_context->q4nx_scl);
             if (device_context->q4nx_w)   hrx_buffer_release(device_context->q4nx_w);
+            if (device_context->q4nx_ids) hrx_buffer_release(device_context->q4nx_ids);
             if (device_context->device) {
                 hrx_device_release(device_context->device);
             }
