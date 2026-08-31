@@ -103,6 +103,8 @@ struct ggml_backend_hrx2_device_context {
     size_t q4nx_w_cap = 0;
     hrx_buffer_t q4nx_ids = nullptr;   // host-visible scratch for MUL_MAT_ID_Q4NX ids
     size_t q4nx_ids_cap = 0;
+    hrx_buffer_t q4nx_tbl = nullptr;   // host-visible scratch for MUL_MAT_ID_Q4NX col tables
+    size_t q4nx_tbl_cap = 0;
     // Grown-out q4nx scratch buffers, freed only after a stream sync. The
     // kernels reading q4nx_scl/q4nx_w/q4nx_ids are async on the stream; the
     // allocator unmaps/recycles a released buffer immediately, so releasing on
@@ -202,6 +204,7 @@ struct ggml_backend_hrx2_reg_context {
             if (device_context->q4nx_scl) hrx_buffer_release(device_context->q4nx_scl);
             if (device_context->q4nx_w)   hrx_buffer_release(device_context->q4nx_w);
             if (device_context->q4nx_ids) hrx_buffer_release(device_context->q4nx_ids);
+            if (device_context->q4nx_tbl) hrx_buffer_release(device_context->q4nx_tbl);
             for (hrx_buffer_t b : device_context->q4nx_retired) hrx_buffer_release(b);
             device_context->q4nx_retired.clear();
             if (device_context->device) {
@@ -8232,6 +8235,157 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice(
     return GGML_STATUS_SUCCESS;
 }
 
+// Grouped Q4NX slice: dequant tiles [tile_base, tile_base+n_tiles) of src0
+// ONCE, then run a single f32 matmul that scatters the outputs of `cols`
+// logical columns into arbitrary src1/dst column positions given by the i32
+// tables. Used by MUL_MAT_ID_Q4NX to process every token that selected the
+// same expert in one dispatch (prefill: dequant work drops from #tokens to
+// #distinct-experts). The mm kernel is hrx2_mul_mat_f32_f32_ggml_tbl_static
+// (5 bindings: b_w, full src1, full dst, src1_cols, dst_cols).
+static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_grouped(
+        ggml_backend_hrx2_context * context,
+        const hrx_buffer_ref_t & src0_ref,
+        const hrx_buffer_ref_t & src1_ref,
+        const hrx_buffer_ref_t & dst_ref,
+        uint32_t tile_base,   // first tile to dequantize (expert offset)
+        uint32_t n_tiles,     // tiles in this slice
+        uint32_t k,           // logical in width
+        uint32_t rows,        // output rows
+        uint32_t cols,        // group size (number of tokens on this expert)
+        uint32_t ntokens,     // total tokens in the MUL_MAT_ID (for src1/dst extents)
+        uint32_t nselected,   // total selected per token (for dst extents)
+        const int32_t * src1_cols,  // src1 column (token index) per group slot
+        const int32_t * dst_cols) { // dst column (i + t*nselected) per group slot
+    ggml_backend_hrx2_device_context * device_context = context->device_context;
+    const uint32_t n_tc    = k / GGML_Q4NX_TILE_COLS;
+    const uint32_t wg_size = 256;
+
+    ggml_backend_hrx2_trace_event(
+        "q4nx_dispatch_grouped",
+        ggml_backend_hrx2_json_kv("rows", std::to_string(rows)) + "," +
+        ggml_backend_hrx2_json_kv("k", std::to_string(k)) + "," +
+        ggml_backend_hrx2_json_kv("cols", std::to_string(cols)) + "," +
+        ggml_backend_hrx2_json_kv("n_tiles", std::to_string(n_tiles)) + "," +
+        ggml_backend_hrx2_json_kv("tile_base", std::to_string(tile_base)));
+
+    // scratch: one raw tile-major blob + dequant out + two i32 col tables
+    const size_t raw_bytes = (size_t) n_tiles * 5120;
+    const size_t w_bytes   = (size_t) rows * k * sizeof(float);
+    const size_t tbl_bytes = (size_t) cols * sizeof(int32_t);
+    if (!ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_scl, &device_context->q4nx_scl_cap, raw_bytes) ||
+        !ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_w,   &device_context->q4nx_w_cap,   w_bytes) ||
+        !ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_tbl, &device_context->q4nx_tbl_cap, 2 * tbl_bytes)) {
+        return GGML_STATUS_FAILED;
+    }
+    hrx_buffer_t b_raw = device_context->q4nx_scl;
+    hrx_buffer_t b_w   = device_context->q4nx_w;
+    hrx_buffer_t b_tbl = device_context->q4nx_tbl;
+
+    // ONE stream copy for the whole slice (expert tiles are contiguous).
+    if (!GGML_HRX2_CHECK(hrx_stream_copy_buffer(
+            context->stream, src0_ref.buffer, src0_ref.offset + (size_t) tile_base * 5120,
+            b_raw, 0, raw_bytes))) {
+        return GGML_STATUS_FAILED;
+    }
+
+    // dequant provider (q4nx_dequant_f32 route)
+    const ggml_backend_hrx2_kernel_route * deq_route = device_context->q4nx_dequant_routes.front();
+    std::vector<ggml_backend_hrx2_config_binding> deq_cfg;
+    deq_cfg.push_back({"@hrx2.shape.ncols", std::to_string(k)});
+    deq_cfg.push_back({"@hrx2.shape.nrows", std::to_string(rows)});
+    deq_cfg.push_back({"@hrx2.tuning.q4nx.workgroup_size", std::to_string(wg_size)});
+    deq_cfg.push_back({"@hrx2.tuning.q4nx.n_tile_cols", std::to_string(n_tc)});
+    const std::string deq_key = ggml_backend_hrx2_base_cache_key(device_context, deq_route) +
+        "-q4nx-r" + std::to_string(rows) + "-c" + std::to_string(k) +
+        "-tc" + std::to_string(n_tc) + "-wg" + std::to_string(wg_size);
+    auto * deq = ggml_backend_hrx2_get_provider(device_context, deq_route, deq_cfg, deq_key);
+    if (!deq) {
+        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX dequant provider unavailable\n");
+        return GGML_STATUS_FAILED;
+    }
+
+    hrx_buffer_ref_t deq_bindings[4] = {
+        { b_raw, 1024, (size_t) n_tiles * 4096 },  // packed
+        { b_raw,    0, (size_t) n_tiles * 512  },  // scales
+        { b_raw,  512, (size_t) n_tiles * 512  },  // zeros
+        { b_w,     0, w_bytes },
+    };
+    hrx_dispatch_config_t deq_config = {
+        { (rows * k + wg_size - 1) / wg_size, 1, 1 },
+        { wg_size, 1, 1 },
+        0,
+    };
+    if (!GGML_HRX2_CHECK(hrx_stream_dispatch(
+            context->stream, deq->executable, deq->export_ordinal,
+            &deq_config, nullptr, 0, deq_bindings, 4, HRX_DISPATCH_FLAG_NONE))) {
+        return GGML_STATUS_FAILED;
+    }
+
+    // upload the two i32 column tables (async h2d on the same stream, so they
+    // are ordered before the mm kernel reads them)
+    if (!GGML_HRX2_CHECK(hrx_stream_copy_h2d(
+            context->stream, src1_cols, b_tbl, 0, tbl_bytes)) ||
+        !GGML_HRX2_CHECK(hrx_stream_copy_h2d(
+            context->stream, dst_cols, b_tbl, tbl_bytes, tbl_bytes))) {
+        return GGML_STATUS_FAILED;
+    }
+
+    // f32 matmul provider: the table-scatter ggml-layout route
+    const ggml_backend_hrx2_kernel_route * mm_route = nullptr;
+    for (const auto * r : device_context->mul_mat_f32_f32_routes) {
+        if (r->id == "mul_mat_f32_f32_ggml_tbl") { mm_route = r; break; }
+    }
+    if (!mm_route) {
+        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX: mul_mat_f32_f32_ggml_tbl route missing\n");
+        return GGML_STATUS_FAILED;
+    }
+    const uint32_t src1_count = k * ntokens;             // full src1 tensor extent
+    const uint32_t dst_count  = rows * nselected * ntokens; // full dst tensor extent
+    std::vector<ggml_backend_hrx2_config_binding> mm_cfg;
+    mm_cfg.push_back({"@hrx2.shape.k", std::to_string(k)});
+    mm_cfg.push_back({"@hrx2.shape.rows", std::to_string(rows)});
+    mm_cfg.push_back({"@hrx2.shape.cols", std::to_string(cols)});
+    mm_cfg.push_back({"@hrx2.shape.src1_count", std::to_string(src1_count)});
+    mm_cfg.push_back({"@hrx2.shape.dst_count", std::to_string(dst_count)});
+    mm_cfg.push_back({"@hrx2.tuning.workgroup_size", std::to_string(wg_size)});
+    mm_cfg.push_back({"@hrx2.shape.use_col_tables", "1"});
+    const std::string mm_key = ggml_backend_hrx2_base_cache_key(device_context, mm_route) +
+        "-q4nx-tbl-r" + std::to_string(rows) + "-c" + std::to_string(cols) +
+        "-k" + std::to_string(k) + "-s1" + std::to_string(src1_count) +
+        "-d" + std::to_string(dst_count) + "-wg" + std::to_string(wg_size);
+    auto * mm = ggml_backend_hrx2_get_provider(device_context, mm_route, mm_cfg, mm_key);
+    if (!mm) {
+        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX tbl f32 provider unavailable\n");
+        return GGML_STATUS_FAILED;
+    }
+    if (mm->route.constant_byte_length != 0) {
+        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX tbl f32 route has unsupported constants\n");
+        return GGML_STATUS_FAILED;
+    }
+
+    hrx_buffer_ref_t mm_bindings[5] = {
+        { b_w,    0, w_bytes },
+        // full src1/dst: the tables select arbitrary columns, so bind the
+        // whole tensors and let the kernel index through the table values
+        { src1_ref.buffer, src1_ref.offset, (size_t) src1_count * sizeof(float) },
+        { dst_ref.buffer,  dst_ref.offset,  (size_t) dst_count  * sizeof(float) },
+        { b_tbl, 0, tbl_bytes },
+        { b_tbl, tbl_bytes, tbl_bytes },
+    };
+    hrx_dispatch_config_t mm_config = {
+        { rows, cols, 1 },
+        { mm->export_info.workgroup_size[0] ? mm->export_info.workgroup_size[0] : mm->route.workgroup_size[0], 1, 1 },
+        0,
+    };
+    if (!GGML_HRX2_CHECK(hrx_stream_dispatch(
+            context->stream, mm->executable, mm->export_ordinal,
+            &mm_config, nullptr, 0, mm_bindings, 5, HRX_DISPATCH_FLAG_NONE))) {
+        return GGML_STATUS_FAILED;
+    }
+
+    return GGML_STATUS_SUCCESS;
+}
+
 static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx(
         ggml_backend_hrx2_context * context,
         const ggml_tensor * dst) {
@@ -8365,8 +8519,77 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_id_q4nx(
     }
     const int32_t * ids_data = (const int32_t *) ids_host;
 
-    // one slice per (selected expert, token) pair; zaya uses nselected=1
-    // (top-1) so this is one dispatch per expert op.
+    // Prefer the table-scatter path: group every (selected, token) pair by
+    // expert and dequant each expert once per graph instead of once per token
+    // (prefill: n_dequant_dispatches drops from #tokens to #distinct-experts).
+    // Fall back to one slice per pair if the tbl route is unavailable.
+    const ggml_backend_hrx2_kernel_route * tbl_route = nullptr;
+    for (const auto * r : device_context->mul_mat_f32_f32_routes) {
+        if (r->id == "mul_mat_f32_f32_ggml_tbl") { tbl_route = r; break; }
+    }
+
+    // validate ids and bucket pairs by expert (in (i,t) order per bucket)
+    const uint32_t nexperts = (uint32_t) src0->ne[2];
+    std::vector<std::vector<std::pair<uint32_t, uint32_t>>> groups(nexperts);
+    for (uint32_t i = 0; i < nselected; ++i) {
+        for (uint32_t t = 0; t < ntokens; ++t) {
+            const int32_t e = ids_data[i * ntokens + t];
+            if (e < 0 || (uint32_t) e >= nexperts) {
+                GGML_LOG_ERROR("HRX2: MUL_MAT_ID Q4NX expert id %d out of range\n", (int) e);
+                hrx_buffer_unmap(device_context->q4nx_ids);
+                return GGML_STATUS_FAILED;
+            }
+            groups[(uint32_t) e].emplace_back(i, t);
+        }
+    }
+
+    if (tbl_route != nullptr) {
+        // grouped path: one dequant + one table-scatter mm per distinct expert
+        std::vector<int32_t> src1_cols;
+        std::vector<int32_t> dst_cols;
+        src1_cols.reserve(ntokens);
+        dst_cols.reserve(ntokens);
+        for (uint32_t e = 0; e < nexperts; ++e) {
+            const auto & group = groups[e];
+            if (group.empty()) continue;
+            if (group.size() == 1) {
+                // single token: keep the proven per-pair path (no table
+                // overhead for decode where every group is size 1)
+                const uint32_t i = group[0].first;
+                const uint32_t t = group[0].second;
+                const uint32_t tile_base = e * tpe;
+                const uint32_t src1_col  = t * k;
+                const uint32_t dst_col   = (i + t * nselected) * rows;
+                if (ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice(
+                        context, src0_ref, src1_ref, dst_ref,
+                        tile_base, tpe, k, rows, /* cols */ 1,
+                        src1_col, dst_col) != GGML_STATUS_SUCCESS) {
+                    hrx_buffer_unmap(device_context->q4nx_ids);
+                    return GGML_STATUS_FAILED;
+                }
+                continue;
+            }
+            src1_cols.clear();
+            dst_cols.clear();
+            for (const auto & pr : group) {
+                src1_cols.push_back((int32_t) pr.second);              // token index
+                dst_cols.push_back((int32_t) (pr.first + pr.second * nselected)); // dst col
+            }
+            const uint32_t tile_base = e * tpe;
+            if (ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_grouped(
+                    context, src0_ref, src1_ref, dst_ref,
+                    tile_base, tpe, k, rows, (uint32_t) group.size(),
+                    ntokens, nselected,
+                    src1_cols.data(), dst_cols.data()) != GGML_STATUS_SUCCESS) {
+                hrx_buffer_unmap(device_context->q4nx_ids);
+                return GGML_STATUS_FAILED;
+            }
+        }
+        hrx_buffer_unmap(device_context->q4nx_ids);
+        return GGML_STATUS_SUCCESS;
+    }
+
+    // fallback: one slice per (selected expert, token) pair
     for (uint32_t i = 0; i < nselected; ++i) {
         for (uint32_t t = 0; t < ntokens; ++t) {
             const int32_t e = ids_data[i * ntokens + t];
