@@ -213,5 +213,10 @@
   "path": "artifacts/mul_mat_f32_f32_ggml_tbl_tiled.loombc",
   "format": "loom-bytecode",
   "storage": "embedded"
+ },
+ "mul_mat_q4nx_fused_f32_bc": {
+  "path": "artifacts/mul_mat_q4nx_fused_f32.loombc",
+  "format": "loom-bytecode",
+  "storage": "embedded"
  }
 }

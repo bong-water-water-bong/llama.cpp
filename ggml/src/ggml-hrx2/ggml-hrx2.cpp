@@ -8277,6 +8277,75 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice(
 // same expert in one dispatch (prefill: dequant work drops from #tokens to
 // #distinct-experts). The mm kernel is hrx2_mul_mat_f32_f32_ggml_tbl_static
 // (5 bindings: b_w, full src1, full dst, src1_cols, dst_cols).
+// Fused Q4NX dequant+matmul for a single (expert slice, token) pair: reads
+// the raw 5120-byte tiles DIRECTLY (no scratch copy, no b_w materialization)
+// and dequants inline in the matmul. Bindings: packed/scales/zeros views of
+// the expert tensor slice + src1 column + dst column. Used for decode
+// (cols=1, every group a single token) where the dequant-write + mm-read of
+// 33.5 MB b_w is 2x the weight traffic the fused kernel needs.
+static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_fused(
+        ggml_backend_hrx2_context * context,
+        const hrx_buffer_ref_t & src0_ref,
+        const hrx_buffer_ref_t & src1_ref,
+        const hrx_buffer_ref_t & dst_ref,
+        uint32_t tile_base,   // first tile (expert offset)
+        uint32_t n_tiles,     // tiles in this slice (tpe)
+        uint32_t k,
+        uint32_t rows,
+        uint32_t src1_col,    // src1 column offset (elements, multiple of k)
+        uint32_t dst_col) {   // dst column offset (elements, multiple of rows)
+    ggml_backend_hrx2_device_context * device_context = context->device_context;
+    const uint32_t wg_size = 256;
+    const uint32_t n_tc    = k / GGML_Q4NX_TILE_COLS;
+
+    const ggml_backend_hrx2_kernel_route * fused_route = nullptr;
+    for (const auto * r : device_context->mul_mat_f32_f32_routes) {
+        if (r->id == "mul_mat_q4nx_fused_f32") { fused_route = r; break; }
+    }
+    if (!fused_route) {
+        return GGML_STATUS_FAILED;  // caller falls back to dequant + mm
+    }
+
+    std::vector<ggml_backend_hrx2_config_binding> cfg;
+    cfg.push_back({"@hrx2.shape.k", std::to_string(k)});
+    cfg.push_back({"@hrx2.shape.rows", std::to_string(rows)});
+    cfg.push_back({"@hrx2.shape.cols", std::to_string(1)});
+    cfg.push_back({"@hrx2.tuning.q4nx.workgroup_size", std::to_string(wg_size)});
+    cfg.push_back({"@hrx2.tuning.q4nx.n_tile_cols", std::to_string(n_tc)});
+    const std::string key = ggml_backend_hrx2_base_cache_key(device_context, fused_route) +
+        "-q4nx-fused-r" + std::to_string(rows) + "-c1-k" + std::to_string(k) +
+        "-tc" + std::to_string(n_tc) + "-wg" + std::to_string(wg_size);
+    auto * fused = ggml_backend_hrx2_get_provider(device_context, fused_route, cfg, key);
+    if (!fused) {
+        return GGML_STATUS_FAILED;
+    }
+    if (fused->route.constant_byte_length != 0) {
+        return GGML_STATUS_FAILED;
+    }
+
+    const size_t slice_bytes = (size_t) n_tiles * 5120;
+    const size_t raw_base = src0_ref.offset + (size_t) tile_base * 5120;
+    hrx_buffer_ref_t bindings[5] = {
+        { src0_ref.buffer, raw_base + 1024, (size_t) n_tiles * 4096 },  // packed
+        { src0_ref.buffer, raw_base,        (size_t) n_tiles * 512  },  // scales
+        { src0_ref.buffer, raw_base + 512,  (size_t) n_tiles * 512  },  // zeros
+        { src1_ref.buffer, src1_ref.offset + (size_t) src1_col * sizeof(float), (size_t) k * sizeof(float) },
+        { dst_ref.buffer,  dst_ref.offset  + (size_t) dst_col  * sizeof(float), (size_t) rows * sizeof(float) },
+    };
+    hrx_dispatch_config_t config = {
+        { rows, 1, 1 },
+        { fused->export_info.workgroup_size[0] ? fused->export_info.workgroup_size[0] : fused->route.workgroup_size[0], 1, 1 },
+        0,
+    };
+    if (!GGML_HRX2_CHECK(hrx_stream_dispatch(
+            context->stream, fused->executable, fused->export_ordinal,
+            &config, nullptr, 0, bindings, 5, HRX_DISPATCH_FLAG_NONE))) {
+        return GGML_STATUS_FAILED;
+    }
+    (void) slice_bytes;
+    return GGML_STATUS_SUCCESS;
+}
+
 static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_grouped(
         ggml_backend_hrx2_context * context,
         const hrx_buffer_ref_t & src0_ref,
@@ -8630,12 +8699,17 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_id_q4nx(
                 const uint32_t tile_base = e * tpe;
                 const uint32_t src1_col  = t * k;
                 const uint32_t dst_col   = (i + t * nselected) * rows;
-                if (ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice(
+                if (ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_fused(
                         context, src0_ref, src1_ref, dst_ref,
-                        tile_base, tpe, k, rows, /* cols */ 1,
+                        tile_base, tpe, k, rows,
                         src1_col, dst_col) != GGML_STATUS_SUCCESS) {
-                    hrx_buffer_unmap(device_context->q4nx_ids);
-                    return GGML_STATUS_FAILED;
+                    if (ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice(
+                            context, src0_ref, src1_ref, dst_ref,
+                            tile_base, tpe, k, rows, /* cols */ 1,
+                            src1_col, dst_col) != GGML_STATUS_SUCCESS) {
+                        hrx_buffer_unmap(device_context->q4nx_ids);
+                        return GGML_STATUS_FAILED;
+                    }
                 }
                 continue;
             }
@@ -8670,11 +8744,16 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_id_q4nx(
             const uint32_t tile_base = (uint32_t) e * tpe;
             const uint32_t src1_col  = t * k;
             const uint32_t dst_col   = (i + t * nselected) * rows;
-            if (ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice(
+            if (ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_fused(
                     context, src0_ref, src1_ref, dst_ref,
-                    tile_base, tpe, k, rows, /* cols */ 1,
+                    tile_base, tpe, k, rows,
                     src1_col, dst_col) != GGML_STATUS_SUCCESS) {
-                return GGML_STATUS_FAILED;
+                if (ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice(
+                        context, src0_ref, src1_ref, dst_ref,
+                        tile_base, tpe, k, rows, /* cols */ 1,
+                        src1_col, dst_col) != GGML_STATUS_SUCCESS) {
+                    return GGML_STATUS_FAILED;
+                }
             }
         }
     }
