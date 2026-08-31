@@ -10818,11 +10818,8 @@ static bool ggml_backend_hrx2_device_supports_op(ggml_backend_dev_t dev, const g
             return true;
         case GGML_OP_MUL_MAT_Q4NX:
             return ggml_backend_hrx2_supports_mul_mat_q4nx_route(ggml_backend_hrx2_get_device_context(dev), op);
-        case GGML_OP_MUL_MAT_ID_Q4NX: {
-            bool ok = ggml_backend_hrx2_supports_mul_mat_id_q4nx_route(ggml_backend_hrx2_get_device_context(dev), op);
-            fprintf(stderr, "HRX2 supports MUL_MAT_ID_Q4NX: %d (op=%s)\n", (int)ok, op->name);
-            return ok;
-        }
+        case GGML_OP_MUL_MAT_ID_Q4NX:
+            return ggml_backend_hrx2_supports_mul_mat_id_q4nx_route(ggml_backend_hrx2_get_device_context(dev), op);
         case GGML_OP_RMS_NORM:
             return ggml_backend_hrx2_supports_rms_norm_route(ggml_backend_hrx2_get_device_context(dev), op);
         case GGML_OP_ADD:
