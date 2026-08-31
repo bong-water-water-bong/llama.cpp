@@ -109,5 +109,8 @@
  },
  "mul_mat_q4nx_fused_f32": {
   "path": "kernels/mul_mat_q4nx_fused_f32.loom"
+ },
+ "mul_mat_q4nx_fused_tbl_tiled": {
+  "path": "kernels/mul_mat_q4nx_fused_tbl_tiled.loom"
  }
 }

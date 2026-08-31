@@ -8390,6 +8390,77 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_grouped(
         return GGML_STATUS_FAILED;
     }
 
+    // PREFER the fused table-scatter tiled mm (round 23): dequant INLINE in
+    // the matmul, reading the raw tiles from b_raw directly — no 33.5 MB b_w
+    // materialization, no separate dequant pass. Falls back to dequant +
+    // tbl-tiled if the route is absent.
+    const ggml_backend_hrx2_kernel_route * fused_tbl_route = nullptr;
+    for (const auto * r : device_context->mul_mat_f32_f32_routes) {
+        if (r->id == "mul_mat_q4nx_fused_tbl_tiled") { fused_tbl_route = r; break; }
+    }
+    if (fused_tbl_route) {
+        std::vector<ggml_backend_hrx2_config_binding> ft_cfg;
+        ft_cfg.push_back({"@hrx2.shape.k", std::to_string(k)});
+        ft_cfg.push_back({"@hrx2.shape.rows", std::to_string(rows)});
+        ft_cfg.push_back({"@hrx2.shape.cols", std::to_string(cols)});
+        ft_cfg.push_back({"@hrx2.shape.ntokens", std::to_string(ntokens)});
+        ft_cfg.push_back({"@hrx2.shape.nselected", std::to_string(nselected)});
+        ft_cfg.push_back({"@hrx2.tuning.q4nx.workgroup_size", std::to_string(wg_size)});
+        ft_cfg.push_back({"@hrx2.tuning.q4nx.n_tile_cols", std::to_string(n_tc)});
+        const std::string ft_key = ggml_backend_hrx2_base_cache_key(device_context, fused_tbl_route) +
+            "-q4nx-ft-r" + std::to_string(rows) + "-c" + std::to_string(cols) +
+            "-k" + std::to_string(k) + "-nt" + std::to_string(ntokens) +
+            "-ns" + std::to_string(nselected) + "-wg" + std::to_string(wg_size);
+        auto * ft = ggml_backend_hrx2_get_provider(device_context, fused_tbl_route, ft_cfg, ft_key);
+        if (ft && ft->route.constant_byte_length == 0) {
+            const uint32_t cols_padded = (cols + 7) / 8 * 8;
+            const size_t tbl_bytes = (size_t) cols_padded * sizeof(int32_t) * 2;
+            if (!ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_tbl, &device_context->q4nx_tbl_cap, tbl_bytes)) {
+                return GGML_STATUS_FAILED;
+            }
+            hrx_buffer_t b_tbl = device_context->q4nx_tbl;
+            std::vector<int32_t> s1c_pad(cols_padded, 0);
+            std::vector<int32_t> dc_pad(cols_padded, 0);
+            for (uint32_t c = 0; c < cols; ++c) {
+                s1c_pad[c] = src1_cols[c];
+                dc_pad[c] = dst_cols[c];
+            }
+            if (!GGML_HRX2_CHECK(hrx_stream_update_buffer(
+                    context->stream, s1c_pad.data(), (size_t) cols_padded * sizeof(int32_t),
+                    b_tbl, 0))) {
+                return GGML_STATUS_FAILED;
+            }
+            if (!GGML_HRX2_CHECK(hrx_stream_update_buffer(
+                    context->stream, dc_pad.data(), (size_t) cols_padded * sizeof(int32_t),
+                    b_tbl, (size_t) cols_padded * sizeof(int32_t)))) {
+                return GGML_STATUS_FAILED;
+            }
+            // bindings: packed/scales/zeros views of b_raw + full src1 + full dst + tables
+            hrx_buffer_ref_t ft_bindings[7] = {
+                { b_raw, 1024, (size_t) n_tiles * 4096 },
+                { b_raw,    0, (size_t) n_tiles * 512  },
+                { b_raw,  512, (size_t) n_tiles * 512  },
+                { src1_ref.buffer, src1_ref.offset, (size_t) k * ntokens * sizeof(float) },
+                { dst_ref.buffer,  dst_ref.offset,  (size_t) rows * nselected * ntokens * sizeof(float) },
+                { b_tbl,  0, (size_t) cols_padded * sizeof(int32_t) },
+                { b_tbl, (size_t) cols_padded * sizeof(int32_t), (size_t) cols_padded * sizeof(int32_t) },
+            };
+            const uint32_t ft_col_groups = (cols + 7) / 8;
+            hrx_dispatch_config_t ft_config = {
+                { rows, ft_col_groups, 1 },
+                { ft->export_info.workgroup_size[0] ? ft->export_info.workgroup_size[0] : ft->route.workgroup_size[0], 1, 1 },
+                0,
+            };
+            if (!GGML_HRX2_CHECK(hrx_stream_dispatch(
+                    context->stream, ft->executable, ft->export_ordinal,
+                    &ft_config, nullptr, 0, ft_bindings, 7, HRX_DISPATCH_FLAG_NONE))) {
+                return GGML_STATUS_FAILED;
+            }
+            return GGML_STATUS_SUCCESS;
+        }
+        // fall through to dequant + tbl-tiled if provider unavailable
+    }
+
     // dequant provider (q4nx_dequant_f32 route)
     const ggml_backend_hrx2_kernel_route * deq_route = device_context->q4nx_dequant_routes.front();
     std::vector<ggml_backend_hrx2_config_binding> deq_cfg;
