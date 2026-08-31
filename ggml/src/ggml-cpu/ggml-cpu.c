@@ -3007,25 +3007,6 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
         if (node_n + 1 < cgraph->n_nodes) {
             ggml_barrier(state->threadpool);
         }
-
-        // post-barrier dump: node->data is complete on all threads here
-        if (state->ith == 0 && getenv("ZAYA_DUMP") && node->name) {
-            static int dump_count = 0;
-            const char * want = getenv("ZAYA_DUMP");
-            if (strstr(node->name, want)) {
-                size_t nb = ggml_nbytes(node);
-                bool nonzero = false;
-                const uint8_t * p = (const uint8_t *) node->data;
-                for (size_t i = 0; i < nb; ++i) { if (p[i]) { nonzero = true; break; } }
-                if (nonzero) {
-                    dump_count++;
-                    char fname[64];
-                    snprintf(fname, sizeof(fname), "/tmp/zcpu_%02d_%s.bin", dump_count, node->name);
-                    FILE * f = fopen(fname, "wb");
-                    if (f) { fwrite(node->data, 1, nb, f); fclose(f); }
-                }
-            }
-        }
     }
 
 #ifdef GGML_USE_OPENMP

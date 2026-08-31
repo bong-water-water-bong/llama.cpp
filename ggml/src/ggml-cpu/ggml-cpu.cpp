@@ -437,6 +437,11 @@ static bool ggml_backend_cpu_device_supports_op(ggml_backend_dev_t dev, const st
     }
 
     switch (op->op) {
+        case GGML_OP_MUL_MAT_Q4NX:
+        case GGML_OP_MUL_MAT_ID_Q4NX:
+            // 1bit-MONSTER: Q4NX ops run only on the HRX2 backend
+            // (tile-major weights live in HRX device memory).
+            return false;
         case GGML_OP_CPY:
         case GGML_OP_SET_ROWS:
             return

@@ -590,6 +590,10 @@ extern "C" {
                               // (each 8192-elem row = one 5120-byte tile) x
                               // src1 F32 [256, cols] -> F32 [n_tiles*32, cols]
 
+        GGML_OP_MUL_MAT_ID_Q4NX, // 1bit-MONSTER: src0 GGML_TYPE_Q4NX 3-D
+                                 // [8192, tiles_per_expert, n_expert] x src1 F32
+                                 // [k, ntokens] with expert ids src2 [nsel, ntokens]
+
         GGML_OP_COUNT,
     };
 
@@ -1435,6 +1439,13 @@ extern "C" {
             struct ggml_context * ctx, struct ggml_tensor * a, struct ggml_tensor * b);
 
     GGML_API struct ggml_tensor * ggml_mul_mat_id(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * as,
+            struct ggml_tensor  * b,
+            struct ggml_tensor  * ids);
+
+    // 1bit-MONSTER: Q4NX expert matmul (src0 tile-major 3-D, ids selects)
+    GGML_API struct ggml_tensor * ggml_mul_mat_id_q4nx(
             struct ggml_context * ctx,
             struct ggml_tensor  * as,
             struct ggml_tensor  * b,

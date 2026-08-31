@@ -1072,9 +1072,10 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
 
     "GLU",
     "MUL_MAT_Q4NX",
+    "MUL_MAT_ID_Q4NX",
 };
 
-static_assert(GGML_OP_COUNT == 97, "GGML_OP_COUNT != 97");
+static_assert(GGML_OP_COUNT == 98, "GGML_OP_COUNT != 98");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1183,9 +1184,10 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
 
     "glu(x)",
     "Q4NX*",
+    "Q4NX_ID*",
 };
 
-static_assert(GGML_OP_COUNT == 97, "GGML_OP_COUNT != 97");
+static_assert(GGML_OP_COUNT == 98, "GGML_OP_COUNT != 98");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -3324,13 +3326,55 @@ struct ggml_tensor * ggml_mul_mat_id(
     GGML_ASSERT(b->ne[3] == 1); // b is 3d
     GGML_ASSERT(ids->ne[2] == 1 && ids->ne[3] == 1); // ids is 2d
     GGML_ASSERT(ids->ne[1] == b->ne[2]); // must have an expert list per b row
-    GGML_ASSERT(as->ne[0] == b->ne[0]); // can_mul_mat
     GGML_ASSERT(ids->ne[0] % b->ne[1] == 0); // can broadcast
+
+    // 1bit-MONSTER: Q4NX expert weights are stored tile-major 3-D
+    // [8192, tiles_per_expert, n_expert]; as->ne[0] is the tile block size
+    // (8192), not the logical k-dim, so the ne[0] equality check does not
+    // apply; route to the Q4NX-aware ID op.
+    if (as->type == GGML_TYPE_Q4NX) {
+        return ggml_mul_mat_id_q4nx(ctx, as, b, ids);
+    }
+
+    GGML_ASSERT(as->ne[0] == b->ne[0]); // can_mul_mat
 
     const int64_t ne[4] = { as->ne[1], ids->ne[0], b->ne[2], 1 };
     struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
 
     result->op     = GGML_OP_MUL_MAT_ID;
+    result->src[0] = as;
+    result->src[1] = b;
+    result->src[2] = ids;
+
+    return result;
+}
+
+struct ggml_tensor * ggml_mul_mat_id_q4nx(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * as,
+        struct ggml_tensor  * b,
+        struct ggml_tensor  * ids) {
+    // 1bit-MONSTER Q4NX expert matmul: as is GGML_TYPE_Q4NX stored 3-D
+    // tile-major [8192, tiles_per_expert, n_expert] (each 8192-elem row =
+    // one 5120-byte tile; tiles of one expert are contiguous). b is the F32
+    // activation [k, ntokens] (k = logical in, multiple of 256), ids is the
+    // per-token expert selection [nselected, ntokens]. The dispatch
+    // dequantizes the selected experts and runs the f32 matmul. Result F32
+    // [tpe/n_tc*32, nselected, ntokens].
+    GGML_ASSERT(as->type == GGML_TYPE_Q4NX);
+    GGML_ASSERT(as->ne[0] == GGML_Q4NX_TILE_COLS * GGML_Q4NX_TILE_ROWS); // 8192
+    GGML_ASSERT(b->type == GGML_TYPE_F32);
+    GGML_ASSERT(b->ne[0] % GGML_Q4NX_TILE_COLS == 0);
+    GGML_ASSERT(!ggml_is_transposed(as) && !ggml_is_transposed(b));
+
+    const int64_t n_tc  = b->ne[0] / GGML_Q4NX_TILE_COLS; // column tiles
+    const int64_t tpe   = as->ne[1];                       // tiles per expert
+    GGML_ASSERT(n_tc >= 1 && tpe % n_tc == 0);
+    const int64_t rows  = (tpe / n_tc) * GGML_Q4NX_TILE_ROWS;
+    const int64_t ne[4] = { rows, ids->ne[0], b->ne[2], 1 };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    result->op     = GGML_OP_MUL_MAT_ID_Q4NX;
     result->src[0] = as;
     result->src[1] = b;
     result->src[2] = ids;
