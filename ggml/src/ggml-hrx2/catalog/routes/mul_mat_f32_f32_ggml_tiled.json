@@ -1,18 +1,18 @@
 [
  {
-  "id": "mul_mat_f32_f32_ggml_tbl",
+  "id": "mul_mat_f32_f32_ggml_tiled",
   "family": "mul_mat_f32_f32",
   "op": "MUL_MAT",
   "target_key": "",
-  "source_id": "mul_mat_f32_f32_ggml_tbl",
-  "artifact_id": "mul_mat_f32_f32_ggml_tbl_bc",
-  "root_symbol": "@hrx2_mul_mat_f32_f32_ggml_tbl_static",
-  "export_name": "hrx2_mul_mat_f32_f32_ggml_tbl_static",
+  "source_id": "mul_mat_f32_f32_ggml_tiled",
+  "artifact_id": "mul_mat_f32_f32_ggml_tiled_bc",
+  "root_symbol": "@hrx2_mul_mat_f32_f32_ggml_tiled_static",
+  "export_name": "hrx2_mul_mat_f32_f32_ggml_tiled_static",
   "loader_format": "amdgpu-hsaco",
-  "priority": 111,
+  "priority": 112,
   "abi": {
-   "binding_count": 5,
-   "parameter_count": 5,
+   "binding_count": 3,
+   "parameter_count": 3,
    "constant_byte_length": 0
   },
   "dispatch": {
@@ -22,7 +22,7 @@
     1
    ],
    "rows_per_workgroup": 1,
-   "cols_per_workgroup": 1
+   "cols_per_workgroup": 8
   },
   "shape_domain": {
    "name": "generic",
@@ -52,10 +52,6 @@
     {
      "key": "@hrx2.tuning.workgroup_size",
      "value": "256"
-    },
-    {
-     "key": "@hrx2.shape.use_col_tables",
-     "value": "1"
     }
    ]
   },

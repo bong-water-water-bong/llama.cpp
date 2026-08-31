@@ -218,5 +218,5 @@
  "swiglu_f32_split_large_n13824_32768_r512_wg256",
  "q4nx_dequant_f32",
  "mul_mat_f32_f32_ggml",
- "mul_mat_f32_f32_ggml_tbl"
+ "mul_mat_f32_f32_ggml_tiled"
 ]

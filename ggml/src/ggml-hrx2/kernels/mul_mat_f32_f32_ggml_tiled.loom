@@ -1,0 +1,226 @@
+config.decl @hrx2.shape.k : %value: index where [range(%value, 1, 8192)]
+config.decl @hrx2.shape.rows : %value: index where [range(%value, 1, 8192)]
+config.decl @hrx2.shape.cols : %value: index where [range(%value, 1, 512)]
+config.decl @hrx2.tuning.workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
+
+// ggml-layout f32 matmul, 8 output columns per workgroup. Same math as
+// hrx2_mul_mat_f32_f32_ggml_static (src1 [k, cols] ggml col-major, dst
+// [rows, cols] ggml col-major, src0 row-major [rows, k]) but each workgroup
+// computes ONE row across EIGHT columns: the src0 row is loaded once and
+// reused by 8 accumulators, so dequantized-weight traffic drops ~8x
+// (prefill attention cols=32 and grouped MoE were re-reading src0 once per
+// output column). Columns past %cols are statically guarded (JIT knows
+// cols), so cols=1 decode keeps the same traffic as the naive kernel.
+kernel.def export("hrx2_mul_mat_f32_f32_ggml_tiled_static") @hrx2_mul_mat_f32_f32_ggml_tiled_static() {
+  %unit = index.constant 1 : index
+  %rows = config.get @hrx2.shape.rows : index
+  %cols = config.get @hrx2.shape.cols : index
+  %workgroup_size = config.get @hrx2.tuning.workgroup_size : index
+  %seven = index.constant 7 : index
+  %eight = index.constant 8 : index
+  %col_groups_round = index.add %cols, %seven : index
+  %col_groups = index.div %col_groups_round, %eight : index
+  kernel.launch.config workgroups(%rows, %col_groups, %unit) workgroup_size(%workgroup_size, %unit, %unit) : index
+} launch(%src0: buffer, %src1: buffer, %dst: buffer) {
+  %base = index.constant 0 : offset
+  %zero_f32 = scalar.constant 0.0 : f32
+  %zero_i32 = scalar.constant 0 : i32
+  %zero = index.constant 0 : index
+  %unit = index.constant 1 : index
+  %two = index.constant 2 : index
+  %four = index.constant 4 : index
+  %seven = index.constant 7 : index
+  %eight = index.constant 8 : index
+
+  %k = config.get @hrx2.shape.k : index
+  %rows = config.get @hrx2.shape.rows : index
+  %cols = config.get @hrx2.shape.cols : index
+  %workgroup_size = config.get @hrx2.tuning.workgroup_size : index
+  %k_bounded = index.assume %k [range(%k, 1, 8192)] : index
+  %rows_bounded = index.assume %rows [range(%rows, 1, 8192)] : index
+  %cols_bounded = index.assume %cols [range(%cols, 1, 512)] : index
+
+  %row0 = kernel.workgroup.id<x> : index
+  %row = index.assume %row0 [range(%row0, 0, 8191)] : index
+  %cg0 = kernel.workgroup.id<y> : index
+  %col_block0 = index.mul %cg0, %eight : index
+  %col_block = index.assume %col_block0 [range(%col_block0, 0, 511)] : index
+  %lane0 = kernel.workitem.id<x> : index
+  %lane = index.assume %lane0 [range(%lane0, 0, 1023)] : index
+
+  %src0_count = index.mul %rows_bounded, %k_bounded : index
+  %src1_count = index.mul %k_bounded, %cols_bounded : index
+  %dst_count = index.mul %rows_bounded, %cols_bounded : index
+
+  %src0_global = buffer.assume.memory_space<global> %src0 : buffer
+  %src1_global = buffer.assume.memory_space<global> %src1 : buffer
+  %dst_global = buffer.assume.memory_space<global> %dst : buffer
+  %src0_noalias, %src1_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %src1_global, %dst_global : buffer, buffer, buffer
+  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_count]xf32>
+  %src1_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_count]xf32>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32>
+
+  // absolute column for each of the 8 slots, and whether it is < cols
+  %c0 = index.add %col_block, %zero : index
+  %c1 = index.add %col_block, %unit : index
+  %c2 = index.add %col_block, %two : index
+  %c3 = index.add %c2, %unit : index
+  %c4 = index.add %c3, %unit : index
+  %c5 = index.add %c4, %unit : index
+  %c6 = index.add %c5, %unit : index
+  %c7 = index.add %c6, %unit : index
+  %v0 = index.cmp ult, %c0, %cols_bounded : index
+  %v1 = index.cmp ult, %c1, %cols_bounded : index
+  %v2 = index.cmp ult, %c2, %cols_bounded : index
+  %v3 = index.cmp ult, %c3, %cols_bounded : index
+  %v4 = index.cmp ult, %c4, %cols_bounded : index
+  %v5 = index.cmp ult, %c5, %cols_bounded : index
+  %v6 = index.cmp ult, %c6, %cols_bounded : index
+  %v7 = index.cmp ult, %c7, %cols_bounded : index
+
+  %src0_row_base = index.mul %row, %k_bounded : index
+  %s1b0 = index.mul %c0, %k_bounded : index
+  %s1b1 = index.mul %c1, %k_bounded : index
+  %s1b2 = index.mul %c2, %k_bounded : index
+  %s1b3 = index.mul %c3, %k_bounded : index
+  %s1b4 = index.mul %c4, %k_bounded : index
+  %s1b5 = index.mul %c5, %k_bounded : index
+  %s1b6 = index.mul %c6, %k_bounded : index
+  %s1b7 = index.mul %c7, %k_bounded : index
+  %db0 = index.mul %c0, %rows_bounded : index
+  %db1 = index.mul %c1, %rows_bounded : index
+  %db2 = index.mul %c2, %rows_bounded : index
+  %db3 = index.mul %c3, %rows_bounded : index
+  %db4 = index.mul %c4, %rows_bounded : index
+  %db5 = index.mul %c5, %rows_bounded : index
+  %db6 = index.mul %c6, %rows_bounded : index
+  %db7 = index.mul %c7, %rows_bounded : index
+
+  %sum0, %sum1, %sum2, %sum3, %sum4, %sum5, %sum6, %sum7 =
+    scf.for %i = [%lane to %k_bounded step %workgroup_size](
+        %acc0 = %zero_f32, %acc1 = %zero_f32, %acc2 = %zero_f32, %acc3 = %zero_f32,
+        %acc4 = %zero_f32, %acc5 = %zero_f32, %acc6 = %zero_f32, %acc7 = %zero_f32 :
+        f32, f32, f32, f32, f32, f32, f32, f32) -> (f32, f32, f32, f32, f32, f32, f32, f32) {
+    %src0_index = index.add %src0_row_base, %i : index
+    %a = view.load %src0_view[%src0_index] : view<[%src0_count]xf32> -> f32
+    %r0 = index.add %s1b0, %i : index
+    %r1 = index.add %s1b1, %i : index
+    %r2 = index.add %s1b2, %i : index
+    %r3 = index.add %s1b3, %i : index
+    %r4 = index.add %s1b4, %i : index
+    %r5 = index.add %s1b5, %i : index
+    %r6 = index.add %s1b6, %i : index
+    %r7 = index.add %s1b7, %i : index
+    %n0 = scf.if %v0 -> (f32) {
+      %b0 = view.load %src1_view[%r0] : view<[%src1_count]xf32> -> f32
+      %p0 = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b0 : f32
+      %q0 = scalar.addf<reassoc|nnan|ninf|nsz> %acc0, %p0 : f32
+      scf.yield %q0 : f32
+    } else {
+      scf.yield %acc0 : f32
+    }
+    %n1 = scf.if %v1 -> (f32) {
+      %b1 = view.load %src1_view[%r1] : view<[%src1_count]xf32> -> f32
+      %p1 = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b1 : f32
+      %q1 = scalar.addf<reassoc|nnan|ninf|nsz> %acc1, %p1 : f32
+      scf.yield %q1 : f32
+    } else {
+      scf.yield %acc1 : f32
+    }
+    %n2 = scf.if %v2 -> (f32) {
+      %b2 = view.load %src1_view[%r2] : view<[%src1_count]xf32> -> f32
+      %p2 = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b2 : f32
+      %q2 = scalar.addf<reassoc|nnan|ninf|nsz> %acc2, %p2 : f32
+      scf.yield %q2 : f32
+    } else {
+      scf.yield %acc2 : f32
+    }
+    %n3 = scf.if %v3 -> (f32) {
+      %b3 = view.load %src1_view[%r3] : view<[%src1_count]xf32> -> f32
+      %p3 = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b3 : f32
+      %q3 = scalar.addf<reassoc|nnan|ninf|nsz> %acc3, %p3 : f32
+      scf.yield %q3 : f32
+    } else {
+      scf.yield %acc3 : f32
+    }
+    %n4 = scf.if %v4 -> (f32) {
+      %b4 = view.load %src1_view[%r4] : view<[%src1_count]xf32> -> f32
+      %p4 = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b4 : f32
+      %q4 = scalar.addf<reassoc|nnan|ninf|nsz> %acc4, %p4 : f32
+      scf.yield %q4 : f32
+    } else {
+      scf.yield %acc4 : f32
+    }
+    %n5 = scf.if %v5 -> (f32) {
+      %b5 = view.load %src1_view[%r5] : view<[%src1_count]xf32> -> f32
+      %p5 = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b5 : f32
+      %q5 = scalar.addf<reassoc|nnan|ninf|nsz> %acc5, %p5 : f32
+      scf.yield %q5 : f32
+    } else {
+      scf.yield %acc5 : f32
+    }
+    %n6 = scf.if %v6 -> (f32) {
+      %b6 = view.load %src1_view[%r6] : view<[%src1_count]xf32> -> f32
+      %p6 = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b6 : f32
+      %q6 = scalar.addf<reassoc|nnan|ninf|nsz> %acc6, %p6 : f32
+      scf.yield %q6 : f32
+    } else {
+      scf.yield %acc6 : f32
+    }
+    %n7 = scf.if %v7 -> (f32) {
+      %b7 = view.load %src1_view[%r7] : view<[%src1_count]xf32> -> f32
+      %p7 = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b7 : f32
+      %q7 = scalar.addf<reassoc|nnan|ninf|nsz> %acc7, %p7 : f32
+      scf.yield %q7 : f32
+    } else {
+      scf.yield %acc7 : f32
+    }
+    scf.yield %n0, %n1, %n2, %n3, %n4, %n5, %n6, %n7 : f32, f32, f32, f32, f32, f32, f32, f32
+  }
+  %dot0 = kernel.workgroup.reduce<addf> %sum0 : f32
+  %dot1 = kernel.workgroup.reduce<addf> %sum1 : f32
+  %dot2 = kernel.workgroup.reduce<addf> %sum2 : f32
+  %dot3 = kernel.workgroup.reduce<addf> %sum3 : f32
+  %dot4 = kernel.workgroup.reduce<addf> %sum4 : f32
+  %dot5 = kernel.workgroup.reduce<addf> %sum5 : f32
+  %dot6 = kernel.workgroup.reduce<addf> %sum6 : f32
+  %dot7 = kernel.workgroup.reduce<addf> %sum7 : f32
+
+  %dst0 = index.add %db0, %row : index
+  %dst1 = index.add %db1, %row : index
+  %dst2 = index.add %db2, %row : index
+  %dst3 = index.add %db3, %row : index
+  %dst4 = index.add %db4, %row : index
+  %dst5 = index.add %db5, %row : index
+  %dst6 = index.add %db6, %row : index
+  %dst7 = index.add %db7, %row : index
+  %lane_i32 = index.cast %lane : index to i32
+  %is_lane0 = scalar.cmpi eq, %lane_i32, %zero_i32 : i32
+  scf.if %is_lane0 {
+    scf.if %v0 {
+      view.store %dot0, %dst_view[%dst0] : f32, view<[%dst_count]xf32>
+    }
+    scf.if %v1 {
+      view.store %dot1, %dst_view[%dst1] : f32, view<[%dst_count]xf32>
+    }
+    scf.if %v2 {
+      view.store %dot2, %dst_view[%dst2] : f32, view<[%dst_count]xf32>
+    }
+    scf.if %v3 {
+      view.store %dot3, %dst_view[%dst3] : f32, view<[%dst_count]xf32>
+    }
+    scf.if %v4 {
+      view.store %dot4, %dst_view[%dst4] : f32, view<[%dst_count]xf32>
+    }
+    scf.if %v5 {
+      view.store %dot5, %dst_view[%dst5] : f32, view<[%dst_count]xf32>
+    }
+    scf.if %v6 {
+      view.store %dot6, %dst_view[%dst6] : f32, view<[%dst_count]xf32>
+    }
+    scf.if %v7 {
+      view.store %dot7, %dst_view[%dst7] : f32, view<[%dst_count]xf32>
+    }
+  }
+  kernel.return
+}

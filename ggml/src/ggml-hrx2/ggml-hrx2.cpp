@@ -103,8 +103,6 @@ struct ggml_backend_hrx2_device_context {
     size_t q4nx_w_cap = 0;
     hrx_buffer_t q4nx_ids = nullptr;   // host-visible scratch for MUL_MAT_ID_Q4NX ids
     size_t q4nx_ids_cap = 0;
-    hrx_buffer_t q4nx_tbl = nullptr;   // host-visible scratch for MUL_MAT_ID_Q4NX col tables
-    size_t q4nx_tbl_cap = 0;
     // Grown-out q4nx scratch buffers, freed only after a stream sync. The
     // kernels reading q4nx_scl/q4nx_w/q4nx_ids are async on the stream; the
     // allocator unmaps/recycles a released buffer immediately, so releasing on
@@ -204,7 +202,6 @@ struct ggml_backend_hrx2_reg_context {
             if (device_context->q4nx_scl) hrx_buffer_release(device_context->q4nx_scl);
             if (device_context->q4nx_w)   hrx_buffer_release(device_context->q4nx_w);
             if (device_context->q4nx_ids) hrx_buffer_release(device_context->q4nx_ids);
-            if (device_context->q4nx_tbl) hrx_buffer_release(device_context->q4nx_tbl);
             for (hrx_buffer_t b : device_context->q4nx_retired) hrx_buffer_release(b);
             device_context->q4nx_retired.clear();
             if (device_context->device) {
@@ -8108,6 +8105,83 @@ static bool ggml_backend_hrx2_supports_mul_mat_q4nx_route(
 }
 
 // Q4NX slice helper: dequant tiles [tile_base, tile_base+n_tiles) of src0 and
+// f32 matmul against src1 columns [src1_col, src1_col+cols), writing into
+// dst columns [dst_col, dst_col+cols). b_w holds the dequantized weight
+// [rows, k]. Shared by the whole-tensor and per-slot MUL_MAT_ID paths.
+static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_mm(
+        ggml_backend_hrx2_context * context,
+        hrx_buffer_t b_w,
+        size_t w_bytes,
+        const hrx_buffer_ref_t & src1_ref,
+        const hrx_buffer_ref_t & dst_ref,
+        uint32_t k,
+        uint32_t rows,
+        uint32_t cols,
+        uint32_t src1_col,    // src1 column offset (elements, multiple of k)
+        uint32_t dst_col) {   // dst column offset (elements, multiple of rows)
+    ggml_backend_hrx2_device_context * device_context = context->device_context;
+    const uint32_t wg_size = 256;
+
+    // f32 matmul provider: for cols >= 8 prefer the 8-column tiled route
+    // (each workgroup computes one row across 8 columns, so dequantized-
+    // weight reads drop ~8x); for cols < 8 (decode) the naive per-column
+    // route has no wasted lanes and is faster.
+    const ggml_backend_hrx2_kernel_route * mm_route = nullptr;
+    if (cols >= 8) {
+        for (const auto * r : device_context->mul_mat_f32_f32_routes) {
+            if (r->id == "mul_mat_f32_f32_ggml_tiled") { mm_route = r; break; }
+        }
+    }
+    if (!mm_route) {
+        for (const auto * r : device_context->mul_mat_f32_f32_routes) {
+            if (r->id == "mul_mat_f32_f32_ggml") { mm_route = r; break; }
+        }
+    }
+    if (!mm_route) {
+        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX: mul_mat_f32_f32_ggml[_tiled] route missing\n");
+        return GGML_STATUS_FAILED;
+    }
+    std::vector<ggml_backend_hrx2_config_binding> mm_cfg;
+    mm_cfg.push_back({"@hrx2.shape.k", std::to_string(k)});
+    mm_cfg.push_back({"@hrx2.shape.rows", std::to_string(rows)});
+    mm_cfg.push_back({"@hrx2.shape.cols", std::to_string(cols)});
+    mm_cfg.push_back({"@hrx2.tuning.workgroup_size", std::to_string(wg_size)});
+    const std::string mm_key = ggml_backend_hrx2_base_cache_key(device_context, mm_route) +
+        "-q4nx-mm-r" + std::to_string(rows) + "-c" + std::to_string(cols) +
+        "-k" + std::to_string(k) + "-wg" + std::to_string(wg_size);
+    auto * mm = ggml_backend_hrx2_get_provider(device_context, mm_route, mm_cfg, mm_key);
+    if (!mm) {
+        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX f32 provider unavailable\n");
+        return GGML_STATUS_FAILED;
+    }
+    if (mm->route.constant_byte_length != 0) {
+        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX f32 route has unsupported constants\n");
+        return GGML_STATUS_FAILED;
+    }
+
+    hrx_buffer_ref_t mm_bindings[3] = {
+        { b_w,    0, w_bytes },
+        { src1_ref.buffer, src1_ref.offset + (size_t) src1_col * sizeof(float), (size_t) cols * k * sizeof(float) },
+        { dst_ref.buffer,  dst_ref.offset  + (size_t) dst_col  * sizeof(float), (size_t) cols * rows * sizeof(float) },
+    };
+    // tiled route launches (rows, ceil(cols/8)) workgroups; the naive route
+    // launches (rows, cols)
+    const uint32_t mm_cols = (mm_route->id == "mul_mat_f32_f32_ggml_tiled") ? (cols + 7) / 8 : cols;
+    hrx_dispatch_config_t mm_config = {
+        { rows, mm_cols, 1 },
+        { mm->export_info.workgroup_size[0] ? mm->export_info.workgroup_size[0] : mm->route.workgroup_size[0], 1, 1 },
+        0,
+    };
+    if (!GGML_HRX2_CHECK(hrx_stream_dispatch(
+            context->stream, mm->executable, mm->export_ordinal,
+            &mm_config, nullptr, 0, mm_bindings, 3, HRX_DISPATCH_FLAG_NONE))) {
+        return GGML_STATUS_FAILED;
+    }
+
+    return GGML_STATUS_SUCCESS;
+}
+
+// Q4NX slice helper: dequant tiles [tile_base, tile_base+n_tiles) of src0 and
 // run the f32 matmul against src1 columns [src1_col, src1_col+cols), writing
 // into dst columns [dst_col, dst_col+cols). Used by both the 2-D MUL_MAT_Q4NX
 // (whole tensor) and MUL_MAT_ID_Q4NX (one expert per call).
@@ -8189,50 +8263,8 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice(
         return GGML_STATUS_FAILED;
     }
 
-    // f32 matmul provider: the ggml-layout route
-    const ggml_backend_hrx2_kernel_route * mm_route = nullptr;
-    for (const auto * r : device_context->mul_mat_f32_f32_routes) {
-        if (r->id == "mul_mat_f32_f32_ggml") { mm_route = r; break; }
-    }
-    if (!mm_route) {
-        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX: mul_mat_f32_f32_ggml route missing\n");
-        return GGML_STATUS_FAILED;
-    }
-    std::vector<ggml_backend_hrx2_config_binding> mm_cfg;
-    mm_cfg.push_back({"@hrx2.shape.k", std::to_string(k)});
-    mm_cfg.push_back({"@hrx2.shape.rows", std::to_string(rows)});
-    mm_cfg.push_back({"@hrx2.shape.cols", std::to_string(cols)});
-    mm_cfg.push_back({"@hrx2.tuning.workgroup_size", std::to_string(wg_size)});
-    const std::string mm_key = ggml_backend_hrx2_base_cache_key(device_context, mm_route) +
-        "-q4nx-mm-r" + std::to_string(rows) + "-c" + std::to_string(cols) +
-        "-k" + std::to_string(k) + "-wg" + std::to_string(wg_size);
-    auto * mm = ggml_backend_hrx2_get_provider(device_context, mm_route, mm_cfg, mm_key);
-    if (!mm) {
-        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX f32 provider unavailable\n");
-        return GGML_STATUS_FAILED;
-    }
-    if (mm->route.constant_byte_length != 0) {
-        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX f32 route has unsupported constants\n");
-        return GGML_STATUS_FAILED;
-    }
-
-    hrx_buffer_ref_t mm_bindings[3] = {
-        { b_w,    0, w_bytes },
-        { src1_ref.buffer, src1_ref.offset + (size_t) src1_col * sizeof(float), (size_t) cols * k * sizeof(float) },
-        { dst_ref.buffer,  dst_ref.offset  + (size_t) dst_col  * sizeof(float), (size_t) cols * rows * sizeof(float) },
-    };
-    hrx_dispatch_config_t mm_config = {
-        { rows, cols, 1 },
-        { mm->export_info.workgroup_size[0] ? mm->export_info.workgroup_size[0] : mm->route.workgroup_size[0], 1, 1 },
-        0,
-    };
-    if (!GGML_HRX2_CHECK(hrx_stream_dispatch(
-            context->stream, mm->executable, mm->export_ordinal,
-            &mm_config, nullptr, 0, mm_bindings, 3, HRX_DISPATCH_FLAG_NONE))) {
-        return GGML_STATUS_FAILED;
-    }
-
-    return GGML_STATUS_SUCCESS;
+    return ggml_backend_hrx2_dispatch_mul_mat_q4nx_mm(
+        context, b_w, w_bytes, src1_ref, dst_ref, k, rows, cols, src1_col, dst_col);
 }
 
 // Grouped Q4NX slice: dequant tiles [tile_base, tile_base+n_tiles) of src0
@@ -8252,10 +8284,12 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_grouped(
         uint32_t k,           // logical in width
         uint32_t rows,        // output rows
         uint32_t cols,        // group size (number of tokens on this expert)
-        uint32_t ntokens,     // total tokens in the MUL_MAT_ID (for src1/dst extents)
-        uint32_t nselected,   // total selected per token (for dst extents)
+        uint32_t ntokens,     // total tokens in the MUL_MAT_ID (unused; kept for signature stability)
+        uint32_t nselected,   // total selected per token (unused; kept for signature stability)
         const int32_t * src1_cols,  // src1 column (token index) per group slot
         const int32_t * dst_cols) { // dst column (i + t*nselected) per group slot
+    (void) ntokens;
+    (void) nselected;
     ggml_backend_hrx2_device_context * device_context = context->device_context;
     const uint32_t n_tc    = k / GGML_Q4NX_TILE_COLS;
     const uint32_t wg_size = 256;
@@ -8268,18 +8302,15 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_grouped(
         ggml_backend_hrx2_json_kv("n_tiles", std::to_string(n_tiles)) + "," +
         ggml_backend_hrx2_json_kv("tile_base", std::to_string(tile_base)));
 
-    // scratch: one raw tile-major blob + dequant out + two i32 col tables
+    // scratch: one raw tile-major blob + dequant out
     const size_t raw_bytes = (size_t) n_tiles * 5120;
     const size_t w_bytes   = (size_t) rows * k * sizeof(float);
-    const size_t tbl_bytes = (size_t) cols * sizeof(int32_t);
     if (!ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_scl, &device_context->q4nx_scl_cap, raw_bytes) ||
-        !ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_w,   &device_context->q4nx_w_cap,   w_bytes) ||
-        !ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_tbl, &device_context->q4nx_tbl_cap, 2 * tbl_bytes)) {
+        !ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_w,   &device_context->q4nx_w_cap,   w_bytes)) {
         return GGML_STATUS_FAILED;
     }
     hrx_buffer_t b_raw = device_context->q4nx_scl;
     hrx_buffer_t b_w   = device_context->q4nx_w;
-    hrx_buffer_t b_tbl = device_context->q4nx_tbl;
 
     // ONE stream copy for the whole slice (expert tiles are contiguous).
     if (!GGML_HRX2_CHECK(hrx_stream_copy_buffer(
@@ -8321,66 +8352,21 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_grouped(
         return GGML_STATUS_FAILED;
     }
 
-    // upload the two i32 column tables (async h2d on the same stream, so they
-    // are ordered before the mm kernel reads them)
-    if (!GGML_HRX2_CHECK(hrx_stream_copy_h2d(
-            context->stream, src1_cols, b_tbl, 0, tbl_bytes)) ||
-        !GGML_HRX2_CHECK(hrx_stream_copy_h2d(
-            context->stream, dst_cols, b_tbl, tbl_bytes, tbl_bytes))) {
-        return GGML_STATUS_FAILED;
-    }
-
-    // f32 matmul provider: the table-scatter ggml-layout route
-    const ggml_backend_hrx2_kernel_route * mm_route = nullptr;
-    for (const auto * r : device_context->mul_mat_f32_f32_routes) {
-        if (r->id == "mul_mat_f32_f32_ggml_tbl") { mm_route = r; break; }
-    }
-    if (!mm_route) {
-        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX: mul_mat_f32_f32_ggml_tbl route missing\n");
-        return GGML_STATUS_FAILED;
-    }
-    const uint32_t src1_count = k * ntokens;             // full src1 tensor extent
-    const uint32_t dst_count  = rows * nselected * ntokens; // full dst tensor extent
-    std::vector<ggml_backend_hrx2_config_binding> mm_cfg;
-    mm_cfg.push_back({"@hrx2.shape.k", std::to_string(k)});
-    mm_cfg.push_back({"@hrx2.shape.rows", std::to_string(rows)});
-    mm_cfg.push_back({"@hrx2.shape.cols", std::to_string(cols)});
-    mm_cfg.push_back({"@hrx2.shape.src1_count", std::to_string(src1_count)});
-    mm_cfg.push_back({"@hrx2.shape.dst_count", std::to_string(dst_count)});
-    mm_cfg.push_back({"@hrx2.tuning.workgroup_size", std::to_string(wg_size)});
-    mm_cfg.push_back({"@hrx2.shape.use_col_tables", "1"});
-    const std::string mm_key = ggml_backend_hrx2_base_cache_key(device_context, mm_route) +
-        "-q4nx-tbl-r" + std::to_string(rows) + "-c" + std::to_string(cols) +
-        "-k" + std::to_string(k) + "-s1" + std::to_string(src1_count) +
-        "-d" + std::to_string(dst_count) + "-wg" + std::to_string(wg_size);
-    auto * mm = ggml_backend_hrx2_get_provider(device_context, mm_route, mm_cfg, mm_key);
-    if (!mm) {
-        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX tbl f32 provider unavailable\n");
-        return GGML_STATUS_FAILED;
-    }
-    if (mm->route.constant_byte_length != 0) {
-        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX tbl f32 route has unsupported constants\n");
-        return GGML_STATUS_FAILED;
-    }
-
-    hrx_buffer_ref_t mm_bindings[5] = {
-        { b_w,    0, w_bytes },
-        // full src1/dst: the tables select arbitrary columns, so bind the
-        // whole tensors and let the kernel index through the table values
-        { src1_ref.buffer, src1_ref.offset, (size_t) src1_count * sizeof(float) },
-        { dst_ref.buffer,  dst_ref.offset,  (size_t) dst_count  * sizeof(float) },
-        { b_tbl, 0, tbl_bytes },
-        { b_tbl, tbl_bytes, tbl_bytes },
-    };
-    hrx_dispatch_config_t mm_config = {
-        { rows, cols, 1 },
-        { mm->export_info.workgroup_size[0] ? mm->export_info.workgroup_size[0] : mm->route.workgroup_size[0], 1, 1 },
-        0,
-    };
-    if (!GGML_HRX2_CHECK(hrx_stream_dispatch(
-            context->stream, mm->executable, mm->export_ordinal,
-            &mm_config, nullptr, 0, mm_bindings, 5, HRX_DISPATCH_FLAG_NONE))) {
-        return GGML_STATUS_FAILED;
+    // one proven per-slot mm per group member, all reading the SAME b_w:
+    // dequant once per distinct expert (the expensive part), scatter via the
+    // per-slot src1/dst column offsets. NOTE: a single table-scatter mm would
+    // be even better, but index.min/max/rem have no amdgpu lowering in this
+    // loom build (round 20's tbl kernel silently never used its tables — the
+    // `ne %use_tbl, %unit` condition folded the table branch dead at JIT
+    // time, so the 2-token verification passed because slot==token there).
+    for (uint32_t c = 0; c < cols; ++c) {
+        if (ggml_backend_hrx2_dispatch_mul_mat_q4nx_mm(
+                context, b_w, w_bytes, src1_ref, dst_ref,
+                k, rows, /* cols */ 1,
+                (uint32_t) src1_cols[c] * k,
+                (uint32_t) dst_cols[c] * rows) != GGML_STATUS_SUCCESS) {
+            return GGML_STATUS_FAILED;
+        }
     }
 
     return GGML_STATUS_SUCCESS;
@@ -8523,10 +8509,11 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_id_q4nx(
     // expert and dequant each expert once per graph instead of once per token
     // (prefill: n_dequant_dispatches drops from #tokens to #distinct-experts).
     // Fall back to one slice per pair if the tbl route is unavailable.
-    const ggml_backend_hrx2_kernel_route * tbl_route = nullptr;
-    for (const auto * r : device_context->mul_mat_f32_f32_routes) {
-        if (r->id == "mul_mat_f32_f32_ggml_tbl") { tbl_route = r; break; }
-    }
+    // The grouped path (dequant once per distinct expert + per-slot mm) is
+    // always taken when the dequant route is available; it no longer needs a
+    // table-scatter mm route (index.min/max/rem have no amdgpu lowering, so
+    // the round-20 tbl kernel silently never used its tables).
+    const ggml_backend_hrx2_kernel_route * tbl_route = (const ggml_backend_hrx2_kernel_route *) -1;
 
     // validate ids and bucket pairs by expert (in (i,t) order per bucket)
     const uint32_t nexperts = (uint32_t) src0->ne[2];
@@ -10391,9 +10378,14 @@ static enum ggml_status ggml_backend_hrx2_graph_compute(ggml_backend_t backend, 
     ggml_backend_hrx2_active_graph_guard active_graph_guard(context);
     // per-op timing (env HRX2_OPTIME): accumulate wall time per op type
     // across all graphs in the process; print for the large graph only.
+    // With HRX2_OPTIME_SYNC=1 additionally drains the stream after every
+    // node so the per-op deltas include GPU execution (the normal async
+    // enqueue-only deltas are ~0 once the stream is warm).
     static std::map<int, double> optime_accum;
     static std::map<int, int64_t> optime_count;
     const bool optime_enabled = getenv("HRX2_OPTIME") != nullptr;
+    const bool optime_sync = getenv("HRX2_OPTIME_SYNC") != nullptr;
+    const auto optime_t0 = std::chrono::steady_clock::now();
     auto t0 = std::chrono::steady_clock::now();
     for (int i = 0; i < cgraph->n_nodes; ++i) {
         const ggml_tensor * node = cgraph->nodes[i];
@@ -10934,6 +10926,17 @@ static enum ggml_status ggml_backend_hrx2_graph_compute(ggml_backend_t backend, 
             optime_count[(int) node->op] += 1;
             t0 = t1;
         }
+        if (optime_sync) {
+            // drain the stream so the GPU execution of THIS node is charged
+            // to it: accumulate the flush+wait duration into the same op.
+            if (!GGML_HRX2_CHECK(hrx_stream_flush(context->stream)) ||
+                !GGML_HRX2_CHECK(hrx_stream_wait(context->stream))) {
+                return GGML_STATUS_FAILED;
+            }
+            auto t2 = std::chrono::steady_clock::now();
+            optime_accum[(int) node->op] += std::chrono::duration<double, std::milli>(t2 - t0).count();
+            t0 = t2;
+        }
     }
     if (optime_enabled && cgraph->n_nodes > 5) {
         for (const auto & kv : optime_accum) {
@@ -10948,6 +10951,14 @@ static enum ggml_status ggml_backend_hrx2_graph_compute(ggml_backend_t backend, 
         }
     } else {
         ggml_backend_hrx2_synchronize(backend);
+    }
+    if (optime_enabled) {
+        // per-graph wall time INCLUDING the end-of-graph sync: this is what
+        // the caller actually waits for (async enqueue deltas are ~0 once
+        // warm, so the per-op print above alone understates GPU time).
+        auto t3 = std::chrono::steady_clock::now();
+        fprintf(stderr, "HRX2_OPTIME: graph_total_ms=%8.2f nodes=%d\n",
+                std::chrono::duration<double, std::milli>(t3 - optime_t0).count(), cgraph->n_nodes);
     }
     return GGML_STATUS_SUCCESS;
 }

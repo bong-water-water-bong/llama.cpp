@@ -101,7 +101,7 @@
  "q4nx_dequant_f32": {
   "path": "kernels/q4nx_dequant_f32.loom"
  },
- "mul_mat_f32_f32_ggml_tbl": {
-  "path": "kernels/mul_mat_f32_f32_ggml_tbl.loom"
+ "mul_mat_f32_f32_ggml_tiled": {
+  "path": "kernels/mul_mat_f32_f32_ggml_tiled.loom"
  }
 }
