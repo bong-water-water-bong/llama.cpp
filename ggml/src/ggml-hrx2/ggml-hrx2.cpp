@@ -8250,6 +8250,7 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice(
             ft_cfg.push_back({"@hrx2.shape.cols", std::to_string(cols)});
             ft_cfg.push_back({"@hrx2.shape.ntokens", std::to_string(cols)});
             ft_cfg.push_back({"@hrx2.shape.nselected", std::to_string(1)});
+            ft_cfg.push_back({"@hrx2.shape.src1_cols_count", std::to_string(cols)});
             ft_cfg.push_back({"@hrx2.tuning.q4nx.workgroup_size", std::to_string(wg_size)});
             ft_cfg.push_back({"@hrx2.tuning.q4nx.n_tile_cols", std::to_string(n_tc)});
             const std::string ft_key = ggml_backend_hrx2_base_cache_key(device_context, fused_tbl_route) +
