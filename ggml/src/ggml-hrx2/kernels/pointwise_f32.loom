@@ -1,4 +1,4 @@
-config.decl @hrx2.shape.pointwise.ncols : %value: index where [range(%value, 1, 65536)]
+config.decl @hrx2.shape.pointwise.ncols : %value: index where [range(%value, 1, 1048576)]
 config.decl @hrx2.shape.pointwise.nrows : %value: index where [range(%value, 1, 1048576)]
 config.decl @hrx2.shape.pointwise.src0_row_stride : %value: index where [range(%value, 1, 65536)]
 config.decl @hrx2.shape.pointwise.src1_row_stride : %value: index where [range(%value, 0, 65536)]
@@ -24,7 +24,7 @@ kernel.def export("hrx2_add_f32") @hrx2_add_f32() {
   %src1_row_stride = config.get @hrx2.shape.pointwise.src1_row_stride : index
   %src1_ncols = config.get @hrx2.shape.pointwise.src1_ncols : index
   %workgroup_size = config.get @hrx2.tuning.pointwise.workgroup_size : index
-  %ncols_bounded = index.assume %ncols [range(%ncols, 1, 65536)] : index
+  %ncols_bounded = index.assume %ncols [range(%ncols, 1, 1048576)] : index
   %nrows_bounded = index.assume %nrows [range(%nrows, 1, 1048576)] : index
   %src1_ncols_bounded = index.assume %src1_ncols [range(%src1_ncols, 1, 65536)] : index
   %workgroup0 = kernel.workgroup.id<x> : index
@@ -85,7 +85,7 @@ kernel.def export("hrx2_mul_f32") @hrx2_mul_f32() {
   %src1_row_stride = config.get @hrx2.shape.pointwise.src1_row_stride : index
   %src1_ncols = config.get @hrx2.shape.pointwise.src1_ncols : index
   %workgroup_size = config.get @hrx2.tuning.pointwise.workgroup_size : index
-  %ncols_bounded = index.assume %ncols [range(%ncols, 1, 65536)] : index
+  %ncols_bounded = index.assume %ncols [range(%ncols, 1, 1048576)] : index
   %nrows_bounded = index.assume %nrows [range(%nrows, 1, 1048576)] : index
   %src1_ncols_bounded = index.assume %src1_ncols [range(%src1_ncols, 1, 65536)] : index
   %workgroup0 = kernel.workgroup.id<x> : index
@@ -142,7 +142,7 @@ kernel.def export("hrx2_add_f32_contiguous_2d") @hrx2_add_f32_contiguous_2d() {
   %ncols = config.get @hrx2.shape.pointwise.ncols : index
   %nrows = config.get @hrx2.shape.pointwise.nrows : index
   %workgroup_size = config.get @hrx2.tuning.pointwise.workgroup_size : index
-  %ncols_bounded = index.assume %ncols [range(%ncols, 1, 65536)] : index
+  %ncols_bounded = index.assume %ncols [range(%ncols, 1, 1048576)] : index
   %nrows_bounded = index.assume %nrows [range(%nrows, 1, 1048576)] : index
   %workgroup0 = kernel.workgroup.id<x> : index
   %row0 = kernel.workgroup.id<y> : index
@@ -191,7 +191,7 @@ kernel.def export("hrx2_mul_f32_contiguous_2d") @hrx2_mul_f32_contiguous_2d() {
   %ncols = config.get @hrx2.shape.pointwise.ncols : index
   %nrows = config.get @hrx2.shape.pointwise.nrows : index
   %workgroup_size = config.get @hrx2.tuning.pointwise.workgroup_size : index
-  %ncols_bounded = index.assume %ncols [range(%ncols, 1, 65536)] : index
+  %ncols_bounded = index.assume %ncols [range(%ncols, 1, 1048576)] : index
   %nrows_bounded = index.assume %nrows [range(%nrows, 1, 1048576)] : index
   %workgroup0 = kernel.workgroup.id<x> : index
   %row0 = kernel.workgroup.id<y> : index
@@ -240,7 +240,7 @@ kernel.def export("hrx2_add_f32_rhs_row_broadcast_2d") @hrx2_add_f32_rhs_row_bro
   %ncols = config.get @hrx2.shape.pointwise.ncols : index
   %nrows = config.get @hrx2.shape.pointwise.nrows : index
   %workgroup_size = config.get @hrx2.tuning.pointwise.workgroup_size : index
-  %ncols_bounded = index.assume %ncols [range(%ncols, 1, 65536)] : index
+  %ncols_bounded = index.assume %ncols [range(%ncols, 1, 1048576)] : index
   %nrows_bounded = index.assume %nrows [range(%nrows, 1, 1048576)] : index
   %workgroup0 = kernel.workgroup.id<x> : index
   %row0 = kernel.workgroup.id<y> : index
@@ -289,7 +289,7 @@ kernel.def export("hrx2_mul_f32_rhs_row_broadcast_2d") @hrx2_mul_f32_rhs_row_bro
   %ncols = config.get @hrx2.shape.pointwise.ncols : index
   %nrows = config.get @hrx2.shape.pointwise.nrows : index
   %workgroup_size = config.get @hrx2.tuning.pointwise.workgroup_size : index
-  %ncols_bounded = index.assume %ncols [range(%ncols, 1, 65536)] : index
+  %ncols_bounded = index.assume %ncols [range(%ncols, 1, 1048576)] : index
   %nrows_bounded = index.assume %nrows [range(%nrows, 1, 1048576)] : index
   %workgroup0 = kernel.workgroup.id<x> : index
   %row0 = kernel.workgroup.id<y> : index
@@ -342,7 +342,7 @@ kernel.def export("hrx2_div_f32") @hrx2_div_f32() {
   %src1_row_stride = config.get @hrx2.shape.pointwise.src1_row_stride : index
   %src1_ncols = config.get @hrx2.shape.pointwise.src1_ncols : index
   %workgroup_size = config.get @hrx2.tuning.pointwise.workgroup_size : index
-  %ncols_bounded = index.assume %ncols [range(%ncols, 1, 65536)] : index
+  %ncols_bounded = index.assume %ncols [range(%ncols, 1, 1048576)] : index
   %nrows_bounded = index.assume %nrows [range(%nrows, 1, 1048576)] : index
   %src1_ncols_bounded = index.assume %src1_ncols [range(%src1_ncols, 1, 65536)] : index
   %workgroup0 = kernel.workgroup.id<x> : index
@@ -400,7 +400,7 @@ kernel.def export("hrx2_scale_f32") @hrx2_scale_f32() {
   %ncols = config.get @hrx2.shape.pointwise.ncols : index
   %nrows = config.get @hrx2.shape.pointwise.nrows : index
   %workgroup_size = config.get @hrx2.tuning.pointwise.workgroup_size : index
-  %ncols_bounded = index.assume %ncols [range(%ncols, 1, 65536)] : index
+  %ncols_bounded = index.assume %ncols [range(%ncols, 1, 1048576)] : index
   %nrows_bounded = index.assume %nrows [range(%nrows, 1, 1048576)] : index
   %workgroup0 = kernel.workgroup.id<x> : index
   %lane0 = kernel.workitem.id<x> : index
@@ -444,7 +444,7 @@ kernel.def export("hrx2_clamp_f32") @hrx2_clamp_f32() {
   %ncols = config.get @hrx2.shape.pointwise.ncols : index
   %nrows = config.get @hrx2.shape.pointwise.nrows : index
   %workgroup_size = config.get @hrx2.tuning.pointwise.workgroup_size : index
-  %ncols_bounded = index.assume %ncols [range(%ncols, 1, 65536)] : index
+  %ncols_bounded = index.assume %ncols [range(%ncols, 1, 1048576)] : index
   %nrows_bounded = index.assume %nrows [range(%nrows, 1, 1048576)] : index
   %workgroup0 = kernel.workgroup.id<x> : index
   %lane0 = kernel.workitem.id<x> : index
