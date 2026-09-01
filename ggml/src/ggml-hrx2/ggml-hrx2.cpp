@@ -86,6 +86,15 @@ struct ggml_backend_hrx2_device_context {
     std::string description;
     std::string architecture;
     size_t memory_total = 0;
+    // zero-copy: the DEFAULT buft is host-visible (activations shared with the
+    // CPU); the WEIGHT buft is device-local (NPU-only, fake base). The
+    // device-local default from before is kept for weights via get_extra_bufts.
+    ggml_backend_hrx2_buffer_type_context buffer_type_context;
+    ggml_backend_buffer_type buffer_type = {};
+    ggml_backend_hrx2_buffer_type_context host_buffer_type_context;
+    ggml_backend_buffer_type host_buffer_type = {};
+    ggml_backend_hrx2_buffer_type_context weight_buffer_type_context;
+    ggml_backend_buffer_type weight_buffer_type = {};
     ggml_backend_hrx2_catalog_ptr catalog;
     std::vector<const ggml_backend_hrx2_kernel_route *> rms_norm_routes;
     std::vector<const ggml_backend_hrx2_kernel_route *> rms_norm_mul_routes;
@@ -145,8 +154,6 @@ struct ggml_backend_hrx2_device_context {
     std::vector<const ggml_backend_hrx2_kernel_route *> flash_attn_fa0_routes;
     std::unordered_map<std::string, std::unique_ptr<ggml_backend_hrx2_provider>> providers;
     std::unordered_set<std::string> provider_failures;
-    ggml_backend_buffer_type buffer_type = {};
-    ggml_backend_hrx2_buffer_type_context buffer_type_context = {};
 };
 
 struct ggml_backend_hrx2_context {
@@ -631,6 +638,11 @@ static std::string ggml_backend_hrx2_json_kv(const char * key, uint64_t value) {
     return result;
 }
 
+static uint64_t ggml_backend_hrx2_now_us() {
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(now).count());
+}
+
 static void ggml_backend_hrx2_trace_event(const char * event, const std::string & fields_json) {
     const char * trace_path = std::getenv("GGML_HRX2_TRACE_JSONL");
     const bool trace_log = ggml_backend_hrx2_env_enabled("GGML_HRX2_TRACE_ROUTES");
@@ -640,7 +652,7 @@ static void ggml_backend_hrx2_trace_event(const char * event, const std::string 
 
     std::string line = "{\"event\":\"";
     line += event ? event : "";
-    line += "\"";
+    line += "\",\"t_us\":" + std::to_string(ggml_backend_hrx2_now_us());
     if (!fields_json.empty()) {
         line += ",";
         line += fields_json;
@@ -669,10 +681,6 @@ static void ggml_backend_hrx2_trace_event(const char * event, const std::string 
     }
 }
 
-static uint64_t ggml_backend_hrx2_now_us() {
-    const auto now = std::chrono::steady_clock::now().time_since_epoch();
-    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(now).count());
-}
 
 static uint64_t ggml_backend_hrx2_dispatches_per_submit() {
     return ggml_backend_hrx2_u64_from_env(
@@ -1738,6 +1746,9 @@ static const ggml_backend_buffer_i ggml_backend_hrx2_buffer_i = {
 static ggml_backend_buffer_t ggml_backend_hrx2_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
     auto * buft_context = ggml_backend_hrx2_get_buft_context(buft);
 
+    // DEVICE-LOCAL default buft (weights): the NPU reads these directly; the
+    // CPU never touches them (fake base). Activations use the separate
+    // host-visible buft (see host_buffer_type) for zero-copy compute.
     hrx_buffer_params_t params = {
         /* .type           = */ HRX_MEMORY_TYPE_DEVICE_LOCAL,
         /* .access         = */ HRX_MEMORY_ACCESS_ALL,
@@ -1761,7 +1772,6 @@ static ggml_backend_buffer_t ggml_backend_hrx2_buffer_type_alloc_buffer(ggml_bac
         }
         return nullptr;
     }
-
     ggml_backend_buffer_t buffer = ggml_backend_buffer_init(buft, ggml_backend_hrx2_buffer_i, context, size);
     if (!buffer) {
         if (hrx_buffer) {
@@ -1770,6 +1780,52 @@ static ggml_backend_buffer_t ggml_backend_hrx2_buffer_type_alloc_buffer(ggml_bac
         delete context;
     }
     return buffer;
+}
+
+static ggml_backend_buffer_t ggml_backend_hrx2_host_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
+    auto * buft_context = ggml_backend_hrx2_get_buft_context(buft);
+
+    hrx_buffer_params_t params = {
+        /* .type           = */ HRX_MEMORY_TYPE_HOST_LOCAL | HRX_MEMORY_TYPE_DEVICE_VISIBLE | HRX_MEMORY_TYPE_HOST_COHERENT,
+        /* .access         = */ HRX_MEMORY_ACCESS_ALL,
+        /* .usage          = */ HRX_BUFFER_USAGE_DEFAULT |
+                               HRX_BUFFER_USAGE_MAPPING_SCOPED |
+                               HRX_BUFFER_USAGE_MAPPING_PERSISTENT,
+        /* .queue_affinity = */ 0,
+    };
+    hrx_buffer_t hrx_buffer = nullptr;
+    if (size != 0 && !GGML_HRX2_CHECK(hrx_allocator_allocate_buffer(
+            hrx_device_allocator(buft_context->device_context->device), params, size, &hrx_buffer))) {
+        return nullptr;
+    }
+
+    void * mapped = nullptr;
+    if (size != 0 && !GGML_HRX2_CHECK(hrx_buffer_map(
+            hrx_buffer, HRX_MAP_READ | HRX_MAP_WRITE, 0, size, &mapped))) {
+        hrx_buffer_release(hrx_buffer);
+        return nullptr;
+    }
+
+    auto * context = new (std::nothrow) ggml_backend_hrx2_buffer_context {
+        /* .device_context = */ buft_context->device_context,
+        /* .buffer         = */ hrx_buffer,
+        /* .base           = */ static_cast<uint8_t *>(mapped),
+    };
+    if (!context) {
+        hrx_buffer_release(hrx_buffer);
+        return nullptr;
+    }
+    ggml_backend_buffer_t buffer = ggml_backend_buffer_init(buft, ggml_backend_hrx2_buffer_i, context, size);
+    if (!buffer) {
+        hrx_buffer_release(hrx_buffer);
+        delete context;
+    }
+    return buffer;
+}
+
+static bool ggml_backend_hrx2_host_buft_is_host(ggml_backend_buffer_type_t buft) {
+    GGML_UNUSED(buft);
+    return true;  // zero-copy: host-visible buffers the CPU can read/write in place
 }
 
 static size_t ggml_backend_hrx2_buffer_type_get_alignment(ggml_backend_buffer_type_t buft) {
@@ -1782,6 +1838,15 @@ static size_t ggml_backend_hrx2_buffer_type_get_max_size(ggml_backend_buffer_typ
     return context->memory_total ? context->memory_total : std::numeric_limits<size_t>::max();
 }
 
+static const ggml_backend_buffer_type_i ggml_backend_hrx2_host_buffer_type_i = {
+    /* .get_name       = */ ggml_backend_hrx2_buffer_type_get_name,
+    /* .alloc_buffer   = */ ggml_backend_hrx2_host_buffer_type_alloc_buffer,
+    /* .get_alignment  = */ ggml_backend_hrx2_buffer_type_get_alignment,
+    /* .get_max_size   = */ ggml_backend_hrx2_buffer_type_get_max_size,
+    /* .get_alloc_size = */ nullptr,
+    /* .is_host        = */ ggml_backend_hrx2_host_buft_is_host,
+};
+
 static const ggml_backend_buffer_type_i ggml_backend_hrx2_buffer_type_i = {
     /* .get_name       = */ ggml_backend_hrx2_buffer_type_get_name,
     /* .alloc_buffer   = */ ggml_backend_hrx2_buffer_type_alloc_buffer,
@@ -1792,7 +1857,12 @@ static const ggml_backend_buffer_type_i ggml_backend_hrx2_buffer_type_i = {
 };
 
 static ggml_backend_buffer_type_t ggml_backend_hrx2_device_buffer_type(ggml_backend_dev_t dev) {
-    return &ggml_backend_hrx2_get_device_context(dev)->buffer_type;
+    // CONFIG E: DEFAULT buft = host-visible (activations GTT)
+    return &ggml_backend_hrx2_get_device_context(dev)->host_buffer_type;
+}
+
+static ggml_backend_buffer_type_t ggml_backend_hrx2_device_host_buffer_type(ggml_backend_dev_t dev) {
+    return &ggml_backend_hrx2_get_device_context(dev)->host_buffer_type;
 }
 
 static bool ggml_backend_hrx2_supports_rms_norm(
@@ -1870,12 +1940,33 @@ static bool ggml_backend_hrx2_supports_mul_mat_f32_f32(
     const int64_t k = src0->ne[0];
     const int64_t rows = src0->ne[1];
     const int64_t cols = src1->ne[1];
+    // batches (ne2/ne3): GQA attention broadcasts src0's kv-head batch over
+    // src1's q-head batch. Each batch is a contiguous [k, rows]/[k, cols]/
+    // [rows, cols] block (nb1 == packed row stride); batch strides may be
+    // strided (KV-cache views), handled via nb2/nb3 in dispatch.
+    // require src1->ne[2] % src0->ne[2] == 0 with src0->ne[2] <= src1->ne[2].
+    const int64_t inner_src0 = k * rows;
+    const int64_t inner_src1 = k * cols;
+    const int64_t inner_dst = rows * cols;
+    const int64_t n_batch = src1->ne[2] * src1->ne[3];
+    if (n_batch > 1) {
+        const int64_t n_batch_src0 = src0->ne[2] * src0->ne[3];
+        if (src0->ne[3] != src1->ne[3] ||
+            src0->ne[3] != op->ne[3] ||
+            n_batch_src0 > n_batch ||
+            (n_batch % n_batch_src0) != 0) {
+            return false;
+        }
+        // contiguous within each batch: nb1 == packed row stride
+        if (src0->nb[1] != (int64_t) k * (int64_t) sizeof(float) ||
+            src1->nb[1] != (int64_t) k * (int64_t) sizeof(float) ||
+            op->nb[1] != (int64_t) rows * (int64_t) sizeof(float)) {
+            return false;
+        }
+    }
     return src0->ne[0] == src1->ne[0] &&
            op->ne[0] == src0->ne[1] &&
            op->ne[1] == src1->ne[1] &&
-           src0->ne[2] == 1 && src0->ne[3] == 1 &&
-           src1->ne[2] == 1 && src1->ne[3] == 1 &&
-           op->ne[2] == 1 && op->ne[3] == 1 &&
            ggml_is_contiguous(src0) &&
            ggml_is_contiguous(src1) &&
            ggml_is_contiguous(op) &&
@@ -8986,51 +9077,82 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_f32_f32(
             continue;
         }
 
-        hrx_dispatch_config_t config = {
-            /* .workgroup_count = */ {
-                (shape.rows + provider->route.rows_per_workgroup - 1) / provider->route.rows_per_workgroup,
-                (shape.cols + provider->route.cols_per_workgroup - 1) / provider->route.cols_per_workgroup,
-                1,
-            },
-            /* .workgroup_size  = */ {
-                provider->export_info.workgroup_size[0] ? provider->export_info.workgroup_size[0] : provider->route.workgroup_size[0],
-                1,
-                1,
-            },
-            /* .subgroup_size   = */ 0,
-        };
+        const int64_t n_batch = (int64_t) src1->ne[2] * src1->ne[3];
+        const int64_t n_batch_src0 = (int64_t) src0->ne[2] * src0->ne[3];
+        const int64_t inner_src0 = (int64_t) shape.k * shape.rows;
+        const int64_t inner_src1 = (int64_t) shape.k * shape.cols;
+        const int64_t inner_dst = (int64_t) shape.rows * shape.cols;
+        const int64_t src0_repeats = n_batch / (n_batch_src0 > 0 ? n_batch_src0 : 1);
+        const int64_t nb2_src0 = (int64_t) src0->nb[2] / (int64_t) sizeof(float);
+        const int64_t nb3_src0 = (int64_t) src0->nb[3] / (int64_t) sizeof(float);
+        const int64_t nb2_src1 = (int64_t) src1->nb[2] / (int64_t) sizeof(float);
+        const int64_t nb3_src1 = (int64_t) src1->nb[3] / (int64_t) sizeof(float);
+        const int64_t nb2_dst = (int64_t) dst->nb[2] / (int64_t) sizeof(float);
+        const int64_t nb3_dst = (int64_t) dst->nb[3] / (int64_t) sizeof(float);
 
-        ggml_backend_hrx2_trace_event(
-            "dispatch",
-            ggml_backend_hrx2_json_kv("op", "MUL_MAT") + "," +
-            ggml_backend_hrx2_json_kv("family", "mul_mat_f32_f32") + "," +
-            ggml_backend_hrx2_json_kv("route_id", provider->route.id) + "," +
-            ggml_backend_hrx2_json_kv("target_key", context->device_context->architecture) + "," +
-            ggml_backend_hrx2_json_kv("cache_key", provider->cache_key) + "," +
-            ggml_backend_hrx2_json_kv("k", shape.k) + "," +
-            ggml_backend_hrx2_json_kv("rows", shape.rows) + "," +
-            ggml_backend_hrx2_json_kv("cols", shape.cols) + "," +
-            ggml_backend_hrx2_json_kv("workgroups_x", config.workgroup_count[0]) + "," +
-            ggml_backend_hrx2_json_kv("workgroups_y", config.workgroup_count[1]) + "," +
-            ggml_backend_hrx2_json_kv("workgroup_size_x", config.workgroup_size[0]));
+        for (int64_t b = 0; b < n_batch; ++b) {
+            // GQA: src0 batch = b / src0_repeats, src1/dst batch = b
+            const int64_t i2 = b % (int64_t) src1->ne[2];
+            const int64_t i3 = b / (int64_t) src1->ne[2];
+            const int64_t b_src0 = n_batch_src0 > 1 ? b / src0_repeats : 0;
+            const int64_t i2_src0 = b_src0 % (int64_t) src0->ne[2];
+            const int64_t i3_src0 = b_src0 / (int64_t) src0->ne[2];
+            const int64_t off_src0 = i2_src0 * nb2_src0 + i3_src0 * nb3_src0;
+            const int64_t off_src1 = i2 * nb2_src1 + i3 * nb3_src1;
+            const int64_t off_dst = i2 * nb2_dst + i3 * nb3_dst;
+            hrx_buffer_ref_t b_bindings[3] = {
+                { bindings[0].buffer, bindings[0].offset + (size_t) off_src0 * sizeof(float), (size_t) inner_src0 * sizeof(float) },
+                { bindings[1].buffer, bindings[1].offset + (size_t) off_src1 * sizeof(float), (size_t) inner_src1 * sizeof(float) },
+                { bindings[2].buffer, bindings[2].offset + (size_t) off_dst  * sizeof(float), (size_t) inner_dst  * sizeof(float) },
+            };
+            hrx_dispatch_config_t config = {
+                /* .workgroup_count = */ {
+                    (shape.rows + provider->route.rows_per_workgroup - 1) / provider->route.rows_per_workgroup,
+                    (shape.cols + provider->route.cols_per_workgroup - 1) / provider->route.cols_per_workgroup,
+                    1,
+                },
+                /* .workgroup_size  = */ {
+                    provider->export_info.workgroup_size[0] ? provider->export_info.workgroup_size[0] : provider->route.workgroup_size[0],
+                    1,
+                    1,
+                },
+                /* .subgroup_size   = */ 0,
+            };
 
-        if (!GGML_HRX2_CHECK(hrx_stream_dispatch(
-                context->stream,
-                provider->executable,
-                provider->export_ordinal,
-                &config,
-                nullptr,
-                0,
-                bindings,
-                3,
-                HRX_DISPATCH_FLAG_NONE))) {
             ggml_backend_hrx2_trace_event(
-                "dispatch_failed",
+                "dispatch",
                 ggml_backend_hrx2_json_kv("op", "MUL_MAT") + "," +
                 ggml_backend_hrx2_json_kv("family", "mul_mat_f32_f32") + "," +
-                ggml_backend_hrx2_json_kv("reason", "hrx_stream_dispatch") + "," +
-                ggml_backend_hrx2_json_kv("route_id", provider->route.id));
-            return GGML_STATUS_FAILED;
+                ggml_backend_hrx2_json_kv("route_id", provider->route.id) + "," +
+                ggml_backend_hrx2_json_kv("target_key", context->device_context->architecture) + "," +
+                ggml_backend_hrx2_json_kv("cache_key", provider->cache_key) + "," +
+                ggml_backend_hrx2_json_kv("k", shape.k) + "," +
+                ggml_backend_hrx2_json_kv("rows", shape.rows) + "," +
+                ggml_backend_hrx2_json_kv("cols", shape.cols) + "," +
+                ggml_backend_hrx2_json_kv("batch", (uint64_t) b) + "," +
+                ggml_backend_hrx2_json_kv("n_batch", (uint64_t) n_batch) + "," +
+                ggml_backend_hrx2_json_kv("workgroups_x", config.workgroup_count[0]) + "," +
+                ggml_backend_hrx2_json_kv("workgroups_y", config.workgroup_count[1]) + "," +
+                ggml_backend_hrx2_json_kv("workgroup_size_x", config.workgroup_size[0]));
+
+            if (!GGML_HRX2_CHECK(hrx_stream_dispatch(
+                    context->stream,
+                    provider->executable,
+                    provider->export_ordinal,
+                    &config,
+                    nullptr,
+                    0,
+                    b_bindings,
+                    3,
+                    HRX_DISPATCH_FLAG_NONE))) {
+                ggml_backend_hrx2_trace_event(
+                    "dispatch_failed",
+                    ggml_backend_hrx2_json_kv("op", "MUL_MAT") + "," +
+                    ggml_backend_hrx2_json_kv("family", "mul_mat_f32_f32") + "," +
+                    ggml_backend_hrx2_json_kv("reason", "hrx_stream_dispatch") + "," +
+                    ggml_backend_hrx2_json_kv("route_id", provider->route.id));
+                return GGML_STATUS_FAILED;
+            }
         }
         return GGML_STATUS_SUCCESS;
     }
@@ -11383,38 +11505,65 @@ static ggml_backend_t ggml_backend_hrx2_device_init_backend(ggml_backend_dev_t d
 }
 
 static bool ggml_backend_hrx2_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
-    // EXPERIMENT (HRX2_Q4NX_ONLY): claim ONLY the Q4NX matmuls; every F32-side
-    // op (pointwise, norm, rope, softmax, conv, router) stays on CPU. The
-    // CPU-only F32 port measures tg32 16.5 t/s vs 11.0 with the hybrid split
-    // (CPU<->HRX2 shuttling is net-negative), so minimize HRX2 participation
-    // to exactly the ops that require it.
+    // ZERO-COPY HYBRID (round 25i): with activations in the host-visible buft,
+    // the CPU<->HRX2 shuttling that made the old hybrid net-negative is GONE —
+    // every op reads/writes the same GTT memory, no copies. So claim the full
+    // hybrid op set again: Q4NX mms + all F32 pointwise/norm/rope/etc. routes.
+    auto * devctx = ggml_backend_hrx2_get_device_context(dev);
+    // zero-copy: weights must live in the DEVICE-LOCAL buft (the default
+    // buft is host-visible for activations). Reject Q4NX weight ops whose
+    // src0 sits in the host buft so the loader picks the device-local extra.
+    if ((op->op == GGML_OP_MUL_MAT_Q4NX || op->op == GGML_OP_MUL_MAT_ID_Q4NX) &&
+        op->src[0] && op->src[0]->buffer &&
+        op->src[0]->buffer->buft == &devctx->host_buffer_type) {
+        return false;
+    }
     switch (op->op) {
         case GGML_OP_MUL_MAT_Q4NX:
-            return ggml_backend_hrx2_supports_mul_mat_q4nx_route(ggml_backend_hrx2_get_device_context(dev), op);
+            return ggml_backend_hrx2_supports_mul_mat_q4nx_route(devctx, op);
         case GGML_OP_MUL_MAT_ID_Q4NX:
-            return ggml_backend_hrx2_supports_mul_mat_id_q4nx_route(ggml_backend_hrx2_get_device_context(dev), op);
+            return ggml_backend_hrx2_supports_mul_mat_id_q4nx_route(devctx, op);
         case GGML_OP_NONE:
         case GGML_OP_RESHAPE:
         case GGML_OP_VIEW:
         case GGML_OP_PERMUTE:
         case GGML_OP_TRANSPOSE:
             return true;   // metadata-only, no data movement
+        case GGML_OP_RMS_NORM:
+            return ggml_backend_hrx2_supports_rms_norm_route(devctx, op);
+        case GGML_OP_ADD:
+        case GGML_OP_MUL:
+        case GGML_OP_DIV:
         case GGML_OP_SCALE:
+        case GGML_OP_CLAMP:
+            return ggml_backend_hrx2_supports_pointwise_route(devctx, op);
+        case GGML_OP_SUM_ROWS:
+            return ggml_backend_hrx2_supports_sum_rows_route(devctx, op);
+        case GGML_OP_ROPE:
+            return ggml_backend_hrx2_supports_rope_route(devctx, op);
+        case GGML_OP_SOFT_MAX:
+            return ggml_backend_hrx2_supports_soft_max_route(devctx, op);
+        case GGML_OP_CONT:
+            return ggml_backend_hrx2_supports_cont_route(devctx, op);
         case GGML_OP_CPY:
+            return ggml_backend_hrx2_supports_cpy(devctx, op);
         case GGML_OP_SET_ROWS:
-            // the recurrent state (cache_s_l0) lives on HRX2, so its data
-            // ops must run there; everything else stays on CPU to minimize
-            // CPU<->HRX2 shuttling (all-CPU F32: 16.5 vs hybrid 11.0 t/s).
-            return ggml_backend_hrx2_supports_pointwise_route(ggml_backend_hrx2_get_device_context(dev), op) ||
-                   ggml_backend_hrx2_supports_cpy(ggml_backend_hrx2_get_device_context(dev), op) ||
-                   ggml_backend_hrx2_supports_set_rows_route(ggml_backend_hrx2_get_device_context(dev), op);
+            return ggml_backend_hrx2_supports_set_rows_route(devctx, op);
+        case GGML_OP_ARGSORT:
+            return ggml_backend_hrx2_supports_argsort_route(devctx, op);
+        case GGML_OP_GLU:
+            return ggml_backend_hrx2_supports_swiglu_route(devctx, op);
+        case GGML_OP_GET_ROWS:
+            // embedding lookup: HRX2 get_rows_f32 route (CPU would have to
+            // read/write shared GTT -> per-dispatch coherency tax)
+            return ggml_backend_hrx2_supports_get_rows_route(devctx, op);
         default:
             return false;
     }
 }
 
 static bool ggml_backend_hrx2_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) {
-    if (!buft || buft->iface.get_name != ggml_backend_hrx2_buffer_type_get_name) {
+    if (!buft || !buft->context) {
         return false;
     }
     return ggml_backend_hrx2_get_buft_context(buft)->device_context == ggml_backend_hrx2_get_device_context(dev);
@@ -11428,7 +11577,7 @@ static const ggml_backend_device_i ggml_backend_hrx2_device_i = {
     /* .get_props            = */ ggml_backend_hrx2_device_get_props,
     /* .init_backend         = */ ggml_backend_hrx2_device_init_backend,
     /* .get_buffer_type      = */ ggml_backend_hrx2_device_buffer_type,
-    /* .get_host_buffer_type = */ nullptr,
+    /* .get_host_buffer_type = */ ggml_backend_hrx2_device_host_buffer_type,
     /* .buffer_from_host_ptr = */ nullptr,
     /* .supports_op          = */ ggml_backend_hrx2_device_supports_op,
     /* .supports_buft        = */ ggml_backend_hrx2_device_supports_buft,
@@ -11457,9 +11606,20 @@ static ggml_backend_dev_t ggml_backend_hrx2_reg_get_device(ggml_backend_reg_t re
     return &context->devices[index];
 }
 
+static ggml_backend_buffer_type_t * ggml_backend_hrx2_dev_get_extra_bufts(ggml_backend_dev_t device) {
+    auto * device_context = ggml_backend_hrx2_get_device_context(device);
+    // one extra buft: the device-local weight buft (the DEFAULT is host-visible
+    // for zero-copy compute; weights must stay device-local for NPU reads).
+    static ggml_backend_buffer_type_t extra[] = { nullptr, nullptr };
+    extra[0] = &device_context->weight_buffer_type;
+    return extra;
+}
+
 static void * ggml_backend_hrx2_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     GGML_UNUSED(reg);
-    GGML_UNUSED(name);
+    if (strcmp(name, "ggml_backend_dev_get_extra_bufts") == 0) {
+        return (void *) ggml_backend_hrx2_dev_get_extra_bufts;
+    }
     return nullptr;
 }
 
@@ -11855,6 +12015,24 @@ static std::unique_ptr<ggml_backend_hrx2_reg_context> ggml_backend_hrx2_create_r
             /* .iface   = */ ggml_backend_hrx2_buffer_type_i,
             /* .device  = */ nullptr,
             /* .context = */ &device_context->buffer_type_context,
+        };
+        device_context->host_buffer_type_context = {
+            /* .device_context = */ device_context.get(),
+            /* .name           = */ device_context->name + "_host",
+        };
+        device_context->host_buffer_type = {
+            /* .iface   = */ ggml_backend_hrx2_host_buffer_type_i,
+            /* .device  = */ nullptr,
+            /* .context = */ &device_context->host_buffer_type_context,
+        };
+        device_context->weight_buffer_type_context = {
+            /* .device_context = */ device_context.get(),
+            /* .name           = */ device_context->name + "_w",
+        };
+        device_context->weight_buffer_type = {
+            /* .iface   = */ ggml_backend_hrx2_buffer_type_i,
+            /* .device  = */ nullptr,
+            /* .context = */ &device_context->weight_buffer_type_context,
         };
 
         context->device_contexts.emplace_back(std::move(device_context));

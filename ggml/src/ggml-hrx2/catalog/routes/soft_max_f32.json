@@ -1535,5 +1535,105 @@
       "phase": "route-slice-30-soft-max-f32",
       "ggml_cpu_reference": "required"
     }
+  },
+  {
+    "id": "soft_max_f32_mask_generic_wg256",
+    "family": "soft_max_f32",
+    "op": "SOFT_MAX",
+    "target_key": "",
+    "source_id": "soft_max_f32",
+    "artifact_id": "soft_max_f32_bc",
+    "root_symbol": "@hrx2_soft_max_f32_mask",
+    "export_name": "hrx2_soft_max_f32_mask",
+    "loader_format": "amdgpu-hsaco",
+    "priority": 5,
+    "abi": {
+      "binding_count": 3,
+      "parameter_count": 4,
+      "constant_byte_length": 4
+    },
+    "dispatch": {
+      "workgroup_size": [
+        256,
+        1,
+        1
+      ],
+      "rows_per_workgroup": 1,
+      "cols_per_workgroup": 1
+    },
+    "shape_domain": {
+      "name": "soft_max_f32_mask_generic",
+      "ncols_min": 1,
+      "ncols_max": 1048576,
+      "nrows_min": 1,
+      "nrows_max": 1048576,
+      "rows_min": 0,
+      "rows_max": 0,
+      "cols_min": 0,
+      "cols_max": 0
+    },
+    "shape_guards": {},
+    "specialization": {
+      "mode": "jit_config",
+      "bindings": [
+        {
+          "key": "@hrx2.shape.soft_max.ncols",
+          "source": "shape.soft_max.ncols"
+        },
+        {
+          "key": "@hrx2.shape.soft_max.nrows",
+          "source": "shape.soft_max.nrows"
+        },
+        {
+          "key": "@hrx2.shape.soft_max.ne01",
+          "source": "shape.soft_max.ne01"
+        },
+        {
+          "key": "@hrx2.shape.soft_max.ne02",
+          "source": "shape.soft_max.ne02"
+        },
+        {
+          "key": "@hrx2.shape.soft_max.mask_nb1",
+          "source": "shape.soft_max.mask_nb1"
+        },
+        {
+          "key": "@hrx2.shape.soft_max.mask_nb2",
+          "source": "shape.soft_max.mask_nb2"
+        },
+        {
+          "key": "@hrx2.shape.soft_max.mask_nb3",
+          "source": "shape.soft_max.mask_nb3"
+        },
+        {
+          "key": "@hrx2.shape.soft_max.mask_ne1",
+          "source": "shape.soft_max.mask_ne1"
+        },
+        {
+          "key": "@hrx2.shape.soft_max.mask_ne2",
+          "source": "shape.soft_max.mask_ne2"
+        },
+        {
+          "key": "@hrx2.shape.soft_max.mask_ne3",
+          "source": "shape.soft_max.mask_ne3"
+        },
+        {
+          "key": "@hrx2.tuning.soft_max.workgroup_size",
+          "value": "256"
+        }
+      ]
+    },
+    "supports": {
+      "src0_type": "F32",
+      "src1_type": "F32",
+      "dst_type": "F32",
+      "mask": "required",
+      "max_bias": "0",
+      "sinks": "none",
+      "layout": "contiguous"
+    },
+    "evidence_summary": {
+      "phase": "round-25i-zero-copy-generic",
+      "ggml_cpu_reference": "required"
+    }
   }
 ]
