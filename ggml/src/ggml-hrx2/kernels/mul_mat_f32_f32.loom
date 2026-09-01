@@ -1,5 +1,5 @@
-config.decl @hrx2.shape.k : %value: index where [range(%value, 1, 8192)]
-config.decl @hrx2.shape.rows : %value: index where [range(%value, 1, 8192)]
+config.decl @hrx2.shape.k : %value: index where [range(%value, 1, 65536)]
+config.decl @hrx2.shape.rows : %value: index where [range(%value, 1, 262144)]
 config.decl @hrx2.shape.cols : %value: index where [range(%value, 1, 512)]
 config.decl @hrx2.tuning.workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
 
@@ -19,12 +19,12 @@ kernel.def export("hrx2_mul_mat_f32_f32_static") @hrx2_mul_mat_f32_f32_static() 
   %rows = config.get @hrx2.shape.rows : index
   %cols = config.get @hrx2.shape.cols : index
   %workgroup_size = config.get @hrx2.tuning.workgroup_size : index
-  %k_bounded = index.assume %k [range(%k, 1, 8192)] : index
-  %rows_bounded = index.assume %rows [range(%rows, 1, 8192)] : index
+  %k_bounded = index.assume %k [range(%k, 1, 65536)] : index
+  %rows_bounded = index.assume %rows [range(%rows, 1, 262144)] : index
   %cols_bounded = index.assume %cols [range(%cols, 1, 512)] : index
 
   %row0 = kernel.workgroup.id<x> : index
-  %row = index.assume %row0 [range(%row0, 0, 8191)] : index
+  %row = index.assume %row0 [range(%row0, 0, 262143)] : index
   %col0 = kernel.workgroup.id<y> : index
   %col = index.assume %col0 [range(%col0, 0, 511)] : index
   %lane0 = kernel.workitem.id<x> : index
@@ -88,12 +88,12 @@ kernel.def export("hrx2_mul_mat_f32_f32_ggml_static") @hrx2_mul_mat_f32_f32_ggml
   %rows = config.get @hrx2.shape.rows : index
   %cols = config.get @hrx2.shape.cols : index
   %workgroup_size = config.get @hrx2.tuning.workgroup_size : index
-  %k_bounded = index.assume %k [range(%k, 1, 8192)] : index
-  %rows_bounded = index.assume %rows [range(%rows, 1, 8192)] : index
+  %k_bounded = index.assume %k [range(%k, 1, 65536)] : index
+  %rows_bounded = index.assume %rows [range(%rows, 1, 262144)] : index
   %cols_bounded = index.assume %cols [range(%cols, 1, 512)] : index
 
   %row0 = kernel.workgroup.id<x> : index
-  %row = index.assume %row0 [range(%row0, 0, 8191)] : index
+  %row = index.assume %row0 [range(%row0, 0, 262143)] : index
   %col0 = kernel.workgroup.id<y> : index
   %col = index.assume %col0 [range(%col0, 0, 511)] : index
   %lane0 = kernel.workitem.id<x> : index

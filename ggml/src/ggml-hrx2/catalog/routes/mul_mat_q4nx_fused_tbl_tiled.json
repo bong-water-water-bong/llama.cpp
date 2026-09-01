@@ -27,9 +27,9 @@
   "shape_domain": {
    "name": "generic",
    "k_min": 1,
-   "k_max": 8192,
+   "k_max": 65536,
    "rows_min": 1,
-   "rows_max": 8192,
+   "rows_max": 262144,
    "cols_min": 1,
    "cols_max": 512
   },

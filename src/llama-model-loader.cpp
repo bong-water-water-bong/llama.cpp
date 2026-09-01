@@ -925,14 +925,28 @@ static bool weight_buft_supported(const llama_hparams & hparams, ggml_tensor * w
             } break;
         case GGML_OP_MUL_MAT:
             {
-                ggml_tensor * b = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, w->ne[0], 512, w->ne[2], w->ne[3]);
+                // 1bit-MONSTER Q4NX weights are stored tile-major
+                // [8192, n_tiles]; the test activation k must make the tile
+                // count divide evenly: use k = 256*n_tiles (n_tc = n_tiles,
+                // rows = 32) so any tile count passes the geometry asserts.
+                int64_t k = w->ne[0];
+                if (w->type == GGML_TYPE_Q4NX) {
+                    k = 256 * w->ne[1];
+                }
+                ggml_tensor * b = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, k, 512, w->ne[2], w->ne[3]);
                 op_tensor = ggml_mul_mat(ctx, w, b);
             } break;
         case GGML_OP_MUL_MAT_ID:
             {
                 const int n_expert_used = hparams.n_expert_used;
                 GGML_ASSERT(n_expert_used > 0);
-                ggml_tensor * b = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, w->ne[0], n_expert_used, 512);
+                // Q4NX experts are 3-D [8192, tpe, n_expert]; use
+                // k = 256*tpe so n_tc = tpe and the assert holds for any tpe.
+                int64_t k = w->ne[0];
+                if (w->type == GGML_TYPE_Q4NX) {
+                    k = 256 * w->ne[1];
+                }
+                ggml_tensor * b = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, k, n_expert_used, 512);
                 ggml_tensor * ids = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_expert_used, 512);
                 op_tensor = ggml_mul_mat_id(ctx, w, b, ids);
             } break;

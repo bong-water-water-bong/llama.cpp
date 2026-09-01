@@ -27,9 +27,9 @@
   "shape_domain": {
    "name": "moe_logits_k2048_r128_c1_512_wg256",
    "k_min": 2048,
-   "k_max": 2048,
+   "k_max": 65536,
    "rows_min": 128,
-   "rows_max": 128,
+   "rows_max": 262144,
    "cols_min": 1,
    "cols_max": 512
   },
@@ -96,9 +96,9 @@
   "shape_domain": {
    "name": "generic",
    "k_min": 1,
-   "k_max": 8192,
+   "k_max": 65536,
    "rows_min": 1,
-   "rows_max": 8192,
+   "rows_max": 262144,
    "cols_min": 1,
    "cols_max": 512
   },

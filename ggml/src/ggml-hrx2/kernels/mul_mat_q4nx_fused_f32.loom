@@ -1,5 +1,5 @@
-config.decl @hrx2.shape.k : %value: index where [range(%value, 1, 8192)]
-config.decl @hrx2.shape.rows : %value: index where [range(%value, 1, 8192)]
+config.decl @hrx2.shape.k : %value: index where [range(%value, 1, 65536)]
+config.decl @hrx2.shape.rows : %value: index where [range(%value, 1, 262144)]
 config.decl @hrx2.shape.cols : %value: index where [range(%value, 1, 512)]
 config.decl @hrx2.tuning.q4nx.workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
 config.decl @hrx2.tuning.q4nx.n_tile_cols : %value: index where [range(%value, 1, 256)]
@@ -51,13 +51,13 @@ kernel.def export("hrx2_mul_mat_q4nx_fused_f32") @hrx2_mul_mat_q4nx_fused_f32() 
   %cols = config.get @hrx2.shape.cols : index
   %workgroup_size = config.get @hrx2.tuning.q4nx.workgroup_size : index
   %n_tc = config.get @hrx2.tuning.q4nx.n_tile_cols : index
-  %k_bounded = index.assume %k [range(%k, 1, 8192)] : index
-  %rows_bounded = index.assume %rows [range(%rows, 1, 8192)] : index
+  %k_bounded = index.assume %k [range(%k, 1, 65536)] : index
+  %rows_bounded = index.assume %rows [range(%rows, 1, 262144)] : index
   %cols_bounded = index.assume %cols [range(%cols, 1, 512)] : index
   %n_tc_bounded = index.assume %n_tc [range(%n_tc, 1, 256)] : index
 
   %row0 = kernel.workgroup.id<x> : index
-  %row = index.assume %row0 [range(%row0, 0, 8191)] : index
+  %row = index.assume %row0 [range(%row0, 0, 262143)] : index
   %col0 = kernel.workgroup.id<y> : index
   %col = index.assume %col0 [range(%col0, 0, 511)] : index
   %lane0 = kernel.workitem.id<x> : index

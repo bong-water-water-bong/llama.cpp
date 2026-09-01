@@ -1,5 +1,5 @@
-config.decl @hrx2.shape.k : %value: index where [range(%value, 1, 8192)]
-config.decl @hrx2.shape.rows : %value: index where [range(%value, 1, 8192)]
+config.decl @hrx2.shape.k : %value: index where [range(%value, 1, 65536)]
+config.decl @hrx2.shape.rows : %value: index where [range(%value, 1, 262144)]
 config.decl @hrx2.shape.cols : %value: index where [range(%value, 1, 512)]
 config.decl @hrx2.shape.ntokens : %value: index where [range(%value, 1, 4194304)]
 config.decl @hrx2.shape.nselected : %value: index where [range(%value, 1, 64)]
@@ -62,8 +62,8 @@ kernel.def export("hrx2_mul_mat_q4nx_fused_tbl_tiled") @hrx2_mul_mat_q4nx_fused_
   %nselected = config.get @hrx2.shape.nselected : index
   %workgroup_size = config.get @hrx2.tuning.q4nx.workgroup_size : index
   %n_tc = config.get @hrx2.tuning.q4nx.n_tile_cols : index
-  %k_bounded = index.assume %k [range(%k, 1, 8192)] : index
-  %rows_bounded = index.assume %rows [range(%rows, 1, 8192)] : index
+  %k_bounded = index.assume %k [range(%k, 1, 65536)] : index
+  %rows_bounded = index.assume %rows [range(%rows, 1, 262144)] : index
   %cols_bounded = index.assume %cols [range(%cols, 1, 512)] : index
   %ntokens_bounded = index.assume %ntokens [range(%ntokens, 1, 4194304)] : index
   %nselected_bounded = index.assume %nselected [range(%nselected, 1, 64)] : index
@@ -81,7 +81,7 @@ kernel.def export("hrx2_mul_mat_q4nx_fused_tbl_tiled") @hrx2_mul_mat_q4nx_fused_
   %cols_padded_b = index.assume %cols_padded [range(%cols_padded, 1, 512)] : index
 
   %row0 = kernel.workgroup.id<x> : index
-  %row = index.assume %row0 [range(%row0, 0, 8191)] : index
+  %row = index.assume %row0 [range(%row0, 0, 262143)] : index
   %cg0 = kernel.workgroup.id<y> : index
   %col_block0 = index.mul %cg0, %eight : index
   %col_block = index.assume %col_block0 [range(%col_block0, 0, 511)] : index
