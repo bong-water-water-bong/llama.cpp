@@ -8829,11 +8829,9 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_id_q4nx(
     // expert and dequant each expert once per graph instead of once per token
     // (prefill: n_dequant_dispatches drops from #tokens to #distinct-experts).
     // Fall back to one slice per pair if the tbl route is unavailable.
-    // The grouped path (dequant once per distinct expert + per-slot mm) is
-    // always taken when the dequant route is available; it no longer needs a
-    // table-scatter mm route (index.min/max/rem have no amdgpu lowering, so
-    // the round-20 tbl kernel silently never used its tables).
-    const ggml_backend_hrx2_kernel_route * tbl_route = (const ggml_backend_hrx2_kernel_route *) -1;
+    // The grouped path (dequant once per distinct expert + one table-scatter
+    // mm per group) is always taken; single-member groups keep the proven
+    // per-pair fused path (no table overhead for decode).
     // validate ids and bucket pairs by expert (in (i,t) order per bucket)
     const uint32_t nexperts = (uint32_t) src0->ne[2];
     std::vector<std::vector<std::pair<uint32_t, uint32_t>>> groups(nexperts);
@@ -8849,8 +8847,8 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_id_q4nx(
         }
     }
 
-    if (tbl_route != nullptr) {
-        // grouped path: one dequant + one table-scatter mm per distinct expert
+    // grouped path: one dequant + one table-scatter mm per distinct expert
+    {
         std::vector<int32_t> src1_cols;
         std::vector<int32_t> dst_cols;
         src1_cols.reserve(ntokens);
@@ -8901,30 +8899,6 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_id_q4nx(
         return GGML_STATUS_SUCCESS;
     }
 
-    // fallback: one slice per (selected expert, token) pair
-    for (uint32_t i = 0; i < nselected; ++i) {
-        for (uint32_t t = 0; t < ntokens; ++t) {
-            const int32_t e = ids_data[t * nselected + i];
-            if (e < 0 || (uint32_t) e >= (uint32_t) src0->ne[2]) {
-                GGML_LOG_ERROR("HRX2: MUL_MAT_ID Q4NX expert id %d out of range\n", (int) e);
-                return GGML_STATUS_FAILED;
-            }
-            const uint32_t tile_base = (uint32_t) e * tpe;
-            const uint32_t src1_col  = (per_expert_src1 ? (i + t * nselected) * k : t * k);
-            const uint32_t dst_col   = (i + t * nselected) * rows;
-            if (ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_fused(
-                    context, src0_ref, src1_ref, dst_ref,
-                    tile_base, tpe, k, rows,
-                    src1_col, dst_col) != GGML_STATUS_SUCCESS) {
-                if (ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice(
-                        context, src0_ref, src1_ref, dst_ref,
-                        tile_base, tpe, k, rows, /* cols */ 1,
-                        src1_col, dst_col) != GGML_STATUS_SUCCESS) {
-                    return GGML_STATUS_FAILED;
-                }
-            }
-        }
-    }
     hrx_buffer_unmap(device_context->q4nx_ids);
     return GGML_STATUS_SUCCESS;
 }
