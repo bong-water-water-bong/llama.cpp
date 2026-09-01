@@ -2,6 +2,7 @@ config.decl @hrx2.shape.k : %value: index where [range(%value, 1, 65536)]
 config.decl @hrx2.shape.rows : %value: index where [range(%value, 1, 262144)]
 config.decl @hrx2.shape.cols : %value: index where [range(%value, 1, 512)]
 config.decl @hrx2.shape.ntokens : %value: index where [range(%value, 1, 4194304)]
+config.decl @hrx2.shape.src1_cols_count : %value: index where [range(%value, 1, 4194304)]
 config.decl @hrx2.shape.nselected : %value: index where [range(%value, 1, 64)]
 config.decl @hrx2.tuning.workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
 
@@ -12,14 +13,14 @@ config.decl @hrx2.tuning.workgroup_size : %value: index where [range(%value, 32,
 // Same math as hrx2_mul_mat_f32_f32_ggml_tiled_static (src1 [k, ntokens]
 // ggml col-major, dst [rows, nselected*ntokens] ggml col-major, src0
 // row-major [rows, k]) but column c of this slice reads src1 column
-// src1_cols[c] (a TOKEN index < ntokens) and writes dst column dst_cols[c]
+// src1_cols[c] (a COLUMN index < src1_cols_count) and writes dst column dst_cols[c]
 // (a SELECTED index i + t*nselected < nselected*ntokens). The tables let
 // one workgroup-row reuse the src0 row across 8 DIFFERENT tokens, so the
 // dequantized weight is read once per 8 output columns (per-slot mms re-read
 // b_w once per token = 32x for a 32-token group).
 //
 // Bounds: table values are bounded by TRUTHFUL index.assume predicates with
-// config-derived limits (src1_cols < ntokens, dst_cols < nselected*ntokens),
+// config-derived limits (src1_cols < src1_cols_count, dst_cols < nselected*ntokens),
 // NOT by index.min/max/rem (which have no amdgpu lowering in this loom build
 // — round 20's tbl kernel silently miscompiled because of them). The JIT
 // subrange proof trusts the assume facts, and the host guarantees the tables
@@ -65,8 +66,11 @@ kernel.def export("hrx2_mul_mat_f32_f32_ggml_tbl_tiled_static") @hrx2_mul_mat_f3
   %cols_padded_b = index.assume %cols_padded [range(%cols_padded, 1, 512)] : index
   %ntokens_bounded = index.assume %ntokens [range(%ntokens, 1, 4194304)] : index
   %nselected_bounded = index.assume %nselected [range(%nselected, 1, 64)] : index
+  %src1_cols_count = config.get @hrx2.shape.src1_cols_count : index
   // truthful tight upper bounds for the table-derived indices: a src1_cols
-  // entry is a TOKEN index t in [0, ntokens-1]; a dst_cols entry is a
+  // entry is a COLUMN index (token t for shared src1 [k, ntokens], or
+  // selected index i + t*nselected for per-expert src1 [k, nsel*ntokens]);
+  // a dst_cols entry is a
   // SELECTED index i + t*nselected in [0, nselected*ntokens-1]. Assumed
   // (not min/max-clamped — those have no amdgpu lowering in this build).
   // The host guarantees the tables hold in-range values, so t*k + i stays
@@ -75,6 +79,7 @@ kernel.def export("hrx2_mul_mat_f32_f32_ggml_tbl_tiled_static") @hrx2_mul_mat_f3
   // JIT subrange proof for the loads below succeeds instead of trusting an
   // overflowing range.
   %ntokens_m1 = index.sub %ntokens_bounded, %unit : index
+  %src1_cols_m1 = index.sub %src1_cols_count, %unit : index
   %sel_total = index.mul %nselected_bounded, %ntokens_bounded : index
   %sel_total_m1 = index.sub %sel_total, %unit : index
 
@@ -87,7 +92,7 @@ kernel.def export("hrx2_mul_mat_f32_f32_ggml_tbl_tiled_static") @hrx2_mul_mat_f3
   %lane = index.assume %lane0 [range(%lane0, 0, 1023)] : index
 
   %src0_count = index.mul %rows_bounded, %k_bounded : index
-  %src1_count = index.mul %k_bounded, %ntokens_bounded : index
+  %src1_count = index.mul %k_bounded, %src1_cols_count : index
   %dst_count = index.mul %rows_bounded, %sel_total : index
 
   %src0_global = buffer.assume.memory_space<global> %src0 : buffer
@@ -122,32 +127,32 @@ kernel.def export("hrx2_mul_mat_f32_f32_ggml_tbl_tiled_static") @hrx2_mul_mat_f3
   %v6 = index.cmp ult, %c6, %cols_bounded : index
   %v7 = index.cmp ult, %c7, %cols_bounded : index
 
-  // table-derived src1 column (token index) and dst column (selected index)
+  // table-derived src1 column (column index) and dst column (selected index)
   // for each slot; bound TRUTHFULLY via assume (config-derived limits).
   %tc0 = view.load %s1c_view[%c0] : view<[%cols_padded_b]xi32> -> i32
   %tc0_i = index.cast %tc0 : i32 to index
-  %t0 = index.assume %tc0_i [range(%tc0_i, 0, %ntokens_m1)] : index
+  %t0 = index.assume %tc0_i [range(%tc0_i, 0, %src1_cols_m1)] : index
   %tc1 = view.load %s1c_view[%c1] : view<[%cols_padded_b]xi32> -> i32
   %tc1_i = index.cast %tc1 : i32 to index
-  %t1 = index.assume %tc1_i [range(%tc1_i, 0, %ntokens_m1)] : index
+  %t1 = index.assume %tc1_i [range(%tc1_i, 0, %src1_cols_m1)] : index
   %tc2 = view.load %s1c_view[%c2] : view<[%cols_padded_b]xi32> -> i32
   %tc2_i = index.cast %tc2 : i32 to index
-  %t2 = index.assume %tc2_i [range(%tc2_i, 0, %ntokens_m1)] : index
+  %t2 = index.assume %tc2_i [range(%tc2_i, 0, %src1_cols_m1)] : index
   %tc3 = view.load %s1c_view[%c3] : view<[%cols_padded_b]xi32> -> i32
   %tc3_i = index.cast %tc3 : i32 to index
-  %t3 = index.assume %tc3_i [range(%tc3_i, 0, %ntokens_m1)] : index
+  %t3 = index.assume %tc3_i [range(%tc3_i, 0, %src1_cols_m1)] : index
   %tc4 = view.load %s1c_view[%c4] : view<[%cols_padded_b]xi32> -> i32
   %tc4_i = index.cast %tc4 : i32 to index
-  %t4 = index.assume %tc4_i [range(%tc4_i, 0, %ntokens_m1)] : index
+  %t4 = index.assume %tc4_i [range(%tc4_i, 0, %src1_cols_m1)] : index
   %tc5 = view.load %s1c_view[%c5] : view<[%cols_padded_b]xi32> -> i32
   %tc5_i = index.cast %tc5 : i32 to index
-  %t5 = index.assume %tc5_i [range(%tc5_i, 0, %ntokens_m1)] : index
+  %t5 = index.assume %tc5_i [range(%tc5_i, 0, %src1_cols_m1)] : index
   %tc6 = view.load %s1c_view[%c6] : view<[%cols_padded_b]xi32> -> i32
   %tc6_i = index.cast %tc6 : i32 to index
-  %t6 = index.assume %tc6_i [range(%tc6_i, 0, %ntokens_m1)] : index
+  %t6 = index.assume %tc6_i [range(%tc6_i, 0, %src1_cols_m1)] : index
   %tc7 = view.load %s1c_view[%c7] : view<[%cols_padded_b]xi32> -> i32
   %tc7_i = index.cast %tc7 : i32 to index
-  %t7 = index.assume %tc7_i [range(%tc7_i, 0, %ntokens_m1)] : index
+  %t7 = index.assume %tc7_i [range(%tc7_i, 0, %src1_cols_m1)] : index
 
   %dc0 = view.load %dc_view[%c0] : view<[%cols_padded_b]xi32> -> i32
   %dc0_i = index.cast %dc0 : i32 to index

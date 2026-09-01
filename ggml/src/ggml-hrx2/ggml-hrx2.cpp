@@ -8233,6 +8233,80 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice(
         return GGML_STATUS_FAILED;
     }
 
+    // DENSE prefill (cols >= 8): reuse the fused table-scatter tiled mm
+    // (round 23, proven on the MoE grouped path) with IDENTITY column tables —
+    // one group containing all cols, src1_cols[c] = c, dst_cols[c] = c,
+    // ntokens = cols, nselected = 1. Dequant stays inline (no b_w), weight
+    // traffic drops ~8x vs dequant + tiled mm. Falls back to dequant + mm.
+    if (cols >= 8) {
+        const ggml_backend_hrx2_kernel_route * fused_tbl_route = nullptr;
+        for (const auto * r : device_context->mul_mat_f32_f32_routes) {
+            if (r->id == "mul_mat_q4nx_fused_tbl_tiled") { fused_tbl_route = r; break; }
+        }
+        if (fused_tbl_route && !getenv("HRX2_NO_FUSED_TBL")) {
+            std::vector<ggml_backend_hrx2_config_binding> ft_cfg;
+            ft_cfg.push_back({"@hrx2.shape.k", std::to_string(k)});
+            ft_cfg.push_back({"@hrx2.shape.rows", std::to_string(rows)});
+            ft_cfg.push_back({"@hrx2.shape.cols", std::to_string(cols)});
+            ft_cfg.push_back({"@hrx2.shape.ntokens", std::to_string(cols)});
+            ft_cfg.push_back({"@hrx2.shape.nselected", std::to_string(1)});
+            ft_cfg.push_back({"@hrx2.tuning.q4nx.workgroup_size", std::to_string(wg_size)});
+            ft_cfg.push_back({"@hrx2.tuning.q4nx.n_tile_cols", std::to_string(n_tc)});
+            const std::string ft_key = ggml_backend_hrx2_base_cache_key(device_context, fused_tbl_route) +
+                "-q4nx-ft-r" + std::to_string(rows) + "-c" + std::to_string(cols) +
+                "-k" + std::to_string(k) + "-nt" + std::to_string(cols) +
+                "-ns1-wg" + std::to_string(wg_size);
+            auto * ft = ggml_backend_hrx2_get_provider(device_context, fused_tbl_route, ft_cfg, ft_key);
+            if (ft && ft->route.constant_byte_length == 0) {
+                const uint32_t cols_padded = (cols + 7) / 8 * 8;
+                const size_t tbl_bytes = (size_t) cols_padded * sizeof(int32_t) * 2;
+                if (!ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_tbl, &device_context->q4nx_tbl_cap, tbl_bytes)) {
+                    return GGML_STATUS_FAILED;
+                }
+                hrx_buffer_t b_tbl = device_context->q4nx_tbl;
+                std::vector<int32_t> s1c_pad(cols_padded, 0);
+                std::vector<int32_t> dc_pad(cols_padded, 0);
+                for (uint32_t c = 0; c < cols; ++c) {
+                    s1c_pad[c] = (int32_t) c;
+                    dc_pad[c] = (int32_t) c;
+                }
+                if (!GGML_HRX2_CHECK(hrx_stream_update_buffer(
+                        context->stream, s1c_pad.data(), (size_t) cols_padded * sizeof(int32_t),
+                        b_tbl, 0))) {
+                    return GGML_STATUS_FAILED;
+                }
+                if (!GGML_HRX2_CHECK(hrx_stream_update_buffer(
+                        context->stream, dc_pad.data(), (size_t) cols_padded * sizeof(int32_t),
+                        b_tbl, (size_t) cols_padded * sizeof(int32_t)))) {
+                    return GGML_STATUS_FAILED;
+                }
+                // bindings: packed/scales/zeros views of b_raw + full src1 + full dst + tables
+                hrx_buffer_ref_t ft_bindings[7] = {
+                    { b_raw, 1024, (size_t) n_tiles * 4096 },
+                    { b_raw,    0, (size_t) n_tiles * 512  },
+                    { b_raw,  512, (size_t) n_tiles * 512  },
+                    { src1_ref.buffer, src1_ref.offset + (size_t) src1_col * sizeof(float), (size_t) k * cols * sizeof(float) },
+                    { dst_ref.buffer,  dst_ref.offset  + (size_t) dst_col  * sizeof(float), (size_t) rows * cols * sizeof(float) },
+                    { b_tbl,  0, (size_t) cols_padded * sizeof(int32_t) },
+                    { b_tbl, (size_t) cols_padded * sizeof(int32_t), (size_t) cols_padded * sizeof(int32_t) },
+                };
+                const uint32_t ft_col_groups = (cols + 7) / 8;
+                hrx_dispatch_config_t ft_config = {
+                    { rows, ft_col_groups, 1 },
+                    { ft->export_info.workgroup_size[0] ? ft->export_info.workgroup_size[0] : ft->route.workgroup_size[0], 1, 1 },
+                    0,
+                };
+                if (!GGML_HRX2_CHECK(hrx_stream_dispatch(
+                        context->stream, ft->executable, ft->export_ordinal,
+                        &ft_config, nullptr, 0, ft_bindings, 7, HRX_DISPATCH_FLAG_NONE))) {
+                    return GGML_STATUS_FAILED;
+                }
+                return GGML_STATUS_SUCCESS;
+            }
+            // fall through to dequant + mm if provider unavailable
+        }
+    }
+
     // dequant provider (q4nx_dequant_f32 route)
     const ggml_backend_hrx2_kernel_route * deq_route = device_context->q4nx_dequant_routes.front();
     std::vector<ggml_backend_hrx2_config_binding> deq_cfg;
@@ -8302,7 +8376,7 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_fused(
     for (const auto * r : device_context->mul_mat_f32_f32_routes) {
         if (r->id == "mul_mat_q4nx_fused_f32") { fused_route = r; break; }
     }
-    if (!fused_route) {
+    if (!fused_route || getenv("HRX2_NO_FUSED_PAIR")) {
         return GGML_STATUS_FAILED;  // caller falls back to dequant + mm
     }
 
@@ -8358,7 +8432,8 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_grouped(
         uint32_t cols,        // group size (number of tokens on this expert)
         uint32_t ntokens,     // total tokens in the MUL_MAT_ID (unused; kept for signature stability)
         uint32_t nselected,   // total selected per token (unused; kept for signature stability)
-        const int32_t * src1_cols,  // src1 column (token index) per group slot
+        uint32_t src1_cols_count, // total src1 columns: ntokens (shared src1) or nselected*ntokens (per-expert src1)
+        const int32_t * src1_cols,  // src1 column per group slot (token index, or selected index for per-expert src1)
         const int32_t * dst_cols) { // dst column (i + t*nselected) per group slot
 
     ggml_backend_hrx2_device_context * device_context = context->device_context;
@@ -8398,13 +8473,14 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_grouped(
     for (const auto * r : device_context->mul_mat_f32_f32_routes) {
         if (r->id == "mul_mat_q4nx_fused_tbl_tiled") { fused_tbl_route = r; break; }
     }
-    if (fused_tbl_route) {
+    if (fused_tbl_route && !getenv("HRX2_NO_FUSED_TBL")) {
         std::vector<ggml_backend_hrx2_config_binding> ft_cfg;
         ft_cfg.push_back({"@hrx2.shape.k", std::to_string(k)});
         ft_cfg.push_back({"@hrx2.shape.rows", std::to_string(rows)});
         ft_cfg.push_back({"@hrx2.shape.cols", std::to_string(cols)});
         ft_cfg.push_back({"@hrx2.shape.ntokens", std::to_string(ntokens)});
         ft_cfg.push_back({"@hrx2.shape.nselected", std::to_string(nselected)});
+        ft_cfg.push_back({"@hrx2.shape.src1_cols_count", std::to_string(src1_cols_count)});
         ft_cfg.push_back({"@hrx2.tuning.q4nx.workgroup_size", std::to_string(wg_size)});
         ft_cfg.push_back({"@hrx2.tuning.q4nx.n_tile_cols", std::to_string(n_tc)});
         const std::string ft_key = ggml_backend_hrx2_base_cache_key(device_context, fused_tbl_route) +
@@ -8542,6 +8618,7 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_grouped(
         tbl_cfg.push_back({"@hrx2.shape.cols", std::to_string(cols)});
         tbl_cfg.push_back({"@hrx2.shape.ntokens", std::to_string(ntokens)});
         tbl_cfg.push_back({"@hrx2.shape.nselected", std::to_string(nselected)});
+        tbl_cfg.push_back({"@hrx2.shape.src1_cols_count", std::to_string(src1_cols_count)});
         tbl_cfg.push_back({"@hrx2.tuning.workgroup_size", std::to_string(wg_size)});
         const std::string tbl_key = ggml_backend_hrx2_base_cache_key(device_context, tbl_route) +
             "-q4nx-tbl-r" + std::to_string(rows) + "-c" + std::to_string(cols) +
@@ -8608,6 +8685,21 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx(
         !ggml_backend_hrx2_tensor_buffer_ref(dst, &dst_ref)) {
         GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX tensor is not backed by HRX2 buffers\n");
         return GGML_STATUS_FAILED;
+    }
+    // Dense decode (cols == 1): use the fused per-pair kernel (dequant
+    // inline, no b_w materialization) like the MoE decode path; fall back to
+    // the dequant+mm slice if the fused route is unavailable.
+    if (src1->ne[1] == 1) {
+        if (ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_fused(
+                context, src0_ref, src1_ref, dst_ref,
+                /* tile_base */ 0,
+                /* n_tiles */ (uint32_t) src0->ne[1],
+                /* k */ (uint32_t) src1->ne[0],
+                /* rows */ (uint32_t) dst->ne[0],
+                /* src1_col */ 0,
+                /* dst_col */ 0) == GGML_STATUS_SUCCESS) {
+            return GGML_STATUS_SUCCESS;
+        }
     }
     return ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice(
         context, src0_ref, src1_ref, dst_ref,
@@ -8687,6 +8779,10 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_id_q4nx(
     const uint32_t rows       = (tpe / n_tc) * GGML_Q4NX_TILE_ROWS;
     const uint32_t nselected  = (uint32_t) src2->ne[0];
     const uint32_t ntokens    = (uint32_t) dst->ne[2];
+    // src1 may be [k, 1, ntokens] (gate/up: shared column per token) or
+    // [k, nselected, ntokens] (down: per-expert column per slot).
+    const bool per_expert_src1 = src1->ne[1] > 1;
+    const uint32_t src1_cols_count = per_expert_src1 ? nselected * ntokens : ntokens;
 
     // The ids tensor may live in device memory (argsort output on HRX) or be
     // a non-contiguous host view; copy it into a host-visible scratch buffer
@@ -8737,13 +8833,12 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_id_q4nx(
     // table-scatter mm route (index.min/max/rem have no amdgpu lowering, so
     // the round-20 tbl kernel silently never used its tables).
     const ggml_backend_hrx2_kernel_route * tbl_route = (const ggml_backend_hrx2_kernel_route *) -1;
-
     // validate ids and bucket pairs by expert (in (i,t) order per bucket)
     const uint32_t nexperts = (uint32_t) src0->ne[2];
     std::vector<std::vector<std::pair<uint32_t, uint32_t>>> groups(nexperts);
     for (uint32_t i = 0; i < nselected; ++i) {
         for (uint32_t t = 0; t < ntokens; ++t) {
-            const int32_t e = ids_data[i * ntokens + t];
+            const int32_t e = ids_data[t * nselected + i];
             if (e < 0 || (uint32_t) e >= nexperts) {
                 GGML_LOG_ERROR("HRX2: MUL_MAT_ID Q4NX expert id %d out of range\n", (int) e);
                 hrx_buffer_unmap(device_context->q4nx_ids);
@@ -8768,7 +8863,7 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_id_q4nx(
                 const uint32_t i = group[0].first;
                 const uint32_t t = group[0].second;
                 const uint32_t tile_base = e * tpe;
-                const uint32_t src1_col  = t * k;
+                const uint32_t src1_col  = (per_expert_src1 ? (i + t * nselected) * k : t * k);
                 const uint32_t dst_col   = (i + t * nselected) * rows;
                 if (ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_fused(
                         context, src0_ref, src1_ref, dst_ref,
@@ -8787,14 +8882,15 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_id_q4nx(
             src1_cols.clear();
             dst_cols.clear();
             for (const auto & pr : group) {
-                src1_cols.push_back((int32_t) pr.second);              // token index
+                // src1 column: token index (shared) or selected index (per-expert)
+                src1_cols.push_back(per_expert_src1 ? (int32_t) (pr.first + pr.second * nselected) : (int32_t) pr.second);
                 dst_cols.push_back((int32_t) (pr.first + pr.second * nselected)); // dst col
             }
             const uint32_t tile_base = e * tpe;
             if (ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_grouped(
                     context, src0_ref, src1_ref, dst_ref,
                     tile_base, tpe, k, rows, (uint32_t) group.size(),
-                    ntokens, nselected,
+                    ntokens, nselected, src1_cols_count,
                     src1_cols.data(), dst_cols.data()) != GGML_STATUS_SUCCESS) {
                 hrx_buffer_unmap(device_context->q4nx_ids);
                 return GGML_STATUS_FAILED;
@@ -8807,13 +8903,13 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_id_q4nx(
     // fallback: one slice per (selected expert, token) pair
     for (uint32_t i = 0; i < nselected; ++i) {
         for (uint32_t t = 0; t < ntokens; ++t) {
-            const int32_t e = ids_data[i * ntokens + t];
+            const int32_t e = ids_data[t * nselected + i];
             if (e < 0 || (uint32_t) e >= (uint32_t) src0->ne[2]) {
                 GGML_LOG_ERROR("HRX2: MUL_MAT_ID Q4NX expert id %d out of range\n", (int) e);
                 return GGML_STATUS_FAILED;
             }
             const uint32_t tile_base = (uint32_t) e * tpe;
-            const uint32_t src1_col  = t * k;
+            const uint32_t src1_col  = (per_expert_src1 ? (i + t * nselected) * k : t * k);
             const uint32_t dst_col   = (i + t * nselected) * rows;
             if (ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_fused(
                     context, src0_ref, src1_ref, dst_ref,
