@@ -183,3 +183,238 @@ kernel.def export("hrx2_mul_mat_q4nx_fused_f32") @hrx2_mul_mat_q4nx_fused_f32() 
   }
   kernel.return
 }
+
+
+// Decode redesign (round 25g): 16 rows per workgroup (one tile lane), 256
+// lanes = 16 rows x 16 k-block-split. The packed bytes for the 16 rows at
+// one k are 8 CONTIGUOUS bytes (lane*2048 + ck*8 + 0..7), so each k-step
+// reads 8-byte coalesced chunks instead of the per-pair kernel's 1-byte
+// stride-8 reads. The 16 k-block lanes per row write partial sums to
+// workgroup scratch and lane (kb==0) of each row sums them after a barrier.
+// rows must be a multiple of 16 (Q4NX rows are always 32-multiples).
+kernel.def export("hrx2_mul_mat_q4nx_fused_f32_r16") @hrx2_mul_mat_q4nx_fused_f32_r16() {
+  %unit = index.constant 1 : index
+  %sixteen = index.constant 16 : index
+  %rows = config.get @hrx2.shape.rows : index
+  %cols = config.get @hrx2.shape.cols : index
+  %workgroup_size = config.get @hrx2.tuning.q4nx.workgroup_size : index
+  %rows_wg = index.div %rows, %sixteen : index
+  kernel.launch.config workgroups(%rows_wg, %cols, %unit) workgroup_size(%workgroup_size, %unit, %unit) : index
+} launch(%packed: buffer, %scales: buffer, %zeros: buffer, %src1: buffer, %dst: buffer) {
+  %base = index.constant 0 : offset
+  %zero = index.constant 0 : index
+  %unit = index.constant 1 : index
+  %two = index.constant 2 : index
+  %eight = index.constant 8 : index
+  %sixteen = index.constant 16 : index
+  %thirtytwo = index.constant 32 : index
+  %twofiftysix = index.constant 256 : index
+  %five120 = index.constant 5120 : index
+  %two048 = index.constant 2048 : index
+  %scratch_bytes = index.constant 1024 : offset
+  %zero_f32 = scalar.constant 0.0 : f32
+  %zero_i32 = scalar.constant 0 : i32
+  %two_i32 = scalar.constant 2 : i32
+  %four_i32 = scalar.constant 4 : i32
+  %eight_i32 = scalar.constant 8 : i32
+  %fifteen_i32 = scalar.constant 15 : i32
+  %sixteen_i32 = scalar.constant 16 : i32
+  %hundred = scalar.constant 100.0 : f32
+
+  %k = config.get @hrx2.shape.k : index
+  %rows = config.get @hrx2.shape.rows : index
+  %cols = config.get @hrx2.shape.cols : index
+  %workgroup_size = config.get @hrx2.tuning.q4nx.workgroup_size : index
+  %n_tc = config.get @hrx2.tuning.q4nx.n_tile_cols : index
+  %k_bounded = index.assume %k [range(%k, 1, 65536)] : index
+  %rows_bounded = index.assume %rows [range(%rows, 1, 262144)] : index
+  %cols_bounded = index.assume %cols [range(%cols, 1, 512)] : index
+  %n_tc_bounded = index.assume %n_tc [range(%n_tc, 1, 256)] : index
+
+  %row0 = kernel.workgroup.id<x> : index
+  %row0_b = index.assume %row0 [range(%row0, 0, 16383)] : index
+  %col0 = kernel.workgroup.id<y> : index
+  %col = index.assume %col0 [range(%col0, 0, 511)] : index
+  %lane0 = kernel.workitem.id<x> : index
+  %lane = index.assume %lane0 [range(%lane0, 0, 255)] : index
+
+  %rl = index.rem %lane, %sixteen : index
+  %kb = index.div %lane, %sixteen : index
+  %base_row0 = index.mul %row0_b, %sixteen : index
+  %base_row = index.assume %base_row0 [range(%base_row0, 0, 262143)] : index
+  %tile_row = index.div %base_row, %thirtytwo : index
+  %in_tile_base = index.rem %base_row, %thirtytwo : index
+  %lane_of_tile = index.div %in_tile_base, %sixteen : index
+  %abs_in_tile_row0 = index.add %in_tile_base, %rl : index
+  %row_in_lane = index.rem %abs_in_tile_row0, %sixteen : index
+  %byte_idx = index.div %row_in_lane, %two : index
+  %nib = index.rem %row_in_lane, %two : index
+  %lane_base = index.mul %lane_of_tile, %two048 : index
+  %nib_i = index.cast %nib : index to i32
+  %nib_eq0 = scalar.cmpi eq, %nib_i, %zero_i32 : i32
+  %kb_i32 = index.cast %kb : index to i32
+  %is_kb0 = scalar.cmpi eq, %kb_i32, %zero_i32 : i32
+
+  %src1_count = index.mul %k_bounded, %cols_bounded : index
+  %dst_count = index.mul %rows_bounded, %cols_bounded : index
+
+  %packed_g = buffer.assume.memory_space<global> %packed : buffer
+  %scales_g = buffer.assume.memory_space<global> %scales : buffer
+  %zeros_g = buffer.assume.memory_space<global> %zeros : buffer
+  %src1_global = buffer.assume.memory_space<global> %src1 : buffer
+  %dst_global = buffer.assume.memory_space<global> %dst : buffer
+  %packed_a, %scales_a, %zeros_a, %src1_noalias, %dst_noalias =
+      buffer.assume.noalias %packed_g, %scales_g, %zeros_g, %src1_global, %dst_global : buffer, buffer, buffer, buffer, buffer
+  %packed_v = buffer.view %packed_a[%base] : buffer -> view<1073741824xi8>
+  %scales_v = buffer.view %scales_a[%base] : buffer -> view<1073741824xi8>
+  %zeros_v = buffer.view %zeros_a[%base] : buffer -> view<1073741824xi8>
+  %src1_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_count]xf32>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32>
+
+  %scratch = buffer.alloca<workgroup> align(64) %scratch_bytes : buffer
+  %scratch_view = buffer.view %scratch[%base] : buffer -> view<256xf32>
+
+  %k_blocks = index.div %k_bounded, %eight : index
+  %sum = scf.for %t = [%kb to %k_blocks step %sixteen](%acc = %zero_f32 : f32) -> (f32) {
+    %block_k0 = index.mul %t, %eight : index
+    %tile_col = index.div %block_k0, %twofiftysix : index
+    %ck_base = index.rem %block_k0, %twofiftysix : index
+    %tile_idx = index.mul %tile_row, %n_tc_bounded : index
+    %tile_idx2 = index.add %tile_idx, %tile_col : index
+    %tile_base = index.mul %tile_idx2, %five120 : index
+    %group = index.div %ck_base, %thirtytwo : index
+    %in_tile_row8 = index.mul %abs_in_tile_row0, %eight : index
+    %scale_idx = index.add %in_tile_row8, %group : index
+    %scale_off2 = index.mul %scale_idx, %two : index
+    %scale_lo_off = index.add %tile_base, %scale_off2 : index
+    %scale_hi_off = index.add %scale_lo_off, %unit : index
+    %scale_lo = view.load %scales_v[%scale_lo_off] : view<1073741824xi8> -> i8
+    %scale_lo_u = scalar.extui %scale_lo : i8 to i32
+    %scale_hi = view.load %scales_v[%scale_hi_off] : view<1073741824xi8> -> i8
+    %scale_hi_u = scalar.extui %scale_hi : i8 to i32
+    %scale_hi_shl = scalar.shli %scale_hi_u, %eight_i32 : i32
+    %scale_bf16 = scalar.ori %scale_lo_u, %scale_hi_shl : i32
+    %scale_f32_bits = scalar.shli %scale_bf16, %sixteen_i32 : i32
+    %scale = scalar.bitcast %scale_f32_bits : i32 to f32
+
+    %zp_lo_off = index.add %tile_base, %scale_off2 : index
+    %zp_hi_off = index.add %zp_lo_off, %unit : index
+    %zp_lo = view.load %zeros_v[%zp_lo_off] : view<1073741824xi8> -> i8
+    %zp_lo_u = scalar.extui %zp_lo : i8 to i32
+    %zp_hi = view.load %zeros_v[%zp_hi_off] : view<1073741824xi8> -> i8
+    %zp_hi_u = scalar.extui %zp_hi : i8 to i32
+    %zp_hi_shl = scalar.shli %zp_hi_u, %eight_i32 : i32
+    %zp_bf16 = scalar.ori %zp_lo_u, %zp_hi_shl : i32
+    %zp_f32_bits = scalar.shli %zp_bf16, %sixteen_i32 : i32
+    %zp = scalar.bitcast %zp_f32_bits : i32 to f32
+
+    %scale_abs = scalar.absf %scale : f32
+    %scale_ok = scalar.cmpf olt, %scale_abs, %hundred : f32
+    %scale_safe = scf.if %scale_ok -> (f32) {
+      scf.yield %scale : f32
+    } else {
+      scf.yield %zero_f32 : f32
+    }
+    %zp_abs = scalar.absf %zp : f32
+    %zp_ok = scalar.cmpf olt, %zp_abs, %hundred : f32
+    %zp_safe = scf.if %zp_ok -> (f32) {
+      scf.yield %zp : f32
+    } else {
+      scf.yield %zero_f32 : f32
+    }
+
+    %acc2 = scf.for %kk = [%zero to %eight step %unit](%acc_in = %acc : f32) -> (f32) {
+      %ck = index.add %ck_base, %kk : index
+      %byte_off0 = index.mul %ck, %eight : index
+      %byte_off1 = index.add %byte_off0, %byte_idx : index
+      %byte_off2 = index.add %lane_base, %byte_off1 : index
+      %byte_off3 = index.add %byte_off2, %tile_base : index
+      %packed_byte = view.load %packed_v[%byte_off3] : view<1073741824xi8> -> i8
+      %pb_u = scalar.extui %packed_byte : i8 to i32
+      %q_low = scalar.andi %pb_u, %fifteen_i32 : i32
+      %q_high = scalar.shrui %pb_u, %four_i32 : i32
+      %q = scf.if %nib_eq0 -> (i32) {
+        scf.yield %q_low : i32
+      } else {
+        scf.yield %q_high : i32
+      }
+      %q_lt8 = scalar.cmpi slt, %q, %eight_i32 : i32
+      %q_minus_16 = scalar.subi %q, %sixteen_i32 : i32
+      %val_i = scf.if %q_lt8 -> (i32) {
+        scf.yield %q : i32
+      } else {
+        scf.yield %q_minus_16 : i32
+      }
+      %val = scalar.sitofp %val_i : i32 to f32
+      %vsc = scalar.mulf %val, %scale_safe : f32
+      %a = scalar.addf %vsc, %zp_safe : f32
+      %k_abs = index.add %block_k0, %kk : index
+      %src1_off0 = index.mul %k_abs, %cols_bounded : index
+      %src1_off = index.add %src1_off0, %col : index
+      %b = view.load %src1_view[%src1_off] : view<[%src1_count]xf32> -> f32
+      %product = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b : f32
+      %next = scalar.addf<reassoc|nnan|ninf|nsz> %acc_in, %product : f32
+      scf.yield %next : f32
+    }
+    scf.yield %acc2 : f32
+  }
+
+  %sum_vec = vector.from_elements %sum : vector<1xf32>
+  vector.store %sum_vec, %scratch_view[%lane] : vector<1xf32>, view<256xf32>
+  kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
+
+  scf.if %is_kb0 {
+    %s0 = view.load %scratch_view[%rl] : view<256xf32> -> f32
+    %rl1 = index.add %rl, %sixteen : index
+    %s1 = view.load %scratch_view[%rl1] : view<256xf32> -> f32
+    %t1 = scalar.addf %s0, %s1 : f32
+    %rl2 = index.add %rl1, %sixteen : index
+    %s2 = view.load %scratch_view[%rl2] : view<256xf32> -> f32
+    %t2 = scalar.addf %t1, %s2 : f32
+    %rl3 = index.add %rl2, %sixteen : index
+    %s3 = view.load %scratch_view[%rl3] : view<256xf32> -> f32
+    %t3 = scalar.addf %t2, %s3 : f32
+    %rl4 = index.add %rl3, %sixteen : index
+    %s4 = view.load %scratch_view[%rl4] : view<256xf32> -> f32
+    %t4 = scalar.addf %t3, %s4 : f32
+    %rl5 = index.add %rl4, %sixteen : index
+    %s5 = view.load %scratch_view[%rl5] : view<256xf32> -> f32
+    %t5 = scalar.addf %t4, %s5 : f32
+    %rl6 = index.add %rl5, %sixteen : index
+    %s6 = view.load %scratch_view[%rl6] : view<256xf32> -> f32
+    %t6 = scalar.addf %t5, %s6 : f32
+    %rl7 = index.add %rl6, %sixteen : index
+    %s7 = view.load %scratch_view[%rl7] : view<256xf32> -> f32
+    %t7 = scalar.addf %t6, %s7 : f32
+    %rl8 = index.add %rl7, %sixteen : index
+    %s8 = view.load %scratch_view[%rl8] : view<256xf32> -> f32
+    %t8 = scalar.addf %t7, %s8 : f32
+    %rl9 = index.add %rl8, %sixteen : index
+    %s9 = view.load %scratch_view[%rl9] : view<256xf32> -> f32
+    %t9 = scalar.addf %t8, %s9 : f32
+    %rl10 = index.add %rl9, %sixteen : index
+    %s10 = view.load %scratch_view[%rl10] : view<256xf32> -> f32
+    %t10 = scalar.addf %t9, %s10 : f32
+    %rl11 = index.add %rl10, %sixteen : index
+    %s11 = view.load %scratch_view[%rl11] : view<256xf32> -> f32
+    %t11 = scalar.addf %t10, %s11 : f32
+    %rl12 = index.add %rl11, %sixteen : index
+    %s12 = view.load %scratch_view[%rl12] : view<256xf32> -> f32
+    %t12 = scalar.addf %t11, %s12 : f32
+    %rl13 = index.add %rl12, %sixteen : index
+    %s13 = view.load %scratch_view[%rl13] : view<256xf32> -> f32
+    %t13 = scalar.addf %t12, %s13 : f32
+    %rl14 = index.add %rl13, %sixteen : index
+    %s14 = view.load %scratch_view[%rl14] : view<256xf32> -> f32
+    %t14 = scalar.addf %t13, %s14 : f32
+    %rl15 = index.add %rl14, %sixteen : index
+    %s15 = view.load %scratch_view[%rl15] : view<256xf32> -> f32
+    %t15 = scalar.addf %t14, %s15 : f32
+
+    %dst_row = index.add %base_row, %rl : index
+    %dst_col_base = index.mul %col, %rows_bounded : index
+    %dst_index = index.add %dst_row, %dst_col_base : index
+    view.store %t15, %dst_view[%dst_index] : f32, view<[%dst_count]xf32>
+  }
+  kernel.return
+}

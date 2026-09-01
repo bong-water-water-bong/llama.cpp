@@ -8373,9 +8373,20 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_fused(
     const uint32_t wg_size = 256;
     const uint32_t n_tc    = k / GGML_Q4NX_TILE_COLS;
 
+    // Prefer the r16 kernel (16 rows per workgroup, contiguous packed reads)
+    // for the per-pair (cols == 1) path: it coalesces the packed bytes ~8x
+    // better than the per-pair kernel. Falls back to the per-pair kernel if
+    // unavailable (e.g. rows not a multiple of 16).
     const ggml_backend_hrx2_kernel_route * fused_route = nullptr;
-    for (const auto * r : device_context->mul_mat_f32_f32_routes) {
-        if (r->id == "mul_mat_q4nx_fused_f32") { fused_route = r; break; }
+    if (rows % 16 == 0) {
+        for (const auto * r : device_context->mul_mat_f32_f32_routes) {
+            if (r->id == "mul_mat_q4nx_fused_f32_r16") { fused_route = r; break; }
+        }
+    }
+    if (!fused_route) {
+        for (const auto * r : device_context->mul_mat_f32_f32_routes) {
+            if (r->id == "mul_mat_q4nx_fused_f32") { fused_route = r; break; }
+        }
     }
     if (!fused_route || getenv("HRX2_NO_FUSED_PAIR")) {
         return GGML_STATUS_FAILED;  // caller falls back to dequant + mm
@@ -8407,8 +8418,12 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_fused(
         { src1_ref.buffer, src1_ref.offset + (size_t) src1_col * sizeof(float), (size_t) k * sizeof(float) },
         { dst_ref.buffer,  dst_ref.offset  + (size_t) dst_col  * sizeof(float), (size_t) rows * sizeof(float) },
     };
+    // The r16 kernel computes 16 output rows per workgroup (256 lanes =
+    // 16 rows x 16 k-block split); the per-pair kernel is 1 row per
+    // workgroup.
+    const uint32_t wg_rows = (fused_route->id == "mul_mat_q4nx_fused_f32_r16") ? rows / 16 : rows;
     hrx_dispatch_config_t config = {
-        { rows, 1, 1 },
+        { wg_rows, 1, 1 },
         { fused->export_info.workgroup_size[0] ? fused->export_info.workgroup_size[0] : fused->route.workgroup_size[0], 1, 1 },
         0,
     };
