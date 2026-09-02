@@ -121,5 +121,8 @@
  },
  "mul_mat_q4nx_fused_f32_r16wb8": {
   "path": "kernels/mul_mat_q4nx_fused_f32_r16wb8.loom"
+ },
+ "mul_mat_q4nx_fused_f32_r16wb4c": {
+  "path": "kernels/mul_mat_q4nx_fused_f32_r16wb4c.loom"
  }
 }

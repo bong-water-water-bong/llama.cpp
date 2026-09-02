@@ -8600,8 +8600,11 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_fused_batch(
     const uint32_t n_tc    = k / GGML_Q4NX_TILE_COLS;
 
     const char * batch_route_id = (cols == 2) ? "mul_mat_q4nx_fused_f32_r16wb2"
-                                               : "mul_mat_q4nx_fused_f32_r16wb8";
-    const char * batch_env = (cols == 2) ? "GGML_HRX2_NO_R16WB2" : "GGML_HRX2_NO_R16WB8";
+                                               : (cols == 4) ? "mul_mat_q4nx_fused_f32_r16wb4c"
+                                                             : "mul_mat_q4nx_fused_f32_r16wb8";
+    const char * batch_env = (cols == 2) ? "GGML_HRX2_NO_R16WB2"
+                            : (cols == 4) ? "GGML_HRX2_NO_R16WB4C"
+                                          : "GGML_HRX2_NO_R16WB8";
     const ggml_backend_hrx2_kernel_route * fused_route = nullptr;
     if (rows % 16 == 0 && cols >= 2 && cols <= 8 && !getenv(batch_env)) {
         for (const auto * r : device_context->mul_mat_f32_f32_routes) {
