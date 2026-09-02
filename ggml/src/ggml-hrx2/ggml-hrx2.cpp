@@ -8896,40 +8896,57 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_id_q4nx(
     // and read the expert ids from there (row stride = src2->nb[1]).
     ggml_backend_hrx2_device_context * device_context = context->device_context;
     const size_t ids_bytes = (size_t) nselected * (size_t) ntokens * sizeof(int32_t);
-    if (!ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_ids, &device_context->q4nx_ids_cap, ids_bytes)) {
+    const bool ids_direct = src2->buffer != nullptr &&
+        src2->buffer->buft == &device_context->host_buffer_type &&
+        src2->data != nullptr;
+    if (!ids_direct && !ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_ids, &device_context->q4nx_ids_cap, ids_bytes)) {
         return GGML_STATUS_FAILED;
     }
     {
+        // ZERO-COPY fast path (round 25i): when src2 lives in the
+        // host-coherent buft (CPU argsort wrote the ids into shared GTT),
+        // read the ids directly from src2->data — NO device copy, NO stream
+        // synchronize. The per-op synchronize was the prefill bottleneck
+        // (3812 ms of syncs vs 59 ms of compute on the 30B q4nx pp32); the
+        // ids are tiny and the CPU-written GTT is host-coherent, so the read
+        // needs no flush. Fall back to the copy+sync path for device ids.
         hrx_buffer_ref_t ids_ref = {};
-        if (!ggml_backend_hrx2_tensor_buffer_ref(src2, &ids_ref)) {
-            GGML_LOG_ERROR("HRX2: MUL_MAT_ID Q4NX ids tensor not backed by HRX2 buffers\n");
-            return GGML_STATUS_FAILED;
-        }
-        // The ids tensor is [nselected, ntokens] but may be a strided VIEW of
-        // the argsort output (nb[1] >> nselected*4). Copy each token row at
-        // its real stride into a packed host-visible scratch so the dispatch
-        // can read ids as contiguous [nselected, ntokens].
-        const size_t ids_src_stride = src2->nb[1];
-        const size_t ids_row_bytes  = (size_t) nselected * sizeof(int32_t);
-        for (uint32_t t = 0; t < ntokens; ++t) {
-            if (!GGML_HRX2_CHECK(hrx_stream_copy_buffer(
-                    context->stream, ids_ref.buffer,
-                    ids_ref.offset + (size_t) t * ids_src_stride,
-                    device_context->q4nx_ids, (size_t) t * ids_row_bytes,
-                    ids_row_bytes))) {
+        if (!ids_direct) {
+            if (!ggml_backend_hrx2_tensor_buffer_ref(src2, &ids_ref)) {
+                GGML_LOG_ERROR("HRX2: MUL_MAT_ID Q4NX ids tensor not backed by HRX2 buffers\n");
+                return GGML_STATUS_FAILED;
+            }
+            // The ids tensor is [nselected, ntokens] but may be a strided
+            // VIEW of the argsort output (nb[1] >> nselected*4). Copy each
+            // token row at its real stride into a packed host-visible scratch
+            // so the dispatch can read ids as contiguous [nselected, ntokens].
+            const size_t ids_src_stride = src2->nb[1];
+            const size_t ids_row_bytes  = (size_t) nselected * sizeof(int32_t);
+            for (uint32_t t = 0; t < ntokens; ++t) {
+                if (!GGML_HRX2_CHECK(hrx_stream_copy_buffer(
+                        context->stream, ids_ref.buffer,
+                        ids_ref.offset + (size_t) t * ids_src_stride,
+                        device_context->q4nx_ids, (size_t) t * ids_row_bytes,
+                        ids_row_bytes))) {
+                    return GGML_STATUS_FAILED;
+                }
+            }
+            // the copy is async; sync before mapping/reading on the host
+            if (!GGML_HRX2_CHECK(hrx_stream_synchronize(context->stream))) {
                 return GGML_STATUS_FAILED;
             }
         }
-        // the copy is async; sync before mapping/reading on the host
-        if (!GGML_HRX2_CHECK(hrx_stream_synchronize(context->stream))) {
+    }
+    const int32_t * ids_data = nullptr;
+    const uint8_t * ids_host = nullptr;
+    if (ids_direct) {
+        ids_data = static_cast<const int32_t *>(src2->data);
+    } else {
+        if (!GGML_HRX2_CHECK(hrx_buffer_map(device_context->q4nx_ids, HRX_MEMORY_ACCESS_READ, 0, ids_bytes, (void**) &ids_host))) {
             return GGML_STATUS_FAILED;
         }
+        ids_data = (const int32_t *) ids_host;
     }
-    const uint8_t * ids_host = nullptr;
-    if (!GGML_HRX2_CHECK(hrx_buffer_map(device_context->q4nx_ids, HRX_MEMORY_ACCESS_READ, 0, ids_bytes, (void**) &ids_host))) {
-        return GGML_STATUS_FAILED;
-    }
-    const int32_t * ids_data = (const int32_t *) ids_host;
 
     // Prefer the table-scatter path: group every (selected, token) pair by
     // expert and dequant each expert once per graph instead of once per token
@@ -8943,7 +8960,12 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_id_q4nx(
     std::vector<std::vector<std::pair<uint32_t, uint32_t>>> groups(nexperts);
     for (uint32_t i = 0; i < nselected; ++i) {
         for (uint32_t t = 0; t < ntokens; ++t) {
-            const int32_t e = ids_data[t * nselected + i];
+            // direct (host-coherent GTT) ids are a strided view: token t at
+            // src2->nb[1] bytes; scratch ids are packed [nselected, ntokens].
+            const int32_t e = ids_direct
+                ? reinterpret_cast<const int32_t *>(
+                      reinterpret_cast<const uint8_t *>(ids_data) + (size_t) t * src2->nb[1])[i]
+                : ids_data[t * nselected + i];
             if (e < 0 || (uint32_t) e >= nexperts) {
                 GGML_LOG_ERROR("HRX2: MUL_MAT_ID Q4NX expert id %d out of range\n", (int) e);
                 hrx_buffer_unmap(device_context->q4nx_ids);
@@ -9001,11 +9023,11 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_id_q4nx(
                 return GGML_STATUS_FAILED;
             }
         }
-        hrx_buffer_unmap(device_context->q4nx_ids);
+        if (!ids_direct) hrx_buffer_unmap(device_context->q4nx_ids);
         return GGML_STATUS_SUCCESS;
     }
 
-    hrx_buffer_unmap(device_context->q4nx_ids);
+    if (!ids_direct) hrx_buffer_unmap(device_context->q4nx_ids);
     return GGML_STATUS_SUCCESS;
 }
 
