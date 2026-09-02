@@ -8304,25 +8304,16 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice(
         ggml_backend_hrx2_json_kv("tile_base", std::to_string(tile_base)) + "," +
         ggml_backend_hrx2_json_kv("n_tc", std::to_string(n_tc)));
 
-    // scratch: one raw tile-major blob (tile t at byte t*5120) + dequant out
+    // scratch: dequant out only. The raw tiles are bound IN-PLACE from the
+    // weight buffer (round 25m) — no b_raw copy (the ~983 KB/expert device
+    // copy on the shared scratch was the per-group serialization + cost).
     const size_t raw_bytes = (size_t) n_tiles * 5120;
     const size_t w_bytes   = (size_t) rows * k * sizeof(float);
-    if (!ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_scl, &device_context->q4nx_scl_cap, raw_bytes) ||
-        !ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_w,   &device_context->q4nx_w_cap,   w_bytes)) {
+    if (!ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_w, &device_context->q4nx_w_cap, w_bytes)) {
         return GGML_STATUS_FAILED;
     }
-    hrx_buffer_t b_raw = device_context->q4nx_scl;
-    hrx_buffer_t b_w   = device_context->q4nx_w;
-
-    // ONE stream copy for the whole slice: expert tiles are contiguous in
-    // src0 (tile (t,e) at (e*tpe + t)*5120), and the dequant kernel reads
-    // the raw tile-major layout (scales t*5120, zeros t*5120+512, packed
-    // t*5120+1024) via three views of this blob.
-    if (!GGML_HRX2_CHECK(hrx_stream_copy_buffer(
-            context->stream, src0_ref.buffer, src0_ref.offset + (size_t) tile_base * 5120,
-            b_raw, 0, raw_bytes))) {
-        return GGML_STATUS_FAILED;
-    }
+    hrx_buffer_t b_w = device_context->q4nx_w;
+    const size_t raw_base = src0_ref.offset + (size_t) tile_base * 5120;
 
     // DENSE prefill (cols >= 8): reuse the fused table-scatter tiled mm
     // (round 23, proven on the MoE grouped path) with IDENTITY column tables —
@@ -8372,11 +8363,12 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice(
                         b_tbl, (size_t) cols_padded * sizeof(int32_t)))) {
                     return GGML_STATUS_FAILED;
                 }
-                // bindings: packed/scales/zeros views of b_raw + full src1 + full dst + tables
+                // bindings: packed/scales/zeros views of the weight slice (in-place)
+                // + full src1 + full dst + tables
                 hrx_buffer_ref_t ft_bindings[7] = {
-                    { b_raw, 1024, (size_t) n_tiles * 4096 },
-                    { b_raw,    0, (size_t) n_tiles * 512  },
-                    { b_raw,  512, (size_t) n_tiles * 512  },
+                    { src0_ref.buffer, raw_base + 1024, (size_t) n_tiles * 4096 },
+                    { src0_ref.buffer, raw_base,        (size_t) n_tiles * 512  },
+                    { src0_ref.buffer, raw_base + 512,  (size_t) n_tiles * 512  },
                     { src1_ref.buffer, src1_ref.offset + (size_t) src1_col * sizeof(float), (size_t) k * cols * sizeof(float) },
                     { dst_ref.buffer,  dst_ref.offset  + (size_t) dst_col  * sizeof(float), (size_t) rows * cols * sizeof(float) },
                     { b_tbl,  0, (size_t) cols_padded * sizeof(int32_t) },
@@ -8416,10 +8408,10 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice(
     }
 
     hrx_buffer_ref_t deq_bindings[4] = {
-        { b_raw, 1024, (size_t) n_tiles * 4096 },  // packed
-        { b_raw,    0, (size_t) n_tiles * 512  },  // scales
-        { b_raw,  512, (size_t) n_tiles * 512  },  // zeros
-        { b_w,     0, w_bytes },
+        { src0_ref.buffer, raw_base + 1024, (size_t) n_tiles * 4096 },  // packed
+        { src0_ref.buffer, raw_base,        (size_t) n_tiles * 512  },  // scales
+        { src0_ref.buffer, raw_base + 512,  (size_t) n_tiles * 512  },  // zeros
+        { b_w,            0, w_bytes },
     };
     hrx_dispatch_config_t deq_config = {
         { (rows * k + wg_size - 1) / wg_size, 1, 1 },
@@ -8555,22 +8547,17 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_grouped(
         ggml_backend_hrx2_json_kv("n_tiles", std::to_string(n_tiles)) + "," +
         ggml_backend_hrx2_json_kv("tile_base", std::to_string(tile_base)));
 
-    // scratch: one raw tile-major blob + dequant out
+    // scratch: dequant out only. The raw tiles are bound IN-PLACE from the
+    // weight buffer (like slice_fused) — no b_raw copy: the per-expert
+    // 983 KB device copy was ~0.13 ms/group on the ~7.5 GB/s scratch path
+    // and serialized the groups on the shared scratch (round 25m).
     const size_t raw_bytes = (size_t) n_tiles * 5120;
     const size_t w_bytes   = (size_t) rows * k * sizeof(float);
-    if (!ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_scl, &device_context->q4nx_scl_cap, raw_bytes) ||
-        !ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_w,   &device_context->q4nx_w_cap,   w_bytes)) {
+    if (!ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_w, &device_context->q4nx_w_cap, w_bytes)) {
         return GGML_STATUS_FAILED;
     }
-    hrx_buffer_t b_raw = device_context->q4nx_scl;
-    hrx_buffer_t b_w   = device_context->q4nx_w;
-
-    // ONE stream copy for the whole slice (expert tiles are contiguous).
-    if (!GGML_HRX2_CHECK(hrx_stream_copy_buffer(
-            context->stream, src0_ref.buffer, src0_ref.offset + (size_t) tile_base * 5120,
-            b_raw, 0, raw_bytes))) {
-        return GGML_STATUS_FAILED;
-    }
+    hrx_buffer_t b_w = device_context->q4nx_w;
+    const size_t raw_base = src0_ref.offset + (size_t) tile_base * 5120;
 
     // PREFER the fused table-scatter tiled mm (round 23): dequant INLINE in
     // the matmul, reading the raw tiles from b_raw directly — no 33.5 MB b_w
@@ -8618,11 +8605,12 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_grouped(
                     b_tbl, (size_t) cols_padded * sizeof(int32_t)))) {
                 return GGML_STATUS_FAILED;
             }
-            // bindings: packed/scales/zeros views of b_raw + full src1 + full dst + tables
+            // bindings: packed/scales/zeros views of the weight slice (in-place)
+            // + full src1 + full dst + tables
             hrx_buffer_ref_t ft_bindings[7] = {
-                { b_raw, 1024, (size_t) n_tiles * 4096 },
-                { b_raw,    0, (size_t) n_tiles * 512  },
-                { b_raw,  512, (size_t) n_tiles * 512  },
+                { src0_ref.buffer, raw_base + 1024, (size_t) n_tiles * 4096 },
+                { src0_ref.buffer, raw_base,        (size_t) n_tiles * 512  },
+                { src0_ref.buffer, raw_base + 512,  (size_t) n_tiles * 512  },
                 { src1_ref.buffer, src1_ref.offset, (size_t) k * ntokens * sizeof(float) },
                 { dst_ref.buffer,  dst_ref.offset,  (size_t) rows * nselected * ntokens * sizeof(float) },
                 { b_tbl,  0, (size_t) cols_padded * sizeof(int32_t) },
@@ -8661,10 +8649,10 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_grouped(
     }
 
     hrx_buffer_ref_t deq_bindings[4] = {
-        { b_raw, 1024, (size_t) n_tiles * 4096 },  // packed
-        { b_raw,    0, (size_t) n_tiles * 512  },  // scales
-        { b_raw,  512, (size_t) n_tiles * 512  },  // zeros
-        { b_w,     0, w_bytes },
+        { src0_ref.buffer, raw_base + 1024, (size_t) n_tiles * 4096 },  // packed
+        { src0_ref.buffer, raw_base,        (size_t) n_tiles * 512  },  // scales
+        { src0_ref.buffer, raw_base + 512,  (size_t) n_tiles * 512  },  // zeros
+        { b_w,            0, w_bytes },
     };
     hrx_dispatch_config_t deq_config = {
         { (rows * k + wg_size - 1) / wg_size, 1, 1 },
