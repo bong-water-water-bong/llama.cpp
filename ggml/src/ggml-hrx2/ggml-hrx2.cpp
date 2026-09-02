@@ -8507,8 +8507,21 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_fused(
     // unavailable (e.g. rows not a multiple of 16).
     const ggml_backend_hrx2_kernel_route * fused_route = nullptr;
     if (rows % 16 == 0) {
-        for (const auto * r : device_context->mul_mat_f32_f32_routes) {
-            if (r->id == "mul_mat_q4nx_fused_f32_r16") { fused_route = r; break; }
+        // Round 25q: r16w (lane = k-position, 16 row accumulators, 2KB
+        // contiguous packed reads per tile-col) reads the same device-local
+        // weights ~1.75x faster cold than r16 (probe 111 vs 64 GB/s at the
+        // 3B gate shape). Real decode tg32: 3B 29.6->47.7 (+61%), 7B
+        // 14.0->24.0 (+71%). This function is the cols==1 fused decode path.
+        // GGML_HRX2_NO_R16W=1 falls back to r16.
+        if (!getenv("GGML_HRX2_NO_R16W")) {
+            for (const auto * r : device_context->mul_mat_f32_f32_routes) {
+                if (r->id == "mul_mat_q4nx_fused_f32_r16w") { fused_route = r; break; }
+            }
+        }
+        if (!fused_route) {
+            for (const auto * r : device_context->mul_mat_f32_f32_routes) {
+                if (r->id == "mul_mat_q4nx_fused_f32_r16") { fused_route = r; break; }
+            }
         }
     }
     if (!fused_route) {
@@ -8548,8 +8561,10 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_fused(
     };
     // The r16 kernel computes 16 output rows per workgroup (256 lanes =
     // 16 rows x 16 k-block split); the per-pair kernel is 1 row per
-    // workgroup.
-    const uint32_t wg_rows = (fused_route->id == "mul_mat_q4nx_fused_f32_r16") ? rows / 16 : rows;
+    // workgroup. r16w (round 25q) also does 16 rows per workgroup.
+    const uint32_t wg_rows =
+        (fused_route->id == "mul_mat_q4nx_fused_f32_r16" ||
+         fused_route->id == "mul_mat_q4nx_fused_f32_r16w") ? rows / 16 : rows;
     hrx_dispatch_config_t config = {
         { wg_rows, 1, 1 },
         { fused->export_info.workgroup_size[0] ? fused->export_info.workgroup_size[0] : fused->route.workgroup_size[0], 1, 1 },
