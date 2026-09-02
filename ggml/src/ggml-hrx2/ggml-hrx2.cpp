@@ -8579,6 +8579,73 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_fused(
     return GGML_STATUS_SUCCESS;
 }
 
+// Round 25t: cols==2 batched decode via the r16wb2 fused kernel (weights read
+// ONCE per 2-token batch; 32 accs = 16 rows x 2 cols). Preferred over the
+// dequant + f32-mm slice for dense decode with src1->ne[1] == 2 and
+// rows % 16 == 0. GGML_HRX2_NO_R16WB2=1 falls back to the slice path.
+static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_fused2(
+        ggml_backend_hrx2_context * context,
+        const hrx_buffer_ref_t & src0_ref,
+        const hrx_buffer_ref_t & src1_ref,
+        const hrx_buffer_ref_t & dst_ref,
+        uint32_t tile_base,   // first tile (expert offset)
+        uint32_t n_tiles,     // tiles in this slice (tpe)
+        uint32_t k,
+        uint32_t rows,
+        uint32_t src1_col,    // src1 column offset (elements, multiple of k)
+        uint32_t dst_col) {   // dst column offset (elements, multiple of rows)
+    ggml_backend_hrx2_device_context * device_context = context->device_context;
+    const uint32_t wg_size = 256;
+    const uint32_t n_tc    = k / GGML_Q4NX_TILE_COLS;
+
+    const ggml_backend_hrx2_kernel_route * fused_route = nullptr;
+    if (rows % 16 == 0 && !getenv("GGML_HRX2_NO_R16WB2")) {
+        for (const auto * r : device_context->mul_mat_f32_f32_routes) {
+            if (r->id == "mul_mat_q4nx_fused_f32_r16wb2") { fused_route = r; break; }
+        }
+    }
+    if (!fused_route) {
+        return GGML_STATUS_FAILED;  // caller falls back to dequant + mm
+    }
+
+    std::vector<ggml_backend_hrx2_config_binding> cfg;
+    cfg.push_back({"@hrx2.shape.k", std::to_string(k)});
+    cfg.push_back({"@hrx2.shape.rows", std::to_string(rows)});
+    cfg.push_back({"@hrx2.shape.cols", std::to_string(2)});
+    cfg.push_back({"@hrx2.tuning.q4nx.workgroup_size", std::to_string(wg_size)});
+    cfg.push_back({"@hrx2.tuning.q4nx.n_tile_cols", std::to_string(n_tc)});
+    const std::string key = ggml_backend_hrx2_base_cache_key(device_context, fused_route) +
+        "-q4nx-fused2-r" + std::to_string(rows) + "-c2-k" + std::to_string(k) +
+        "-tc" + std::to_string(n_tc) + "-wg" + std::to_string(wg_size);
+    auto * fused = ggml_backend_hrx2_get_provider(device_context, fused_route, cfg, key);
+    if (!fused) {
+        return GGML_STATUS_FAILED;
+    }
+    if (fused->route.constant_byte_length != 0) {
+        return GGML_STATUS_FAILED;
+    }
+
+    const size_t raw_base = src0_ref.offset + (size_t) tile_base * 5120;
+    hrx_buffer_ref_t bindings[5] = {
+        { src0_ref.buffer, raw_base + 1024, (size_t) n_tiles * 4096 },  // packed
+        { src0_ref.buffer, raw_base,        (size_t) n_tiles * 512  },  // scales
+        { src0_ref.buffer, raw_base + 512,  (size_t) n_tiles * 512  },  // zeros
+        { src1_ref.buffer, src1_ref.offset + (size_t) src1_col * sizeof(float), (size_t) 2 * k * sizeof(float) },
+        { dst_ref.buffer,  dst_ref.offset  + (size_t) dst_col  * sizeof(float), (size_t) 2 * rows * sizeof(float) },
+    };
+    hrx_dispatch_config_t config = {
+        { rows / 16, 1, 1 },
+        { fused->export_info.workgroup_size[0] ? fused->export_info.workgroup_size[0] : fused->route.workgroup_size[0], 1, 1 },
+        0,
+    };
+    if (!GGML_HRX2_CHECK(hrx_stream_dispatch(
+            context->stream, fused->executable, fused->export_ordinal,
+            &config, nullptr, 0, bindings, 5, HRX_DISPATCH_FLAG_NONE))) {
+        return GGML_STATUS_FAILED;
+    }
+    return GGML_STATUS_SUCCESS;
+}
+
 static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_grouped(
         ggml_backend_hrx2_context * context,
         const hrx_buffer_ref_t & src0_ref,
@@ -8918,6 +8985,21 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx(
     // the dequant+mm slice if the fused route is unavailable.
     if (src1->ne[1] == 1) {
         if (ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_fused(
+                context, src0_ref, src1_ref, dst_ref,
+                /* tile_base */ 0,
+                /* n_tiles */ (uint32_t) src0->ne[1],
+                /* k */ (uint32_t) src1->ne[0],
+                /* rows */ (uint32_t) dst->ne[0],
+                /* src1_col */ 0,
+                /* dst_col */ 0) == GGML_STATUS_SUCCESS) {
+            return GGML_STATUS_SUCCESS;
+        }
+    }
+    // Round 25t: 2-token batches (parallel sequences / speculative verify)
+    // use the fused r16wb2 kernel — weights read once per batch — instead of
+    // the dequant + f32-mm slice.
+    if (src1->ne[1] == 2) {
+        if (ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_fused2(
                 context, src0_ref, src1_ref, dst_ref,
                 /* tile_base */ 0,
                 /* n_tiles */ (uint32_t) src0->ne[1],

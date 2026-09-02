@@ -1,0 +1,69 @@
+[
+ {
+  "id": "mul_mat_q4nx_fused_f32_r16wb2",
+  "family": "mul_mat_f32_f32",
+  "op": "MUL_MAT",
+  "target_key": "",
+  "source_id": "mul_mat_q4nx_fused_f32_r16wb2",
+  "artifact_id": "mul_mat_q4nx_fused_f32_r16wb2_bc",
+  "root_symbol": "@hrx2_mul_mat_q4nx_fused_f32_r16wb2",
+  "export_name": "hrx2_mul_mat_q4nx_fused_f32_r16wb2",
+  "loader_format": "amdgpu-hsaco",
+  "priority": 128,
+  "abi": {
+   "binding_count": 5,
+   "parameter_count": 5,
+   "constant_byte_length": 0
+  },
+  "dispatch": {
+   "workgroup_size": [
+    256,
+    1,
+    1
+   ],
+   "rows_per_workgroup": 16,
+   "cols_per_workgroup": 1
+  },
+  "shape_domain": {
+   "name": "generic",
+   "k_min": 1,
+   "k_max": 65536,
+   "rows_min": 16,
+   "rows_max": 262144,
+   "cols_min": 2,
+   "cols_max": 2
+  },
+  "shape_guards": {},
+  "specialization": {
+   "mode": "jit_config",
+   "bindings": [
+    {
+     "key": "@hrx2.shape.k",
+     "source": "shape.k"
+    },
+    {
+     "key": "@hrx2.shape.rows",
+     "source": "shape.rows"
+    },
+    {
+     "key": "@hrx2.shape.cols",
+     "source": "shape.cols"
+    },
+    {
+     "key": "@hrx2.tuning.q4nx.workgroup_size",
+     "value": "256"
+    },
+    {
+     "key": "@hrx2.tuning.q4nx.n_tile_cols",
+     "value": "8"
+    }
+   ]
+  },
+  "supports": {
+   "src0_type": "F32",
+   "src1_type": "F32",
+   "dst_type": "F32",
+   "layout": "contiguous"
+  }
+ }
+]

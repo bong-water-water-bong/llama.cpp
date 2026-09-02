@@ -232,5 +232,6 @@
  "mul_mat_q4nx_fused_f32_r16",
  "mul_mat_q4nx_fused_f32_r16x8",
  "mul_mat_q4nx_fused_f32_r16x8t",
- "mul_mat_q4nx_fused_f32_r16w"
+ "mul_mat_q4nx_fused_f32_r16w",
+ "mul_mat_q4nx_fused_f32_r16wb2"
 ]
