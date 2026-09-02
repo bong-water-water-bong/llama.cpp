@@ -8608,6 +8608,78 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice_grouped(
     // the matmul, reading the raw tiles from b_raw directly — no 33.5 MB b_w
     // materialization, no separate dequant pass. Falls back to dequant +
     // tbl-tiled if the route is absent.
+    // r16x8t: 16 rows x 8 table-scatter cols per workgroup — same in-place
+    // dequant as the fused tbl but rows/16 workgroups (MoE grouped prefill
+    // groups are small: rows=1536/2048, cols=2..7 -> tbl launches rows wg,
+    // r16x8t launches rows/16). Prefer when rows % 16 == 0.
+    if ((rows % 16) == 0) {
+        const ggml_backend_hrx2_kernel_route * r16x8t_route = nullptr;
+        for (const auto * r : device_context->mul_mat_f32_f32_routes) {
+            if (r->id == "mul_mat_q4nx_fused_f32_r16x8t") { r16x8t_route = r; break; }
+        }
+        if (r16x8t_route && !getenv("GGML_HRX2_NO_R16X8T")) {
+            std::vector<ggml_backend_hrx2_config_binding> cfg;
+            cfg.push_back({"@hrx2.shape.k", std::to_string(k)});
+            cfg.push_back({"@hrx2.shape.rows", std::to_string(rows)});
+            cfg.push_back({"@hrx2.shape.cols", std::to_string(cols)});
+            cfg.push_back({"@hrx2.shape.ntokens", std::to_string(ntokens)});
+            cfg.push_back({"@hrx2.shape.nselected", std::to_string(nselected)});
+            cfg.push_back({"@hrx2.shape.src1_cols_count", std::to_string(src1_cols_count)});
+            cfg.push_back({"@hrx2.tuning.q4nx.workgroup_size", std::to_string(wg_size)});
+            cfg.push_back({"@hrx2.tuning.q4nx.n_tile_cols", std::to_string(n_tc)});
+            const std::string key = ggml_backend_hrx2_base_cache_key(device_context, r16x8t_route) +
+                "-q4nx-r16x8t-r" + std::to_string(rows) + "-c" + std::to_string(cols) +
+                "-k" + std::to_string(k) + "-nt" + std::to_string(ntokens) +
+                "-ns" + std::to_string(nselected) + "-wg" + std::to_string(wg_size);
+            auto * r16x8t = ggml_backend_hrx2_get_provider(device_context, r16x8t_route, cfg, key);
+            if (r16x8t && r16x8t->route.constant_byte_length == 0) {
+                const uint32_t cols_padded = (cols + 7) / 8 * 8;
+                const size_t tbl_bytes = (size_t) cols_padded * sizeof(int32_t) * 2;
+                if (!ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_tbl, &device_context->q4nx_tbl_cap, tbl_bytes)) {
+                    return GGML_STATUS_FAILED;
+                }
+                hrx_buffer_t b_tbl = device_context->q4nx_tbl;
+                std::vector<int32_t> s1c_pad(cols_padded, 0);
+                std::vector<int32_t> dc_pad(cols_padded, 0);
+                for (uint32_t c = 0; c < cols; ++c) {
+                    s1c_pad[c] = src1_cols[c];
+                    dc_pad[c] = dst_cols[c];
+                }
+                if (!GGML_HRX2_CHECK(hrx_stream_update_buffer(
+                        context->stream, s1c_pad.data(), (size_t) cols_padded * sizeof(int32_t),
+                        b_tbl, 0))) {
+                    return GGML_STATUS_FAILED;
+                }
+                if (!GGML_HRX2_CHECK(hrx_stream_update_buffer(
+                        context->stream, dc_pad.data(), (size_t) cols_padded * sizeof(int32_t),
+                        b_tbl, (size_t) cols_padded * sizeof(int32_t)))) {
+                    return GGML_STATUS_FAILED;
+                }
+                hrx_buffer_ref_t bindings[7] = {
+                    { src0_ref.buffer, raw_base + 1024, (size_t) n_tiles * 4096 },
+                    { src0_ref.buffer, raw_base,        (size_t) n_tiles * 512  },
+                    { src0_ref.buffer, raw_base + 512,  (size_t) n_tiles * 512  },
+                    { src1_ref.buffer, src1_ref.offset, (size_t) k * src1_cols_count * sizeof(float) },
+                    { dst_ref.buffer,  dst_ref.offset,  (size_t) rows * nselected * ntokens * sizeof(float) },
+                    { b_tbl,  0, (size_t) cols_padded * sizeof(int32_t) },
+                    { b_tbl, (size_t) cols_padded * sizeof(int32_t), (size_t) cols_padded * sizeof(int32_t) },
+                };
+                const uint32_t col_groups = (cols + 7) / 8;
+                hrx_dispatch_config_t config = {
+                    { rows / 16, col_groups, 1 },
+                    { r16x8t->export_info.workgroup_size[0] ? r16x8t->export_info.workgroup_size[0] : r16x8t->route.workgroup_size[0], 1, 1 },
+                    0,
+                };
+                if (!GGML_HRX2_CHECK(hrx_stream_dispatch(
+                        context->stream, r16x8t->executable, r16x8t->export_ordinal,
+                        &config, nullptr, 0, bindings, 7, HRX_DISPATCH_FLAG_NONE))) {
+                    return GGML_STATUS_FAILED;
+                }
+                return GGML_STATUS_SUCCESS;
+            }
+        }
+    }
+
     const ggml_backend_hrx2_kernel_route * fused_tbl_route = nullptr;
     for (const auto * r : device_context->mul_mat_f32_f32_routes) {
         if (r->id == "mul_mat_q4nx_fused_tbl_tiled") { fused_tbl_route = r; break; }
