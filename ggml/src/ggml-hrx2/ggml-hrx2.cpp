@@ -8315,6 +8315,51 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice(
     hrx_buffer_t b_w = device_context->q4nx_w;
     const size_t raw_base = src0_ref.offset + (size_t) tile_base * 5120;
 
+    // r16x8 dense-prefill fused dequant+mm: 16 rows x 8 cols per workgroup.
+    // For dense (cols >= 8, rows % 16 == 0) prefer this over the 1-row/wg
+    // tbl kernel: the packed byte stream for a row is read once and feeds 8
+    // output columns (tbl re-reads per row-group), and workgroup count drops
+    // rows/16 x cols/8 vs rows x cols/8. Identity col mapping only.
+    if (cols >= 8 && (cols % 8) == 0 && rows % 16 == 0) {
+        const ggml_backend_hrx2_kernel_route * r16x8_route = nullptr;
+        for (const auto * r : device_context->mul_mat_f32_f32_routes) {
+            if (r->id == "mul_mat_q4nx_fused_f32_r16x8") { r16x8_route = r; break; }
+        }
+        if (r16x8_route && !getenv("GGML_HRX2_NO_R16X8")) {
+            std::vector<ggml_backend_hrx2_config_binding> cfg;
+            cfg.push_back({"@hrx2.shape.k", std::to_string(k)});
+            cfg.push_back({"@hrx2.shape.rows", std::to_string(rows)});
+            cfg.push_back({"@hrx2.shape.cols", std::to_string(cols)});
+            cfg.push_back({"@hrx2.tuning.q4nx.workgroup_size", std::to_string(wg_size)});
+            cfg.push_back({"@hrx2.tuning.q4nx.n_tile_cols", std::to_string(n_tc)});
+            const std::string key = ggml_backend_hrx2_base_cache_key(device_context, r16x8_route) +
+                "-q4nx-r16x8-r" + std::to_string(rows) + "-c" + std::to_string(cols) +
+                "-k" + std::to_string(k) + "-wg" + std::to_string(wg_size);
+            auto * r16x8 = ggml_backend_hrx2_get_provider(device_context, r16x8_route, cfg, key);
+            if (r16x8 && r16x8->route.constant_byte_length == 0) {
+                hrx_buffer_ref_t bindings[5] = {
+                    { src0_ref.buffer, raw_base + 1024, (size_t) n_tiles * 4096 },  // packed
+                    { src0_ref.buffer, raw_base,        (size_t) n_tiles * 512  },  // scales
+                    { src0_ref.buffer, raw_base + 512,  (size_t) n_tiles * 512  },  // zeros
+                    { src1_ref.buffer, src1_ref.offset + (size_t) src1_col * sizeof(float), (size_t) k * cols * sizeof(float) },
+                    { dst_ref.buffer,  dst_ref.offset  + (size_t) dst_col  * sizeof(float), (size_t) rows * cols * sizeof(float) },
+                };
+                const uint32_t col_groups = (cols + 7) / 8;
+                hrx_dispatch_config_t config = {
+                    { rows / 16, col_groups, 1 },
+                    { r16x8->export_info.workgroup_size[0] ? r16x8->export_info.workgroup_size[0] : r16x8->route.workgroup_size[0], 1, 1 },
+                    0,
+                };
+                if (!GGML_HRX2_CHECK(hrx_stream_dispatch(
+                        context->stream, r16x8->executable, r16x8->export_ordinal,
+                        &config, nullptr, 0, bindings, 5, HRX_DISPATCH_FLAG_NONE))) {
+                    return GGML_STATUS_FAILED;
+                }
+                return GGML_STATUS_SUCCESS;
+            }
+        }
+    }
+
     // DENSE prefill (cols >= 8): reuse the fused table-scatter tiled mm
     // (round 23, proven on the MoE grouped path) with IDENTITY column tables —
     // one group containing all cols, src1_cols[c] = c, dst_cols[c] = c,
