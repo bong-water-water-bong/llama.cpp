@@ -1,0 +1,2230 @@
+config.decl @hrx2.shape.k : %value: index where [range(%value, 1, 65536)]
+config.decl @hrx2.shape.rows : %value: index where [range(%value, 1, 262144)]
+config.decl @hrx2.shape.cols : %value: index where [range(%value, 1, 512)]
+config.decl @hrx2.tuning.q4nx.workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
+config.decl @hrx2.tuning.q4nx.n_tile_cols : %value: index where [range(%value, 1, 256)]
+
+// r16wb8 (round 25t): fused decode, cols 2..8 (jit config). 8 unrolled
+// cols, 128 accs (16 rows x 8 cols); col guards on config cols (safe-else
+// loads, guarded stores). weights read once per batch. src1 [cols,k].
+kernel.def export("hrx2_mul_mat_q4nx_fused_f32_r16wb8") @hrx2_mul_mat_q4nx_fused_f32_r16wb8() {
+  %unit = index.constant 1 : index
+  %sixteen = index.constant 16 : index
+  %rows = config.get @hrx2.shape.rows : index
+  %cols = config.get @hrx2.shape.cols : index
+  %workgroup_size = config.get @hrx2.tuning.q4nx.workgroup_size : index
+  %rows_wg = index.div %rows, %sixteen : index
+  kernel.launch.config workgroups(%rows_wg, %unit, %unit) workgroup_size(%workgroup_size, %unit, %unit) : index
+} launch(%packed: buffer, %scales: buffer, %zeros: buffer, %src1: buffer, %dst: buffer) {
+  %base = index.constant 0 : offset
+  %zero = index.constant 0 : index
+  %unit = index.constant 1 : index
+  %two = index.constant 2 : index
+  %eight = index.constant 8 : index
+  %sixteen = index.constant 16 : index
+  %thirtytwo = index.constant 32 : index
+  %twofiftysix = index.constant 256 : index
+  %five120 = index.constant 5120 : index
+  %two048 = index.constant 2048 : index
+  %zero_f32 = scalar.constant 0.0 : f32
+  %zero_i32 = scalar.constant 0 : i32
+  %two_i32 = scalar.constant 2 : i32
+  %four_i32 = scalar.constant 4 : i32
+  %eight_i32 = scalar.constant 8 : i32
+  %fifteen_i32 = scalar.constant 15 : i32
+  %sixteen_i32 = scalar.constant 16 : i32
+  %hundred = scalar.constant 100.0 : f32
+  %k = config.get @hrx2.shape.k : index
+  %rows = config.get @hrx2.shape.rows : index
+  %cols = config.get @hrx2.shape.cols : index
+  %workgroup_size = config.get @hrx2.tuning.q4nx.workgroup_size : index
+  %n_tc = config.get @hrx2.tuning.q4nx.n_tile_cols : index
+  %k_bounded = index.assume %k [range(%k, 1, 65536)] : index
+  %rows_bounded = index.assume %rows [range(%rows, 1, 262144)] : index
+  %cols_bounded = index.assume %cols [range(%cols, 1, 512)] : index
+  %n_tc_bounded = index.assume %n_tc [range(%n_tc, 1, 256)] : index
+  %cols_i32 = index.cast %cols_bounded : index to i32
+  %cok1 = index.constant 1 : index
+  %con1 = scalar.constant 1 : i32
+  %ccmp1 = scalar.cmpi slt, %con1, %cols_i32 : i32
+  %cok2 = index.constant 2 : index
+  %con2 = scalar.constant 2 : i32
+  %ccmp2 = scalar.cmpi slt, %con2, %cols_i32 : i32
+  %cok3 = index.constant 3 : index
+  %con3 = scalar.constant 3 : i32
+  %ccmp3 = scalar.cmpi slt, %con3, %cols_i32 : i32
+  %cok4 = index.constant 4 : index
+  %con4 = scalar.constant 4 : i32
+  %ccmp4 = scalar.cmpi slt, %con4, %cols_i32 : i32
+  %cok5 = index.constant 5 : index
+  %con5 = scalar.constant 5 : i32
+  %ccmp5 = scalar.cmpi slt, %con5, %cols_i32 : i32
+  %cok6 = index.constant 6 : index
+  %con6 = scalar.constant 6 : i32
+  %ccmp6 = scalar.cmpi slt, %con6, %cols_i32 : i32
+  %cok7 = index.constant 7 : index
+  %con7 = scalar.constant 7 : i32
+  %ccmp7 = scalar.cmpi slt, %con7, %cols_i32 : i32
+  %row0 = kernel.workgroup.id<x> : index
+  %row0_b = index.assume %row0 [range(%row0, 0, 16383)] : index
+  %col = kernel.workgroup.id<y> : index
+  %lane0 = kernel.workitem.id<x> : index
+  %lane = index.assume %lane0 [range(%lane0, 0, 255)] : index
+  %base_row0 = index.mul %row0_b, %sixteen : index
+  %base_row = index.assume %base_row0 [range(%base_row0, 0, 262143)] : index
+  %tile_row = index.div %base_row, %thirtytwo : index
+  %in_tile_base = index.rem %base_row, %thirtytwo : index
+  %lane_of_tile = index.div %in_tile_base, %sixteen : index
+  %lane_base = index.mul %lane_of_tile, %two048 : index
+  %src1_count = index.mul %k_bounded, %cols_bounded : index
+  %dst_count = index.mul %rows_bounded, %cols_bounded : index
+  %packed_g = buffer.assume.memory_space<global> %packed : buffer
+  %scales_g = buffer.assume.memory_space<global> %scales : buffer
+  %zeros_g = buffer.assume.memory_space<global> %zeros : buffer
+  %src1_global = buffer.assume.memory_space<global> %src1 : buffer
+  %dst_global = buffer.assume.memory_space<global> %dst : buffer
+  %packed_a, %scales_a, %zeros_a, %src1_noalias, %dst_noalias =
+      buffer.assume.noalias %packed_g, %scales_g, %zeros_g, %src1_global, %dst_global : buffer, buffer, buffer, buffer, buffer
+  %packed_v = buffer.view %packed_a[%base] : buffer -> view<1073741824xi8>
+  %scales_v = buffer.view %scales_a[%base] : buffer -> view<1073741824xi8>
+  %zeros_v = buffer.view %zeros_a[%base] : buffer -> view<1073741824xi8>
+  %src1_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_count]xf32>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32>
+  %scratch_bytes = index.constant 1024 : offset
+  %scratch = buffer.alloca<workgroup> align(64) %scratch_bytes : buffer
+  %scratch_view = buffer.view %scratch[%base] : buffer -> view<1024xi8>
+  %half_scale_base = index.mul %in_tile_base, %sixteen : index
+  %tr_ntc = index.mul %tile_row, %n_tc_bounded : index
+  %lane8 = index.mul %lane, %eight : index
+  %lane256 = index.add %lane, %twofiftysix : index
+  %group = index.div %lane, %thirtytwo : index
+  %rcon0 = index.constant 0 : index
+  %rcon1 = index.constant 1 : index
+  %rcon2 = index.constant 2 : index
+  %rcon3 = index.constant 3 : index
+  %rcon4 = index.constant 4 : index
+  %rcon5 = index.constant 5 : index
+  %rcon6 = index.constant 6 : index
+  %rcon7 = index.constant 7 : index
+  %rcon8 = index.constant 8 : index
+  %rcon9 = index.constant 9 : index
+  %rcon10 = index.constant 10 : index
+  %rcon11 = index.constant 11 : index
+  %rcon12 = index.constant 12 : index
+  %rcon13 = index.constant 13 : index
+  %rcon14 = index.constant 14 : index
+  %rcon15 = index.constant 15 : index
+  %sc_r0 = index.mul %rcon0, %sixteen : index
+  %sc_r1 = index.mul %rcon1, %sixteen : index
+  %sc_r2 = index.mul %rcon2, %sixteen : index
+  %sc_r3 = index.mul %rcon3, %sixteen : index
+  %sc_r4 = index.mul %rcon4, %sixteen : index
+  %sc_r5 = index.mul %rcon5, %sixteen : index
+  %sc_r6 = index.mul %rcon6, %sixteen : index
+  %sc_r7 = index.mul %rcon7, %sixteen : index
+  %sc_r8 = index.mul %rcon8, %sixteen : index
+  %sc_r9 = index.mul %rcon9, %sixteen : index
+  %sc_r10 = index.mul %rcon10, %sixteen : index
+  %sc_r11 = index.mul %rcon11, %sixteen : index
+  %sc_r12 = index.mul %rcon12, %sixteen : index
+  %sc_r13 = index.mul %rcon13, %sixteen : index
+  %sc_r14 = index.mul %rcon14, %sixteen : index
+  %sc_r15 = index.mul %rcon15, %sixteen : index
+  %grp2 = index.mul %group, %two : index
+  %sc_a0 = index.add %sc_r0, %grp2 : index
+  %sc_a1 = index.add %sc_r1, %grp2 : index
+  %sc_a2 = index.add %sc_r2, %grp2 : index
+  %sc_a3 = index.add %sc_r3, %grp2 : index
+  %sc_a4 = index.add %sc_r4, %grp2 : index
+  %sc_a5 = index.add %sc_r5, %grp2 : index
+  %sc_a6 = index.add %sc_r6, %grp2 : index
+  %sc_a7 = index.add %sc_r7, %grp2 : index
+  %sc_a8 = index.add %sc_r8, %grp2 : index
+  %sc_a9 = index.add %sc_r9, %grp2 : index
+  %sc_a10 = index.add %sc_r10, %grp2 : index
+  %sc_a11 = index.add %sc_r11, %grp2 : index
+  %sc_a12 = index.add %sc_r12, %grp2 : index
+  %sc_a13 = index.add %sc_r13, %grp2 : index
+  %sc_a14 = index.add %sc_r14, %grp2 : index
+  %sc_a15 = index.add %sc_r15, %grp2 : index
+  %a0, %a1, %a2, %a3, %a4, %a5, %a6, %a7, %a8, %a9, %a10, %a11, %a12, %a13, %a14, %a15, %a16, %a17, %a18, %a19, %a20, %a21, %a22, %a23, %a24, %a25, %a26, %a27, %a28, %a29, %a30, %a31, %a32, %a33, %a34, %a35, %a36, %a37, %a38, %a39, %a40, %a41, %a42, %a43, %a44, %a45, %a46, %a47, %a48, %a49, %a50, %a51, %a52, %a53, %a54, %a55, %a56, %a57, %a58, %a59, %a60, %a61, %a62, %a63, %a64, %a65, %a66, %a67, %a68, %a69, %a70, %a71, %a72, %a73, %a74, %a75, %a76, %a77, %a78, %a79, %a80, %a81, %a82, %a83, %a84, %a85, %a86, %a87, %a88, %a89, %a90, %a91, %a92, %a93, %a94, %a95, %a96, %a97, %a98, %a99, %a100, %a101, %a102, %a103, %a104, %a105, %a106, %a107, %a108, %a109, %a110, %a111, %a112, %a113, %a114, %a115, %a116, %a117, %a118, %a119, %a120, %a121, %a122, %a123, %a124, %a125, %a126, %a127 =
+    scf.for %tc = [%zero to %n_tc_bounded step %unit](
+        %ac0 = %zero_f32, %ac1 = %zero_f32, %ac2 = %zero_f32, %ac3 = %zero_f32, %ac4 = %zero_f32, %ac5 = %zero_f32, %ac6 = %zero_f32, %ac7 = %zero_f32,
+        %ac8 = %zero_f32, %ac9 = %zero_f32, %ac10 = %zero_f32, %ac11 = %zero_f32, %ac12 = %zero_f32, %ac13 = %zero_f32, %ac14 = %zero_f32, %ac15 = %zero_f32,
+        %ac16 = %zero_f32, %ac17 = %zero_f32, %ac18 = %zero_f32, %ac19 = %zero_f32, %ac20 = %zero_f32, %ac21 = %zero_f32, %ac22 = %zero_f32, %ac23 = %zero_f32,
+        %ac24 = %zero_f32, %ac25 = %zero_f32, %ac26 = %zero_f32, %ac27 = %zero_f32, %ac28 = %zero_f32, %ac29 = %zero_f32, %ac30 = %zero_f32, %ac31 = %zero_f32,
+        %ac32 = %zero_f32, %ac33 = %zero_f32, %ac34 = %zero_f32, %ac35 = %zero_f32, %ac36 = %zero_f32, %ac37 = %zero_f32, %ac38 = %zero_f32, %ac39 = %zero_f32,
+        %ac40 = %zero_f32, %ac41 = %zero_f32, %ac42 = %zero_f32, %ac43 = %zero_f32, %ac44 = %zero_f32, %ac45 = %zero_f32, %ac46 = %zero_f32, %ac47 = %zero_f32,
+        %ac48 = %zero_f32, %ac49 = %zero_f32, %ac50 = %zero_f32, %ac51 = %zero_f32, %ac52 = %zero_f32, %ac53 = %zero_f32, %ac54 = %zero_f32, %ac55 = %zero_f32,
+        %ac56 = %zero_f32, %ac57 = %zero_f32, %ac58 = %zero_f32, %ac59 = %zero_f32, %ac60 = %zero_f32, %ac61 = %zero_f32, %ac62 = %zero_f32, %ac63 = %zero_f32,
+        %ac64 = %zero_f32, %ac65 = %zero_f32, %ac66 = %zero_f32, %ac67 = %zero_f32, %ac68 = %zero_f32, %ac69 = %zero_f32, %ac70 = %zero_f32, %ac71 = %zero_f32,
+        %ac72 = %zero_f32, %ac73 = %zero_f32, %ac74 = %zero_f32, %ac75 = %zero_f32, %ac76 = %zero_f32, %ac77 = %zero_f32, %ac78 = %zero_f32, %ac79 = %zero_f32,
+        %ac80 = %zero_f32, %ac81 = %zero_f32, %ac82 = %zero_f32, %ac83 = %zero_f32, %ac84 = %zero_f32, %ac85 = %zero_f32, %ac86 = %zero_f32, %ac87 = %zero_f32,
+        %ac88 = %zero_f32, %ac89 = %zero_f32, %ac90 = %zero_f32, %ac91 = %zero_f32, %ac92 = %zero_f32, %ac93 = %zero_f32, %ac94 = %zero_f32, %ac95 = %zero_f32,
+        %ac96 = %zero_f32, %ac97 = %zero_f32, %ac98 = %zero_f32, %ac99 = %zero_f32, %ac100 = %zero_f32, %ac101 = %zero_f32, %ac102 = %zero_f32, %ac103 = %zero_f32,
+        %ac104 = %zero_f32, %ac105 = %zero_f32, %ac106 = %zero_f32, %ac107 = %zero_f32, %ac108 = %zero_f32, %ac109 = %zero_f32, %ac110 = %zero_f32, %ac111 = %zero_f32,
+        %ac112 = %zero_f32, %ac113 = %zero_f32, %ac114 = %zero_f32, %ac115 = %zero_f32, %ac116 = %zero_f32, %ac117 = %zero_f32, %ac118 = %zero_f32, %ac119 = %zero_f32,
+        %ac120 = %zero_f32, %ac121 = %zero_f32, %ac122 = %zero_f32, %ac123 = %zero_f32, %ac124 = %zero_f32, %ac125 = %zero_f32, %ac126 = %zero_f32, %ac127 = %zero_f32 :
+        f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32) -> (f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32) {    %tile_idx = index.add %tr_ntc, %tc : index
+    %tile_base = index.mul %tile_idx, %five120 : index
+    %sc_abs = index.add %tile_base, %half_scale_base : index
+    %sc_off = index.add %sc_abs, %lane : index
+    %sc_b = view.load %scales_v[%sc_off] : view<1073741824xi8> -> i8
+    %sc_v = vector.from_elements %sc_b : vector<1xi8>
+    vector.store %sc_v, %scratch_view[%lane] : vector<1xi8>, view<1024xi8>
+    %zc_off = index.add %sc_abs, %lane : index
+    %zc_b = view.load %zeros_v[%zc_off] : view<1073741824xi8> -> i8
+    %zc_v = vector.from_elements %zc_b : vector<1xi8>
+    vector.store %zc_v, %scratch_view[%lane256] : vector<1xi8>, view<1024xi8>
+    kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
+    %glo0 = view.load %scratch_view[%sc_a0] : view<1024xi8> -> i8
+    %scp0 = index.add %sc_a0, %unit : index
+    %ghi0 = view.load %scratch_view[%scp0] : view<1024xi8> -> i8
+    %gzp0 = index.add %sc_a0, %twofiftysix : index
+    %zlo0 = view.load %scratch_view[%gzp0] : view<1024xi8> -> i8
+    %gzq0 = index.add %gzp0, %unit : index
+    %zhi0 = view.load %scratch_view[%gzq0] : view<1024xi8> -> i8
+    %glo1 = view.load %scratch_view[%sc_a1] : view<1024xi8> -> i8
+    %scp1 = index.add %sc_a1, %unit : index
+    %ghi1 = view.load %scratch_view[%scp1] : view<1024xi8> -> i8
+    %gzp1 = index.add %sc_a1, %twofiftysix : index
+    %zlo1 = view.load %scratch_view[%gzp1] : view<1024xi8> -> i8
+    %gzq1 = index.add %gzp1, %unit : index
+    %zhi1 = view.load %scratch_view[%gzq1] : view<1024xi8> -> i8
+    %glo2 = view.load %scratch_view[%sc_a2] : view<1024xi8> -> i8
+    %scp2 = index.add %sc_a2, %unit : index
+    %ghi2 = view.load %scratch_view[%scp2] : view<1024xi8> -> i8
+    %gzp2 = index.add %sc_a2, %twofiftysix : index
+    %zlo2 = view.load %scratch_view[%gzp2] : view<1024xi8> -> i8
+    %gzq2 = index.add %gzp2, %unit : index
+    %zhi2 = view.load %scratch_view[%gzq2] : view<1024xi8> -> i8
+    %glo3 = view.load %scratch_view[%sc_a3] : view<1024xi8> -> i8
+    %scp3 = index.add %sc_a3, %unit : index
+    %ghi3 = view.load %scratch_view[%scp3] : view<1024xi8> -> i8
+    %gzp3 = index.add %sc_a3, %twofiftysix : index
+    %zlo3 = view.load %scratch_view[%gzp3] : view<1024xi8> -> i8
+    %gzq3 = index.add %gzp3, %unit : index
+    %zhi3 = view.load %scratch_view[%gzq3] : view<1024xi8> -> i8
+    %glo4 = view.load %scratch_view[%sc_a4] : view<1024xi8> -> i8
+    %scp4 = index.add %sc_a4, %unit : index
+    %ghi4 = view.load %scratch_view[%scp4] : view<1024xi8> -> i8
+    %gzp4 = index.add %sc_a4, %twofiftysix : index
+    %zlo4 = view.load %scratch_view[%gzp4] : view<1024xi8> -> i8
+    %gzq4 = index.add %gzp4, %unit : index
+    %zhi4 = view.load %scratch_view[%gzq4] : view<1024xi8> -> i8
+    %glo5 = view.load %scratch_view[%sc_a5] : view<1024xi8> -> i8
+    %scp5 = index.add %sc_a5, %unit : index
+    %ghi5 = view.load %scratch_view[%scp5] : view<1024xi8> -> i8
+    %gzp5 = index.add %sc_a5, %twofiftysix : index
+    %zlo5 = view.load %scratch_view[%gzp5] : view<1024xi8> -> i8
+    %gzq5 = index.add %gzp5, %unit : index
+    %zhi5 = view.load %scratch_view[%gzq5] : view<1024xi8> -> i8
+    %glo6 = view.load %scratch_view[%sc_a6] : view<1024xi8> -> i8
+    %scp6 = index.add %sc_a6, %unit : index
+    %ghi6 = view.load %scratch_view[%scp6] : view<1024xi8> -> i8
+    %gzp6 = index.add %sc_a6, %twofiftysix : index
+    %zlo6 = view.load %scratch_view[%gzp6] : view<1024xi8> -> i8
+    %gzq6 = index.add %gzp6, %unit : index
+    %zhi6 = view.load %scratch_view[%gzq6] : view<1024xi8> -> i8
+    %glo7 = view.load %scratch_view[%sc_a7] : view<1024xi8> -> i8
+    %scp7 = index.add %sc_a7, %unit : index
+    %ghi7 = view.load %scratch_view[%scp7] : view<1024xi8> -> i8
+    %gzp7 = index.add %sc_a7, %twofiftysix : index
+    %zlo7 = view.load %scratch_view[%gzp7] : view<1024xi8> -> i8
+    %gzq7 = index.add %gzp7, %unit : index
+    %zhi7 = view.load %scratch_view[%gzq7] : view<1024xi8> -> i8
+    %glo8 = view.load %scratch_view[%sc_a8] : view<1024xi8> -> i8
+    %scp8 = index.add %sc_a8, %unit : index
+    %ghi8 = view.load %scratch_view[%scp8] : view<1024xi8> -> i8
+    %gzp8 = index.add %sc_a8, %twofiftysix : index
+    %zlo8 = view.load %scratch_view[%gzp8] : view<1024xi8> -> i8
+    %gzq8 = index.add %gzp8, %unit : index
+    %zhi8 = view.load %scratch_view[%gzq8] : view<1024xi8> -> i8
+    %glo9 = view.load %scratch_view[%sc_a9] : view<1024xi8> -> i8
+    %scp9 = index.add %sc_a9, %unit : index
+    %ghi9 = view.load %scratch_view[%scp9] : view<1024xi8> -> i8
+    %gzp9 = index.add %sc_a9, %twofiftysix : index
+    %zlo9 = view.load %scratch_view[%gzp9] : view<1024xi8> -> i8
+    %gzq9 = index.add %gzp9, %unit : index
+    %zhi9 = view.load %scratch_view[%gzq9] : view<1024xi8> -> i8
+    %glo10 = view.load %scratch_view[%sc_a10] : view<1024xi8> -> i8
+    %scp10 = index.add %sc_a10, %unit : index
+    %ghi10 = view.load %scratch_view[%scp10] : view<1024xi8> -> i8
+    %gzp10 = index.add %sc_a10, %twofiftysix : index
+    %zlo10 = view.load %scratch_view[%gzp10] : view<1024xi8> -> i8
+    %gzq10 = index.add %gzp10, %unit : index
+    %zhi10 = view.load %scratch_view[%gzq10] : view<1024xi8> -> i8
+    %glo11 = view.load %scratch_view[%sc_a11] : view<1024xi8> -> i8
+    %scp11 = index.add %sc_a11, %unit : index
+    %ghi11 = view.load %scratch_view[%scp11] : view<1024xi8> -> i8
+    %gzp11 = index.add %sc_a11, %twofiftysix : index
+    %zlo11 = view.load %scratch_view[%gzp11] : view<1024xi8> -> i8
+    %gzq11 = index.add %gzp11, %unit : index
+    %zhi11 = view.load %scratch_view[%gzq11] : view<1024xi8> -> i8
+    %glo12 = view.load %scratch_view[%sc_a12] : view<1024xi8> -> i8
+    %scp12 = index.add %sc_a12, %unit : index
+    %ghi12 = view.load %scratch_view[%scp12] : view<1024xi8> -> i8
+    %gzp12 = index.add %sc_a12, %twofiftysix : index
+    %zlo12 = view.load %scratch_view[%gzp12] : view<1024xi8> -> i8
+    %gzq12 = index.add %gzp12, %unit : index
+    %zhi12 = view.load %scratch_view[%gzq12] : view<1024xi8> -> i8
+    %glo13 = view.load %scratch_view[%sc_a13] : view<1024xi8> -> i8
+    %scp13 = index.add %sc_a13, %unit : index
+    %ghi13 = view.load %scratch_view[%scp13] : view<1024xi8> -> i8
+    %gzp13 = index.add %sc_a13, %twofiftysix : index
+    %zlo13 = view.load %scratch_view[%gzp13] : view<1024xi8> -> i8
+    %gzq13 = index.add %gzp13, %unit : index
+    %zhi13 = view.load %scratch_view[%gzq13] : view<1024xi8> -> i8
+    %glo14 = view.load %scratch_view[%sc_a14] : view<1024xi8> -> i8
+    %scp14 = index.add %sc_a14, %unit : index
+    %ghi14 = view.load %scratch_view[%scp14] : view<1024xi8> -> i8
+    %gzp14 = index.add %sc_a14, %twofiftysix : index
+    %zlo14 = view.load %scratch_view[%gzp14] : view<1024xi8> -> i8
+    %gzq14 = index.add %gzp14, %unit : index
+    %zhi14 = view.load %scratch_view[%gzq14] : view<1024xi8> -> i8
+    %glo15 = view.load %scratch_view[%sc_a15] : view<1024xi8> -> i8
+    %scp15 = index.add %sc_a15, %unit : index
+    %ghi15 = view.load %scratch_view[%scp15] : view<1024xi8> -> i8
+    %gzp15 = index.add %sc_a15, %twofiftysix : index
+    %zlo15 = view.load %scratch_view[%gzp15] : view<1024xi8> -> i8
+    %gzq15 = index.add %gzp15, %unit : index
+    %zhi15 = view.load %scratch_view[%gzq15] : view<1024xi8> -> i8
+    %su0 = scalar.extui %glo0 : i8 to i32
+    %sv0 = scalar.extui %ghi0 : i8 to i32
+    %sw0 = scalar.shli %sv0, %eight_i32 : i32
+    %sx0 = scalar.ori %su0, %sw0 : i32
+    %sy0 = scalar.shli %sx0, %sixteen_i32 : i32
+    %scl0 = scalar.bitcast %sy0 : i32 to f32
+    %zu0 = scalar.extui %zlo0 : i8 to i32
+    %zv0 = scalar.extui %zhi0 : i8 to i32
+    %zw0 = scalar.shli %zv0, %eight_i32 : i32
+    %zx0 = scalar.ori %zu0, %zw0 : i32
+    %zy0 = scalar.shli %zx0, %sixteen_i32 : i32
+    %zro0 = scalar.bitcast %zy0 : i32 to f32
+    %su1 = scalar.extui %glo1 : i8 to i32
+    %sv1 = scalar.extui %ghi1 : i8 to i32
+    %sw1 = scalar.shli %sv1, %eight_i32 : i32
+    %sx1 = scalar.ori %su1, %sw1 : i32
+    %sy1 = scalar.shli %sx1, %sixteen_i32 : i32
+    %scl1 = scalar.bitcast %sy1 : i32 to f32
+    %zu1 = scalar.extui %zlo1 : i8 to i32
+    %zv1 = scalar.extui %zhi1 : i8 to i32
+    %zw1 = scalar.shli %zv1, %eight_i32 : i32
+    %zx1 = scalar.ori %zu1, %zw1 : i32
+    %zy1 = scalar.shli %zx1, %sixteen_i32 : i32
+    %zro1 = scalar.bitcast %zy1 : i32 to f32
+    %su2 = scalar.extui %glo2 : i8 to i32
+    %sv2 = scalar.extui %ghi2 : i8 to i32
+    %sw2 = scalar.shli %sv2, %eight_i32 : i32
+    %sx2 = scalar.ori %su2, %sw2 : i32
+    %sy2 = scalar.shli %sx2, %sixteen_i32 : i32
+    %scl2 = scalar.bitcast %sy2 : i32 to f32
+    %zu2 = scalar.extui %zlo2 : i8 to i32
+    %zv2 = scalar.extui %zhi2 : i8 to i32
+    %zw2 = scalar.shli %zv2, %eight_i32 : i32
+    %zx2 = scalar.ori %zu2, %zw2 : i32
+    %zy2 = scalar.shli %zx2, %sixteen_i32 : i32
+    %zro2 = scalar.bitcast %zy2 : i32 to f32
+    %su3 = scalar.extui %glo3 : i8 to i32
+    %sv3 = scalar.extui %ghi3 : i8 to i32
+    %sw3 = scalar.shli %sv3, %eight_i32 : i32
+    %sx3 = scalar.ori %su3, %sw3 : i32
+    %sy3 = scalar.shli %sx3, %sixteen_i32 : i32
+    %scl3 = scalar.bitcast %sy3 : i32 to f32
+    %zu3 = scalar.extui %zlo3 : i8 to i32
+    %zv3 = scalar.extui %zhi3 : i8 to i32
+    %zw3 = scalar.shli %zv3, %eight_i32 : i32
+    %zx3 = scalar.ori %zu3, %zw3 : i32
+    %zy3 = scalar.shli %zx3, %sixteen_i32 : i32
+    %zro3 = scalar.bitcast %zy3 : i32 to f32
+    %su4 = scalar.extui %glo4 : i8 to i32
+    %sv4 = scalar.extui %ghi4 : i8 to i32
+    %sw4 = scalar.shli %sv4, %eight_i32 : i32
+    %sx4 = scalar.ori %su4, %sw4 : i32
+    %sy4 = scalar.shli %sx4, %sixteen_i32 : i32
+    %scl4 = scalar.bitcast %sy4 : i32 to f32
+    %zu4 = scalar.extui %zlo4 : i8 to i32
+    %zv4 = scalar.extui %zhi4 : i8 to i32
+    %zw4 = scalar.shli %zv4, %eight_i32 : i32
+    %zx4 = scalar.ori %zu4, %zw4 : i32
+    %zy4 = scalar.shli %zx4, %sixteen_i32 : i32
+    %zro4 = scalar.bitcast %zy4 : i32 to f32
+    %su5 = scalar.extui %glo5 : i8 to i32
+    %sv5 = scalar.extui %ghi5 : i8 to i32
+    %sw5 = scalar.shli %sv5, %eight_i32 : i32
+    %sx5 = scalar.ori %su5, %sw5 : i32
+    %sy5 = scalar.shli %sx5, %sixteen_i32 : i32
+    %scl5 = scalar.bitcast %sy5 : i32 to f32
+    %zu5 = scalar.extui %zlo5 : i8 to i32
+    %zv5 = scalar.extui %zhi5 : i8 to i32
+    %zw5 = scalar.shli %zv5, %eight_i32 : i32
+    %zx5 = scalar.ori %zu5, %zw5 : i32
+    %zy5 = scalar.shli %zx5, %sixteen_i32 : i32
+    %zro5 = scalar.bitcast %zy5 : i32 to f32
+    %su6 = scalar.extui %glo6 : i8 to i32
+    %sv6 = scalar.extui %ghi6 : i8 to i32
+    %sw6 = scalar.shli %sv6, %eight_i32 : i32
+    %sx6 = scalar.ori %su6, %sw6 : i32
+    %sy6 = scalar.shli %sx6, %sixteen_i32 : i32
+    %scl6 = scalar.bitcast %sy6 : i32 to f32
+    %zu6 = scalar.extui %zlo6 : i8 to i32
+    %zv6 = scalar.extui %zhi6 : i8 to i32
+    %zw6 = scalar.shli %zv6, %eight_i32 : i32
+    %zx6 = scalar.ori %zu6, %zw6 : i32
+    %zy6 = scalar.shli %zx6, %sixteen_i32 : i32
+    %zro6 = scalar.bitcast %zy6 : i32 to f32
+    %su7 = scalar.extui %glo7 : i8 to i32
+    %sv7 = scalar.extui %ghi7 : i8 to i32
+    %sw7 = scalar.shli %sv7, %eight_i32 : i32
+    %sx7 = scalar.ori %su7, %sw7 : i32
+    %sy7 = scalar.shli %sx7, %sixteen_i32 : i32
+    %scl7 = scalar.bitcast %sy7 : i32 to f32
+    %zu7 = scalar.extui %zlo7 : i8 to i32
+    %zv7 = scalar.extui %zhi7 : i8 to i32
+    %zw7 = scalar.shli %zv7, %eight_i32 : i32
+    %zx7 = scalar.ori %zu7, %zw7 : i32
+    %zy7 = scalar.shli %zx7, %sixteen_i32 : i32
+    %zro7 = scalar.bitcast %zy7 : i32 to f32
+    %su8 = scalar.extui %glo8 : i8 to i32
+    %sv8 = scalar.extui %ghi8 : i8 to i32
+    %sw8 = scalar.shli %sv8, %eight_i32 : i32
+    %sx8 = scalar.ori %su8, %sw8 : i32
+    %sy8 = scalar.shli %sx8, %sixteen_i32 : i32
+    %scl8 = scalar.bitcast %sy8 : i32 to f32
+    %zu8 = scalar.extui %zlo8 : i8 to i32
+    %zv8 = scalar.extui %zhi8 : i8 to i32
+    %zw8 = scalar.shli %zv8, %eight_i32 : i32
+    %zx8 = scalar.ori %zu8, %zw8 : i32
+    %zy8 = scalar.shli %zx8, %sixteen_i32 : i32
+    %zro8 = scalar.bitcast %zy8 : i32 to f32
+    %su9 = scalar.extui %glo9 : i8 to i32
+    %sv9 = scalar.extui %ghi9 : i8 to i32
+    %sw9 = scalar.shli %sv9, %eight_i32 : i32
+    %sx9 = scalar.ori %su9, %sw9 : i32
+    %sy9 = scalar.shli %sx9, %sixteen_i32 : i32
+    %scl9 = scalar.bitcast %sy9 : i32 to f32
+    %zu9 = scalar.extui %zlo9 : i8 to i32
+    %zv9 = scalar.extui %zhi9 : i8 to i32
+    %zw9 = scalar.shli %zv9, %eight_i32 : i32
+    %zx9 = scalar.ori %zu9, %zw9 : i32
+    %zy9 = scalar.shli %zx9, %sixteen_i32 : i32
+    %zro9 = scalar.bitcast %zy9 : i32 to f32
+    %su10 = scalar.extui %glo10 : i8 to i32
+    %sv10 = scalar.extui %ghi10 : i8 to i32
+    %sw10 = scalar.shli %sv10, %eight_i32 : i32
+    %sx10 = scalar.ori %su10, %sw10 : i32
+    %sy10 = scalar.shli %sx10, %sixteen_i32 : i32
+    %scl10 = scalar.bitcast %sy10 : i32 to f32
+    %zu10 = scalar.extui %zlo10 : i8 to i32
+    %zv10 = scalar.extui %zhi10 : i8 to i32
+    %zw10 = scalar.shli %zv10, %eight_i32 : i32
+    %zx10 = scalar.ori %zu10, %zw10 : i32
+    %zy10 = scalar.shli %zx10, %sixteen_i32 : i32
+    %zro10 = scalar.bitcast %zy10 : i32 to f32
+    %su11 = scalar.extui %glo11 : i8 to i32
+    %sv11 = scalar.extui %ghi11 : i8 to i32
+    %sw11 = scalar.shli %sv11, %eight_i32 : i32
+    %sx11 = scalar.ori %su11, %sw11 : i32
+    %sy11 = scalar.shli %sx11, %sixteen_i32 : i32
+    %scl11 = scalar.bitcast %sy11 : i32 to f32
+    %zu11 = scalar.extui %zlo11 : i8 to i32
+    %zv11 = scalar.extui %zhi11 : i8 to i32
+    %zw11 = scalar.shli %zv11, %eight_i32 : i32
+    %zx11 = scalar.ori %zu11, %zw11 : i32
+    %zy11 = scalar.shli %zx11, %sixteen_i32 : i32
+    %zro11 = scalar.bitcast %zy11 : i32 to f32
+    %su12 = scalar.extui %glo12 : i8 to i32
+    %sv12 = scalar.extui %ghi12 : i8 to i32
+    %sw12 = scalar.shli %sv12, %eight_i32 : i32
+    %sx12 = scalar.ori %su12, %sw12 : i32
+    %sy12 = scalar.shli %sx12, %sixteen_i32 : i32
+    %scl12 = scalar.bitcast %sy12 : i32 to f32
+    %zu12 = scalar.extui %zlo12 : i8 to i32
+    %zv12 = scalar.extui %zhi12 : i8 to i32
+    %zw12 = scalar.shli %zv12, %eight_i32 : i32
+    %zx12 = scalar.ori %zu12, %zw12 : i32
+    %zy12 = scalar.shli %zx12, %sixteen_i32 : i32
+    %zro12 = scalar.bitcast %zy12 : i32 to f32
+    %su13 = scalar.extui %glo13 : i8 to i32
+    %sv13 = scalar.extui %ghi13 : i8 to i32
+    %sw13 = scalar.shli %sv13, %eight_i32 : i32
+    %sx13 = scalar.ori %su13, %sw13 : i32
+    %sy13 = scalar.shli %sx13, %sixteen_i32 : i32
+    %scl13 = scalar.bitcast %sy13 : i32 to f32
+    %zu13 = scalar.extui %zlo13 : i8 to i32
+    %zv13 = scalar.extui %zhi13 : i8 to i32
+    %zw13 = scalar.shli %zv13, %eight_i32 : i32
+    %zx13 = scalar.ori %zu13, %zw13 : i32
+    %zy13 = scalar.shli %zx13, %sixteen_i32 : i32
+    %zro13 = scalar.bitcast %zy13 : i32 to f32
+    %su14 = scalar.extui %glo14 : i8 to i32
+    %sv14 = scalar.extui %ghi14 : i8 to i32
+    %sw14 = scalar.shli %sv14, %eight_i32 : i32
+    %sx14 = scalar.ori %su14, %sw14 : i32
+    %sy14 = scalar.shli %sx14, %sixteen_i32 : i32
+    %scl14 = scalar.bitcast %sy14 : i32 to f32
+    %zu14 = scalar.extui %zlo14 : i8 to i32
+    %zv14 = scalar.extui %zhi14 : i8 to i32
+    %zw14 = scalar.shli %zv14, %eight_i32 : i32
+    %zx14 = scalar.ori %zu14, %zw14 : i32
+    %zy14 = scalar.shli %zx14, %sixteen_i32 : i32
+    %zro14 = scalar.bitcast %zy14 : i32 to f32
+    %su15 = scalar.extui %glo15 : i8 to i32
+    %sv15 = scalar.extui %ghi15 : i8 to i32
+    %sw15 = scalar.shli %sv15, %eight_i32 : i32
+    %sx15 = scalar.ori %su15, %sw15 : i32
+    %sy15 = scalar.shli %sx15, %sixteen_i32 : i32
+    %scl15 = scalar.bitcast %sy15 : i32 to f32
+    %zu15 = scalar.extui %zlo15 : i8 to i32
+    %zv15 = scalar.extui %zhi15 : i8 to i32
+    %zw15 = scalar.shli %zv15, %eight_i32 : i32
+    %zx15 = scalar.ori %zu15, %zw15 : i32
+    %zy15 = scalar.shli %zx15, %sixteen_i32 : i32
+    %zro15 = scalar.bitcast %zy15 : i32 to f32
+    %sg0 = scalar.addf %scl0, %zero_f32 : f32
+    %zg0 = scalar.addf %zro0, %zero_f32 : f32
+    %sg1 = scalar.addf %scl1, %zero_f32 : f32
+    %zg1 = scalar.addf %zro1, %zero_f32 : f32
+    %sg2 = scalar.addf %scl2, %zero_f32 : f32
+    %zg2 = scalar.addf %zro2, %zero_f32 : f32
+    %sg3 = scalar.addf %scl3, %zero_f32 : f32
+    %zg3 = scalar.addf %zro3, %zero_f32 : f32
+    %sg4 = scalar.addf %scl4, %zero_f32 : f32
+    %zg4 = scalar.addf %zro4, %zero_f32 : f32
+    %sg5 = scalar.addf %scl5, %zero_f32 : f32
+    %zg5 = scalar.addf %zro5, %zero_f32 : f32
+    %sg6 = scalar.addf %scl6, %zero_f32 : f32
+    %zg6 = scalar.addf %zro6, %zero_f32 : f32
+    %sg7 = scalar.addf %scl7, %zero_f32 : f32
+    %zg7 = scalar.addf %zro7, %zero_f32 : f32
+    %sg8 = scalar.addf %scl8, %zero_f32 : f32
+    %zg8 = scalar.addf %zro8, %zero_f32 : f32
+    %sg9 = scalar.addf %scl9, %zero_f32 : f32
+    %zg9 = scalar.addf %zro9, %zero_f32 : f32
+    %sg10 = scalar.addf %scl10, %zero_f32 : f32
+    %zg10 = scalar.addf %zro10, %zero_f32 : f32
+    %sg11 = scalar.addf %scl11, %zero_f32 : f32
+    %zg11 = scalar.addf %zro11, %zero_f32 : f32
+    %sg12 = scalar.addf %scl12, %zero_f32 : f32
+    %zg12 = scalar.addf %zro12, %zero_f32 : f32
+    %sg13 = scalar.addf %scl13, %zero_f32 : f32
+    %zg13 = scalar.addf %zro13, %zero_f32 : f32
+    %sg14 = scalar.addf %scl14, %zero_f32 : f32
+    %zg14 = scalar.addf %zro14, %zero_f32 : f32
+    %sg15 = scalar.addf %scl15, %zero_f32 : f32
+    %zg15 = scalar.addf %zro15, %zero_f32 : f32
+    %pl = index.add %tile_base, %lane_base : index
+    %pa0 = index.add %pl, %lane8 : index
+    %pa1 = index.add %pa0, %unit : index
+    %pa2 = index.add %pa1, %unit : index
+    %pa3 = index.add %pa2, %unit : index
+    %pa4 = index.add %pa3, %unit : index
+    %pa5 = index.add %pa4, %unit : index
+    %pa6 = index.add %pa5, %unit : index
+    %pa7 = index.add %pa6, %unit : index
+    %pkv0 = view.load %packed_v[%pa0] : view<1073741824xi8> -> i8
+    %pkv1 = view.load %packed_v[%pa1] : view<1073741824xi8> -> i8
+    %pkv2 = view.load %packed_v[%pa2] : view<1073741824xi8> -> i8
+    %pkv3 = view.load %packed_v[%pa3] : view<1073741824xi8> -> i8
+    %pkv4 = view.load %packed_v[%pa4] : view<1073741824xi8> -> i8
+    %pkv5 = view.load %packed_v[%pa5] : view<1073741824xi8> -> i8
+    %pkv6 = view.load %packed_v[%pa6] : view<1073741824xi8> -> i8
+    %pkv7 = view.load %packed_v[%pa7] : view<1073741824xi8> -> i8
+    %ko = index.mul %tc, %twofiftysix : index
+    %ka = index.add %ko, %lane : index
+    %x = view.load %src1_view[%ka] : view<[%src1_count]xf32> -> f32
+    %koff1 = index.mul %cok1, %k_bounded : index
+    %kaddr1 = index.add %ka, %koff1 : index
+    %xc1 = scf.if %ccmp1 -> (f32) {
+      %xl1 = view.load %src1_view[%kaddr1] : view<[%src1_count]xf32> -> f32
+      scf.yield %xl1 : f32
+    } else {
+      scf.yield %zero_f32 : f32
+    }
+    %koff2 = index.mul %cok2, %k_bounded : index
+    %kaddr2 = index.add %ka, %koff2 : index
+    %xc2 = scf.if %ccmp2 -> (f32) {
+      %xl2 = view.load %src1_view[%kaddr2] : view<[%src1_count]xf32> -> f32
+      scf.yield %xl2 : f32
+    } else {
+      scf.yield %zero_f32 : f32
+    }
+    %koff3 = index.mul %cok3, %k_bounded : index
+    %kaddr3 = index.add %ka, %koff3 : index
+    %xc3 = scf.if %ccmp3 -> (f32) {
+      %xl3 = view.load %src1_view[%kaddr3] : view<[%src1_count]xf32> -> f32
+      scf.yield %xl3 : f32
+    } else {
+      scf.yield %zero_f32 : f32
+    }
+    %koff4 = index.mul %cok4, %k_bounded : index
+    %kaddr4 = index.add %ka, %koff4 : index
+    %xc4 = scf.if %ccmp4 -> (f32) {
+      %xl4 = view.load %src1_view[%kaddr4] : view<[%src1_count]xf32> -> f32
+      scf.yield %xl4 : f32
+    } else {
+      scf.yield %zero_f32 : f32
+    }
+    %koff5 = index.mul %cok5, %k_bounded : index
+    %kaddr5 = index.add %ka, %koff5 : index
+    %xc5 = scf.if %ccmp5 -> (f32) {
+      %xl5 = view.load %src1_view[%kaddr5] : view<[%src1_count]xf32> -> f32
+      scf.yield %xl5 : f32
+    } else {
+      scf.yield %zero_f32 : f32
+    }
+    %koff6 = index.mul %cok6, %k_bounded : index
+    %kaddr6 = index.add %ka, %koff6 : index
+    %xc6 = scf.if %ccmp6 -> (f32) {
+      %xl6 = view.load %src1_view[%kaddr6] : view<[%src1_count]xf32> -> f32
+      scf.yield %xl6 : f32
+    } else {
+      scf.yield %zero_f32 : f32
+    }
+    %koff7 = index.mul %cok7, %k_bounded : index
+    %kaddr7 = index.add %ka, %koff7 : index
+    %xc7 = scf.if %ccmp7 -> (f32) {
+      %xl7 = view.load %src1_view[%kaddr7] : view<[%src1_count]xf32> -> f32
+      scf.yield %xl7 : f32
+    } else {
+      scf.yield %zero_f32 : f32
+    }
+    %bq0 = scalar.extui %pkv0 : i8 to i32
+    %bm0 = scalar.andi %bq0, %fifteen_i32 : i32
+    %s10 = scalar.addi %bm0, %eight_i32 : i32
+    %s20 = scalar.andi %s10, %fifteen_i32 : i32
+    %bv0 = scalar.subi %s20, %eight_i32 : i32
+    %bf0 = scalar.sitofp %bv0 : i32 to f32
+    %bt0 = scalar.mulf %bf0, %sg0 : f32
+    %ba0 = scalar.addf %bt0, %zg0 : f32
+    %bp0 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba0, %x : f32
+    %bo0 = scalar.addf<reassoc|nnan|ninf|nsz> %ac0, %bp0 : f32
+    %c1p0 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba0, %xc1 : f32
+    %c1o0 = scalar.addf<reassoc|nnan|ninf|nsz> %ac16, %c1p0 : f32
+    %c2p0 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba0, %xc2 : f32
+    %c2o0 = scalar.addf<reassoc|nnan|ninf|nsz> %ac32, %c2p0 : f32
+    %c3p0 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba0, %xc3 : f32
+    %c3o0 = scalar.addf<reassoc|nnan|ninf|nsz> %ac48, %c3p0 : f32
+    %c4p0 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba0, %xc4 : f32
+    %c4o0 = scalar.addf<reassoc|nnan|ninf|nsz> %ac64, %c4p0 : f32
+    %c5p0 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba0, %xc5 : f32
+    %c5o0 = scalar.addf<reassoc|nnan|ninf|nsz> %ac80, %c5p0 : f32
+    %c6p0 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba0, %xc6 : f32
+    %c6o0 = scalar.addf<reassoc|nnan|ninf|nsz> %ac96, %c6p0 : f32
+    %c7p0 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba0, %xc7 : f32
+    %c7o0 = scalar.addf<reassoc|nnan|ninf|nsz> %ac112, %c7p0 : f32
+    %bq1 = scalar.extui %pkv0 : i8 to i32
+    %bm1 = scalar.shrui %bq1, %four_i32 : i32
+    %s11 = scalar.addi %bm1, %eight_i32 : i32
+    %s21 = scalar.andi %s11, %fifteen_i32 : i32
+    %bv1 = scalar.subi %s21, %eight_i32 : i32
+    %bf1 = scalar.sitofp %bv1 : i32 to f32
+    %bt1 = scalar.mulf %bf1, %sg1 : f32
+    %ba1 = scalar.addf %bt1, %zg1 : f32
+    %bp1 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba1, %x : f32
+    %bo1 = scalar.addf<reassoc|nnan|ninf|nsz> %ac1, %bp1 : f32
+    %c1p1 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba1, %xc1 : f32
+    %c1o1 = scalar.addf<reassoc|nnan|ninf|nsz> %ac17, %c1p1 : f32
+    %c2p1 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba1, %xc2 : f32
+    %c2o1 = scalar.addf<reassoc|nnan|ninf|nsz> %ac33, %c2p1 : f32
+    %c3p1 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba1, %xc3 : f32
+    %c3o1 = scalar.addf<reassoc|nnan|ninf|nsz> %ac49, %c3p1 : f32
+    %c4p1 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba1, %xc4 : f32
+    %c4o1 = scalar.addf<reassoc|nnan|ninf|nsz> %ac65, %c4p1 : f32
+    %c5p1 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba1, %xc5 : f32
+    %c5o1 = scalar.addf<reassoc|nnan|ninf|nsz> %ac81, %c5p1 : f32
+    %c6p1 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba1, %xc6 : f32
+    %c6o1 = scalar.addf<reassoc|nnan|ninf|nsz> %ac97, %c6p1 : f32
+    %c7p1 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba1, %xc7 : f32
+    %c7o1 = scalar.addf<reassoc|nnan|ninf|nsz> %ac113, %c7p1 : f32
+    %bq2 = scalar.extui %pkv1 : i8 to i32
+    %bm2 = scalar.andi %bq2, %fifteen_i32 : i32
+    %s12 = scalar.addi %bm2, %eight_i32 : i32
+    %s22 = scalar.andi %s12, %fifteen_i32 : i32
+    %bv2 = scalar.subi %s22, %eight_i32 : i32
+    %bf2 = scalar.sitofp %bv2 : i32 to f32
+    %bt2 = scalar.mulf %bf2, %sg2 : f32
+    %ba2 = scalar.addf %bt2, %zg2 : f32
+    %bp2 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba2, %x : f32
+    %bo2 = scalar.addf<reassoc|nnan|ninf|nsz> %ac2, %bp2 : f32
+    %c1p2 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba2, %xc1 : f32
+    %c1o2 = scalar.addf<reassoc|nnan|ninf|nsz> %ac18, %c1p2 : f32
+    %c2p2 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba2, %xc2 : f32
+    %c2o2 = scalar.addf<reassoc|nnan|ninf|nsz> %ac34, %c2p2 : f32
+    %c3p2 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba2, %xc3 : f32
+    %c3o2 = scalar.addf<reassoc|nnan|ninf|nsz> %ac50, %c3p2 : f32
+    %c4p2 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba2, %xc4 : f32
+    %c4o2 = scalar.addf<reassoc|nnan|ninf|nsz> %ac66, %c4p2 : f32
+    %c5p2 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba2, %xc5 : f32
+    %c5o2 = scalar.addf<reassoc|nnan|ninf|nsz> %ac82, %c5p2 : f32
+    %c6p2 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba2, %xc6 : f32
+    %c6o2 = scalar.addf<reassoc|nnan|ninf|nsz> %ac98, %c6p2 : f32
+    %c7p2 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba2, %xc7 : f32
+    %c7o2 = scalar.addf<reassoc|nnan|ninf|nsz> %ac114, %c7p2 : f32
+    %bq3 = scalar.extui %pkv1 : i8 to i32
+    %bm3 = scalar.shrui %bq3, %four_i32 : i32
+    %s13 = scalar.addi %bm3, %eight_i32 : i32
+    %s23 = scalar.andi %s13, %fifteen_i32 : i32
+    %bv3 = scalar.subi %s23, %eight_i32 : i32
+    %bf3 = scalar.sitofp %bv3 : i32 to f32
+    %bt3 = scalar.mulf %bf3, %sg3 : f32
+    %ba3 = scalar.addf %bt3, %zg3 : f32
+    %bp3 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba3, %x : f32
+    %bo3 = scalar.addf<reassoc|nnan|ninf|nsz> %ac3, %bp3 : f32
+    %c1p3 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba3, %xc1 : f32
+    %c1o3 = scalar.addf<reassoc|nnan|ninf|nsz> %ac19, %c1p3 : f32
+    %c2p3 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba3, %xc2 : f32
+    %c2o3 = scalar.addf<reassoc|nnan|ninf|nsz> %ac35, %c2p3 : f32
+    %c3p3 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba3, %xc3 : f32
+    %c3o3 = scalar.addf<reassoc|nnan|ninf|nsz> %ac51, %c3p3 : f32
+    %c4p3 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba3, %xc4 : f32
+    %c4o3 = scalar.addf<reassoc|nnan|ninf|nsz> %ac67, %c4p3 : f32
+    %c5p3 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba3, %xc5 : f32
+    %c5o3 = scalar.addf<reassoc|nnan|ninf|nsz> %ac83, %c5p3 : f32
+    %c6p3 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba3, %xc6 : f32
+    %c6o3 = scalar.addf<reassoc|nnan|ninf|nsz> %ac99, %c6p3 : f32
+    %c7p3 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba3, %xc7 : f32
+    %c7o3 = scalar.addf<reassoc|nnan|ninf|nsz> %ac115, %c7p3 : f32
+    %bq4 = scalar.extui %pkv2 : i8 to i32
+    %bm4 = scalar.andi %bq4, %fifteen_i32 : i32
+    %s14 = scalar.addi %bm4, %eight_i32 : i32
+    %s24 = scalar.andi %s14, %fifteen_i32 : i32
+    %bv4 = scalar.subi %s24, %eight_i32 : i32
+    %bf4 = scalar.sitofp %bv4 : i32 to f32
+    %bt4 = scalar.mulf %bf4, %sg4 : f32
+    %ba4 = scalar.addf %bt4, %zg4 : f32
+    %bp4 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba4, %x : f32
+    %bo4 = scalar.addf<reassoc|nnan|ninf|nsz> %ac4, %bp4 : f32
+    %c1p4 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba4, %xc1 : f32
+    %c1o4 = scalar.addf<reassoc|nnan|ninf|nsz> %ac20, %c1p4 : f32
+    %c2p4 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba4, %xc2 : f32
+    %c2o4 = scalar.addf<reassoc|nnan|ninf|nsz> %ac36, %c2p4 : f32
+    %c3p4 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba4, %xc3 : f32
+    %c3o4 = scalar.addf<reassoc|nnan|ninf|nsz> %ac52, %c3p4 : f32
+    %c4p4 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba4, %xc4 : f32
+    %c4o4 = scalar.addf<reassoc|nnan|ninf|nsz> %ac68, %c4p4 : f32
+    %c5p4 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba4, %xc5 : f32
+    %c5o4 = scalar.addf<reassoc|nnan|ninf|nsz> %ac84, %c5p4 : f32
+    %c6p4 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba4, %xc6 : f32
+    %c6o4 = scalar.addf<reassoc|nnan|ninf|nsz> %ac100, %c6p4 : f32
+    %c7p4 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba4, %xc7 : f32
+    %c7o4 = scalar.addf<reassoc|nnan|ninf|nsz> %ac116, %c7p4 : f32
+    %bq5 = scalar.extui %pkv2 : i8 to i32
+    %bm5 = scalar.shrui %bq5, %four_i32 : i32
+    %s15 = scalar.addi %bm5, %eight_i32 : i32
+    %s25 = scalar.andi %s15, %fifteen_i32 : i32
+    %bv5 = scalar.subi %s25, %eight_i32 : i32
+    %bf5 = scalar.sitofp %bv5 : i32 to f32
+    %bt5 = scalar.mulf %bf5, %sg5 : f32
+    %ba5 = scalar.addf %bt5, %zg5 : f32
+    %bp5 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba5, %x : f32
+    %bo5 = scalar.addf<reassoc|nnan|ninf|nsz> %ac5, %bp5 : f32
+    %c1p5 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba5, %xc1 : f32
+    %c1o5 = scalar.addf<reassoc|nnan|ninf|nsz> %ac21, %c1p5 : f32
+    %c2p5 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba5, %xc2 : f32
+    %c2o5 = scalar.addf<reassoc|nnan|ninf|nsz> %ac37, %c2p5 : f32
+    %c3p5 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba5, %xc3 : f32
+    %c3o5 = scalar.addf<reassoc|nnan|ninf|nsz> %ac53, %c3p5 : f32
+    %c4p5 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba5, %xc4 : f32
+    %c4o5 = scalar.addf<reassoc|nnan|ninf|nsz> %ac69, %c4p5 : f32
+    %c5p5 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba5, %xc5 : f32
+    %c5o5 = scalar.addf<reassoc|nnan|ninf|nsz> %ac85, %c5p5 : f32
+    %c6p5 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba5, %xc6 : f32
+    %c6o5 = scalar.addf<reassoc|nnan|ninf|nsz> %ac101, %c6p5 : f32
+    %c7p5 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba5, %xc7 : f32
+    %c7o5 = scalar.addf<reassoc|nnan|ninf|nsz> %ac117, %c7p5 : f32
+    %bq6 = scalar.extui %pkv3 : i8 to i32
+    %bm6 = scalar.andi %bq6, %fifteen_i32 : i32
+    %s16 = scalar.addi %bm6, %eight_i32 : i32
+    %s26 = scalar.andi %s16, %fifteen_i32 : i32
+    %bv6 = scalar.subi %s26, %eight_i32 : i32
+    %bf6 = scalar.sitofp %bv6 : i32 to f32
+    %bt6 = scalar.mulf %bf6, %sg6 : f32
+    %ba6 = scalar.addf %bt6, %zg6 : f32
+    %bp6 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba6, %x : f32
+    %bo6 = scalar.addf<reassoc|nnan|ninf|nsz> %ac6, %bp6 : f32
+    %c1p6 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba6, %xc1 : f32
+    %c1o6 = scalar.addf<reassoc|nnan|ninf|nsz> %ac22, %c1p6 : f32
+    %c2p6 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba6, %xc2 : f32
+    %c2o6 = scalar.addf<reassoc|nnan|ninf|nsz> %ac38, %c2p6 : f32
+    %c3p6 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba6, %xc3 : f32
+    %c3o6 = scalar.addf<reassoc|nnan|ninf|nsz> %ac54, %c3p6 : f32
+    %c4p6 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba6, %xc4 : f32
+    %c4o6 = scalar.addf<reassoc|nnan|ninf|nsz> %ac70, %c4p6 : f32
+    %c5p6 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba6, %xc5 : f32
+    %c5o6 = scalar.addf<reassoc|nnan|ninf|nsz> %ac86, %c5p6 : f32
+    %c6p6 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba6, %xc6 : f32
+    %c6o6 = scalar.addf<reassoc|nnan|ninf|nsz> %ac102, %c6p6 : f32
+    %c7p6 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba6, %xc7 : f32
+    %c7o6 = scalar.addf<reassoc|nnan|ninf|nsz> %ac118, %c7p6 : f32
+    %bq7 = scalar.extui %pkv3 : i8 to i32
+    %bm7 = scalar.shrui %bq7, %four_i32 : i32
+    %s17 = scalar.addi %bm7, %eight_i32 : i32
+    %s27 = scalar.andi %s17, %fifteen_i32 : i32
+    %bv7 = scalar.subi %s27, %eight_i32 : i32
+    %bf7 = scalar.sitofp %bv7 : i32 to f32
+    %bt7 = scalar.mulf %bf7, %sg7 : f32
+    %ba7 = scalar.addf %bt7, %zg7 : f32
+    %bp7 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba7, %x : f32
+    %bo7 = scalar.addf<reassoc|nnan|ninf|nsz> %ac7, %bp7 : f32
+    %c1p7 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba7, %xc1 : f32
+    %c1o7 = scalar.addf<reassoc|nnan|ninf|nsz> %ac23, %c1p7 : f32
+    %c2p7 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba7, %xc2 : f32
+    %c2o7 = scalar.addf<reassoc|nnan|ninf|nsz> %ac39, %c2p7 : f32
+    %c3p7 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba7, %xc3 : f32
+    %c3o7 = scalar.addf<reassoc|nnan|ninf|nsz> %ac55, %c3p7 : f32
+    %c4p7 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba7, %xc4 : f32
+    %c4o7 = scalar.addf<reassoc|nnan|ninf|nsz> %ac71, %c4p7 : f32
+    %c5p7 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba7, %xc5 : f32
+    %c5o7 = scalar.addf<reassoc|nnan|ninf|nsz> %ac87, %c5p7 : f32
+    %c6p7 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba7, %xc6 : f32
+    %c6o7 = scalar.addf<reassoc|nnan|ninf|nsz> %ac103, %c6p7 : f32
+    %c7p7 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba7, %xc7 : f32
+    %c7o7 = scalar.addf<reassoc|nnan|ninf|nsz> %ac119, %c7p7 : f32
+    %bq8 = scalar.extui %pkv4 : i8 to i32
+    %bm8 = scalar.andi %bq8, %fifteen_i32 : i32
+    %s18 = scalar.addi %bm8, %eight_i32 : i32
+    %s28 = scalar.andi %s18, %fifteen_i32 : i32
+    %bv8 = scalar.subi %s28, %eight_i32 : i32
+    %bf8 = scalar.sitofp %bv8 : i32 to f32
+    %bt8 = scalar.mulf %bf8, %sg8 : f32
+    %ba8 = scalar.addf %bt8, %zg8 : f32
+    %bp8 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba8, %x : f32
+    %bo8 = scalar.addf<reassoc|nnan|ninf|nsz> %ac8, %bp8 : f32
+    %c1p8 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba8, %xc1 : f32
+    %c1o8 = scalar.addf<reassoc|nnan|ninf|nsz> %ac24, %c1p8 : f32
+    %c2p8 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba8, %xc2 : f32
+    %c2o8 = scalar.addf<reassoc|nnan|ninf|nsz> %ac40, %c2p8 : f32
+    %c3p8 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba8, %xc3 : f32
+    %c3o8 = scalar.addf<reassoc|nnan|ninf|nsz> %ac56, %c3p8 : f32
+    %c4p8 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba8, %xc4 : f32
+    %c4o8 = scalar.addf<reassoc|nnan|ninf|nsz> %ac72, %c4p8 : f32
+    %c5p8 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba8, %xc5 : f32
+    %c5o8 = scalar.addf<reassoc|nnan|ninf|nsz> %ac88, %c5p8 : f32
+    %c6p8 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba8, %xc6 : f32
+    %c6o8 = scalar.addf<reassoc|nnan|ninf|nsz> %ac104, %c6p8 : f32
+    %c7p8 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba8, %xc7 : f32
+    %c7o8 = scalar.addf<reassoc|nnan|ninf|nsz> %ac120, %c7p8 : f32
+    %bq9 = scalar.extui %pkv4 : i8 to i32
+    %bm9 = scalar.shrui %bq9, %four_i32 : i32
+    %s19 = scalar.addi %bm9, %eight_i32 : i32
+    %s29 = scalar.andi %s19, %fifteen_i32 : i32
+    %bv9 = scalar.subi %s29, %eight_i32 : i32
+    %bf9 = scalar.sitofp %bv9 : i32 to f32
+    %bt9 = scalar.mulf %bf9, %sg9 : f32
+    %ba9 = scalar.addf %bt9, %zg9 : f32
+    %bp9 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba9, %x : f32
+    %bo9 = scalar.addf<reassoc|nnan|ninf|nsz> %ac9, %bp9 : f32
+    %c1p9 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba9, %xc1 : f32
+    %c1o9 = scalar.addf<reassoc|nnan|ninf|nsz> %ac25, %c1p9 : f32
+    %c2p9 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba9, %xc2 : f32
+    %c2o9 = scalar.addf<reassoc|nnan|ninf|nsz> %ac41, %c2p9 : f32
+    %c3p9 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba9, %xc3 : f32
+    %c3o9 = scalar.addf<reassoc|nnan|ninf|nsz> %ac57, %c3p9 : f32
+    %c4p9 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba9, %xc4 : f32
+    %c4o9 = scalar.addf<reassoc|nnan|ninf|nsz> %ac73, %c4p9 : f32
+    %c5p9 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba9, %xc5 : f32
+    %c5o9 = scalar.addf<reassoc|nnan|ninf|nsz> %ac89, %c5p9 : f32
+    %c6p9 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba9, %xc6 : f32
+    %c6o9 = scalar.addf<reassoc|nnan|ninf|nsz> %ac105, %c6p9 : f32
+    %c7p9 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba9, %xc7 : f32
+    %c7o9 = scalar.addf<reassoc|nnan|ninf|nsz> %ac121, %c7p9 : f32
+    %bq10 = scalar.extui %pkv5 : i8 to i32
+    %bm10 = scalar.andi %bq10, %fifteen_i32 : i32
+    %s110 = scalar.addi %bm10, %eight_i32 : i32
+    %s210 = scalar.andi %s110, %fifteen_i32 : i32
+    %bv10 = scalar.subi %s210, %eight_i32 : i32
+    %bf10 = scalar.sitofp %bv10 : i32 to f32
+    %bt10 = scalar.mulf %bf10, %sg10 : f32
+    %ba10 = scalar.addf %bt10, %zg10 : f32
+    %bp10 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba10, %x : f32
+    %bo10 = scalar.addf<reassoc|nnan|ninf|nsz> %ac10, %bp10 : f32
+    %c1p10 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba10, %xc1 : f32
+    %c1o10 = scalar.addf<reassoc|nnan|ninf|nsz> %ac26, %c1p10 : f32
+    %c2p10 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba10, %xc2 : f32
+    %c2o10 = scalar.addf<reassoc|nnan|ninf|nsz> %ac42, %c2p10 : f32
+    %c3p10 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba10, %xc3 : f32
+    %c3o10 = scalar.addf<reassoc|nnan|ninf|nsz> %ac58, %c3p10 : f32
+    %c4p10 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba10, %xc4 : f32
+    %c4o10 = scalar.addf<reassoc|nnan|ninf|nsz> %ac74, %c4p10 : f32
+    %c5p10 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba10, %xc5 : f32
+    %c5o10 = scalar.addf<reassoc|nnan|ninf|nsz> %ac90, %c5p10 : f32
+    %c6p10 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba10, %xc6 : f32
+    %c6o10 = scalar.addf<reassoc|nnan|ninf|nsz> %ac106, %c6p10 : f32
+    %c7p10 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba10, %xc7 : f32
+    %c7o10 = scalar.addf<reassoc|nnan|ninf|nsz> %ac122, %c7p10 : f32
+    %bq11 = scalar.extui %pkv5 : i8 to i32
+    %bm11 = scalar.shrui %bq11, %four_i32 : i32
+    %s111 = scalar.addi %bm11, %eight_i32 : i32
+    %s211 = scalar.andi %s111, %fifteen_i32 : i32
+    %bv11 = scalar.subi %s211, %eight_i32 : i32
+    %bf11 = scalar.sitofp %bv11 : i32 to f32
+    %bt11 = scalar.mulf %bf11, %sg11 : f32
+    %ba11 = scalar.addf %bt11, %zg11 : f32
+    %bp11 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba11, %x : f32
+    %bo11 = scalar.addf<reassoc|nnan|ninf|nsz> %ac11, %bp11 : f32
+    %c1p11 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba11, %xc1 : f32
+    %c1o11 = scalar.addf<reassoc|nnan|ninf|nsz> %ac27, %c1p11 : f32
+    %c2p11 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba11, %xc2 : f32
+    %c2o11 = scalar.addf<reassoc|nnan|ninf|nsz> %ac43, %c2p11 : f32
+    %c3p11 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba11, %xc3 : f32
+    %c3o11 = scalar.addf<reassoc|nnan|ninf|nsz> %ac59, %c3p11 : f32
+    %c4p11 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba11, %xc4 : f32
+    %c4o11 = scalar.addf<reassoc|nnan|ninf|nsz> %ac75, %c4p11 : f32
+    %c5p11 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba11, %xc5 : f32
+    %c5o11 = scalar.addf<reassoc|nnan|ninf|nsz> %ac91, %c5p11 : f32
+    %c6p11 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba11, %xc6 : f32
+    %c6o11 = scalar.addf<reassoc|nnan|ninf|nsz> %ac107, %c6p11 : f32
+    %c7p11 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba11, %xc7 : f32
+    %c7o11 = scalar.addf<reassoc|nnan|ninf|nsz> %ac123, %c7p11 : f32
+    %bq12 = scalar.extui %pkv6 : i8 to i32
+    %bm12 = scalar.andi %bq12, %fifteen_i32 : i32
+    %s112 = scalar.addi %bm12, %eight_i32 : i32
+    %s212 = scalar.andi %s112, %fifteen_i32 : i32
+    %bv12 = scalar.subi %s212, %eight_i32 : i32
+    %bf12 = scalar.sitofp %bv12 : i32 to f32
+    %bt12 = scalar.mulf %bf12, %sg12 : f32
+    %ba12 = scalar.addf %bt12, %zg12 : f32
+    %bp12 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba12, %x : f32
+    %bo12 = scalar.addf<reassoc|nnan|ninf|nsz> %ac12, %bp12 : f32
+    %c1p12 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba12, %xc1 : f32
+    %c1o12 = scalar.addf<reassoc|nnan|ninf|nsz> %ac28, %c1p12 : f32
+    %c2p12 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba12, %xc2 : f32
+    %c2o12 = scalar.addf<reassoc|nnan|ninf|nsz> %ac44, %c2p12 : f32
+    %c3p12 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba12, %xc3 : f32
+    %c3o12 = scalar.addf<reassoc|nnan|ninf|nsz> %ac60, %c3p12 : f32
+    %c4p12 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba12, %xc4 : f32
+    %c4o12 = scalar.addf<reassoc|nnan|ninf|nsz> %ac76, %c4p12 : f32
+    %c5p12 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba12, %xc5 : f32
+    %c5o12 = scalar.addf<reassoc|nnan|ninf|nsz> %ac92, %c5p12 : f32
+    %c6p12 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba12, %xc6 : f32
+    %c6o12 = scalar.addf<reassoc|nnan|ninf|nsz> %ac108, %c6p12 : f32
+    %c7p12 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba12, %xc7 : f32
+    %c7o12 = scalar.addf<reassoc|nnan|ninf|nsz> %ac124, %c7p12 : f32
+    %bq13 = scalar.extui %pkv6 : i8 to i32
+    %bm13 = scalar.shrui %bq13, %four_i32 : i32
+    %s113 = scalar.addi %bm13, %eight_i32 : i32
+    %s213 = scalar.andi %s113, %fifteen_i32 : i32
+    %bv13 = scalar.subi %s213, %eight_i32 : i32
+    %bf13 = scalar.sitofp %bv13 : i32 to f32
+    %bt13 = scalar.mulf %bf13, %sg13 : f32
+    %ba13 = scalar.addf %bt13, %zg13 : f32
+    %bp13 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba13, %x : f32
+    %bo13 = scalar.addf<reassoc|nnan|ninf|nsz> %ac13, %bp13 : f32
+    %c1p13 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba13, %xc1 : f32
+    %c1o13 = scalar.addf<reassoc|nnan|ninf|nsz> %ac29, %c1p13 : f32
+    %c2p13 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba13, %xc2 : f32
+    %c2o13 = scalar.addf<reassoc|nnan|ninf|nsz> %ac45, %c2p13 : f32
+    %c3p13 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba13, %xc3 : f32
+    %c3o13 = scalar.addf<reassoc|nnan|ninf|nsz> %ac61, %c3p13 : f32
+    %c4p13 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba13, %xc4 : f32
+    %c4o13 = scalar.addf<reassoc|nnan|ninf|nsz> %ac77, %c4p13 : f32
+    %c5p13 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba13, %xc5 : f32
+    %c5o13 = scalar.addf<reassoc|nnan|ninf|nsz> %ac93, %c5p13 : f32
+    %c6p13 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba13, %xc6 : f32
+    %c6o13 = scalar.addf<reassoc|nnan|ninf|nsz> %ac109, %c6p13 : f32
+    %c7p13 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba13, %xc7 : f32
+    %c7o13 = scalar.addf<reassoc|nnan|ninf|nsz> %ac125, %c7p13 : f32
+    %bq14 = scalar.extui %pkv7 : i8 to i32
+    %bm14 = scalar.andi %bq14, %fifteen_i32 : i32
+    %s114 = scalar.addi %bm14, %eight_i32 : i32
+    %s214 = scalar.andi %s114, %fifteen_i32 : i32
+    %bv14 = scalar.subi %s214, %eight_i32 : i32
+    %bf14 = scalar.sitofp %bv14 : i32 to f32
+    %bt14 = scalar.mulf %bf14, %sg14 : f32
+    %ba14 = scalar.addf %bt14, %zg14 : f32
+    %bp14 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba14, %x : f32
+    %bo14 = scalar.addf<reassoc|nnan|ninf|nsz> %ac14, %bp14 : f32
+    %c1p14 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba14, %xc1 : f32
+    %c1o14 = scalar.addf<reassoc|nnan|ninf|nsz> %ac30, %c1p14 : f32
+    %c2p14 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba14, %xc2 : f32
+    %c2o14 = scalar.addf<reassoc|nnan|ninf|nsz> %ac46, %c2p14 : f32
+    %c3p14 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba14, %xc3 : f32
+    %c3o14 = scalar.addf<reassoc|nnan|ninf|nsz> %ac62, %c3p14 : f32
+    %c4p14 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba14, %xc4 : f32
+    %c4o14 = scalar.addf<reassoc|nnan|ninf|nsz> %ac78, %c4p14 : f32
+    %c5p14 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba14, %xc5 : f32
+    %c5o14 = scalar.addf<reassoc|nnan|ninf|nsz> %ac94, %c5p14 : f32
+    %c6p14 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba14, %xc6 : f32
+    %c6o14 = scalar.addf<reassoc|nnan|ninf|nsz> %ac110, %c6p14 : f32
+    %c7p14 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba14, %xc7 : f32
+    %c7o14 = scalar.addf<reassoc|nnan|ninf|nsz> %ac126, %c7p14 : f32
+    %bq15 = scalar.extui %pkv7 : i8 to i32
+    %bm15 = scalar.shrui %bq15, %four_i32 : i32
+    %s115 = scalar.addi %bm15, %eight_i32 : i32
+    %s215 = scalar.andi %s115, %fifteen_i32 : i32
+    %bv15 = scalar.subi %s215, %eight_i32 : i32
+    %bf15 = scalar.sitofp %bv15 : i32 to f32
+    %bt15 = scalar.mulf %bf15, %sg15 : f32
+    %ba15 = scalar.addf %bt15, %zg15 : f32
+    %bp15 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba15, %x : f32
+    %bo15 = scalar.addf<reassoc|nnan|ninf|nsz> %ac15, %bp15 : f32
+    %c1p15 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba15, %xc1 : f32
+    %c1o15 = scalar.addf<reassoc|nnan|ninf|nsz> %ac31, %c1p15 : f32
+    %c2p15 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba15, %xc2 : f32
+    %c2o15 = scalar.addf<reassoc|nnan|ninf|nsz> %ac47, %c2p15 : f32
+    %c3p15 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba15, %xc3 : f32
+    %c3o15 = scalar.addf<reassoc|nnan|ninf|nsz> %ac63, %c3p15 : f32
+    %c4p15 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba15, %xc4 : f32
+    %c4o15 = scalar.addf<reassoc|nnan|ninf|nsz> %ac79, %c4p15 : f32
+    %c5p15 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba15, %xc5 : f32
+    %c5o15 = scalar.addf<reassoc|nnan|ninf|nsz> %ac95, %c5p15 : f32
+    %c6p15 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba15, %xc6 : f32
+    %c6o15 = scalar.addf<reassoc|nnan|ninf|nsz> %ac111, %c6p15 : f32
+    %c7p15 = scalar.mulf<reassoc|nnan|ninf|nsz> %ba15, %xc7 : f32
+    %c7o15 = scalar.addf<reassoc|nnan|ninf|nsz> %ac127, %c7p15 : f32
+    scf.yield %bo0, %bo1, %bo2, %bo3, %bo4, %bo5, %bo6, %bo7, %bo8, %bo9, %bo10, %bo11, %bo12, %bo13, %bo14, %bo15, %c1o0, %c1o1, %c1o2, %c1o3, %c1o4, %c1o5, %c1o6, %c1o7, %c1o8, %c1o9, %c1o10, %c1o11, %c1o12, %c1o13, %c1o14, %c1o15, %c2o0, %c2o1, %c2o2, %c2o3, %c2o4, %c2o5, %c2o6, %c2o7, %c2o8, %c2o9, %c2o10, %c2o11, %c2o12, %c2o13, %c2o14, %c2o15, %c3o0, %c3o1, %c3o2, %c3o3, %c3o4, %c3o5, %c3o6, %c3o7, %c3o8, %c3o9, %c3o10, %c3o11, %c3o12, %c3o13, %c3o14, %c3o15, %c4o0, %c4o1, %c4o2, %c4o3, %c4o4, %c4o5, %c4o6, %c4o7, %c4o8, %c4o9, %c4o10, %c4o11, %c4o12, %c4o13, %c4o14, %c4o15, %c5o0, %c5o1, %c5o2, %c5o3, %c5o4, %c5o5, %c5o6, %c5o7, %c5o8, %c5o9, %c5o10, %c5o11, %c5o12, %c5o13, %c5o14, %c5o15, %c6o0, %c6o1, %c6o2, %c6o3, %c6o4, %c6o5, %c6o6, %c6o7, %c6o8, %c6o9, %c6o10, %c6o11, %c6o12, %c6o13, %c6o14, %c6o15, %c7o0, %c7o1, %c7o2, %c7o3, %c7o4, %c7o5, %c7o6, %c7o7, %c7o8, %c7o9, %c7o10, %c7o11, %c7o12, %c7o13, %c7o14, %c7o15 :
+        f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32
+  }
+  %red0 = kernel.workgroup.reduce<addf> %a0 : f32
+  %red1 = kernel.workgroup.reduce<addf> %a1 : f32
+  %red2 = kernel.workgroup.reduce<addf> %a2 : f32
+  %red3 = kernel.workgroup.reduce<addf> %a3 : f32
+  %red4 = kernel.workgroup.reduce<addf> %a4 : f32
+  %red5 = kernel.workgroup.reduce<addf> %a5 : f32
+  %red6 = kernel.workgroup.reduce<addf> %a6 : f32
+  %red7 = kernel.workgroup.reduce<addf> %a7 : f32
+  %red8 = kernel.workgroup.reduce<addf> %a8 : f32
+  %red9 = kernel.workgroup.reduce<addf> %a9 : f32
+  %red10 = kernel.workgroup.reduce<addf> %a10 : f32
+  %red11 = kernel.workgroup.reduce<addf> %a11 : f32
+  %red12 = kernel.workgroup.reduce<addf> %a12 : f32
+  %red13 = kernel.workgroup.reduce<addf> %a13 : f32
+  %red14 = kernel.workgroup.reduce<addf> %a14 : f32
+  %red15 = kernel.workgroup.reduce<addf> %a15 : f32
+  %red1x0 = kernel.workgroup.reduce<addf> %a16 : f32
+  %red1x1 = kernel.workgroup.reduce<addf> %a17 : f32
+  %red1x2 = kernel.workgroup.reduce<addf> %a18 : f32
+  %red1x3 = kernel.workgroup.reduce<addf> %a19 : f32
+  %red1x4 = kernel.workgroup.reduce<addf> %a20 : f32
+  %red1x5 = kernel.workgroup.reduce<addf> %a21 : f32
+  %red1x6 = kernel.workgroup.reduce<addf> %a22 : f32
+  %red1x7 = kernel.workgroup.reduce<addf> %a23 : f32
+  %red1x8 = kernel.workgroup.reduce<addf> %a24 : f32
+  %red1x9 = kernel.workgroup.reduce<addf> %a25 : f32
+  %red1x10 = kernel.workgroup.reduce<addf> %a26 : f32
+  %red1x11 = kernel.workgroup.reduce<addf> %a27 : f32
+  %red1x12 = kernel.workgroup.reduce<addf> %a28 : f32
+  %red1x13 = kernel.workgroup.reduce<addf> %a29 : f32
+  %red1x14 = kernel.workgroup.reduce<addf> %a30 : f32
+  %red1x15 = kernel.workgroup.reduce<addf> %a31 : f32
+  %red2x0 = kernel.workgroup.reduce<addf> %a32 : f32
+  %red2x1 = kernel.workgroup.reduce<addf> %a33 : f32
+  %red2x2 = kernel.workgroup.reduce<addf> %a34 : f32
+  %red2x3 = kernel.workgroup.reduce<addf> %a35 : f32
+  %red2x4 = kernel.workgroup.reduce<addf> %a36 : f32
+  %red2x5 = kernel.workgroup.reduce<addf> %a37 : f32
+  %red2x6 = kernel.workgroup.reduce<addf> %a38 : f32
+  %red2x7 = kernel.workgroup.reduce<addf> %a39 : f32
+  %red2x8 = kernel.workgroup.reduce<addf> %a40 : f32
+  %red2x9 = kernel.workgroup.reduce<addf> %a41 : f32
+  %red2x10 = kernel.workgroup.reduce<addf> %a42 : f32
+  %red2x11 = kernel.workgroup.reduce<addf> %a43 : f32
+  %red2x12 = kernel.workgroup.reduce<addf> %a44 : f32
+  %red2x13 = kernel.workgroup.reduce<addf> %a45 : f32
+  %red2x14 = kernel.workgroup.reduce<addf> %a46 : f32
+  %red2x15 = kernel.workgroup.reduce<addf> %a47 : f32
+  %red3x0 = kernel.workgroup.reduce<addf> %a48 : f32
+  %red3x1 = kernel.workgroup.reduce<addf> %a49 : f32
+  %red3x2 = kernel.workgroup.reduce<addf> %a50 : f32
+  %red3x3 = kernel.workgroup.reduce<addf> %a51 : f32
+  %red3x4 = kernel.workgroup.reduce<addf> %a52 : f32
+  %red3x5 = kernel.workgroup.reduce<addf> %a53 : f32
+  %red3x6 = kernel.workgroup.reduce<addf> %a54 : f32
+  %red3x7 = kernel.workgroup.reduce<addf> %a55 : f32
+  %red3x8 = kernel.workgroup.reduce<addf> %a56 : f32
+  %red3x9 = kernel.workgroup.reduce<addf> %a57 : f32
+  %red3x10 = kernel.workgroup.reduce<addf> %a58 : f32
+  %red3x11 = kernel.workgroup.reduce<addf> %a59 : f32
+  %red3x12 = kernel.workgroup.reduce<addf> %a60 : f32
+  %red3x13 = kernel.workgroup.reduce<addf> %a61 : f32
+  %red3x14 = kernel.workgroup.reduce<addf> %a62 : f32
+  %red3x15 = kernel.workgroup.reduce<addf> %a63 : f32
+  %red4x0 = kernel.workgroup.reduce<addf> %a64 : f32
+  %red4x1 = kernel.workgroup.reduce<addf> %a65 : f32
+  %red4x2 = kernel.workgroup.reduce<addf> %a66 : f32
+  %red4x3 = kernel.workgroup.reduce<addf> %a67 : f32
+  %red4x4 = kernel.workgroup.reduce<addf> %a68 : f32
+  %red4x5 = kernel.workgroup.reduce<addf> %a69 : f32
+  %red4x6 = kernel.workgroup.reduce<addf> %a70 : f32
+  %red4x7 = kernel.workgroup.reduce<addf> %a71 : f32
+  %red4x8 = kernel.workgroup.reduce<addf> %a72 : f32
+  %red4x9 = kernel.workgroup.reduce<addf> %a73 : f32
+  %red4x10 = kernel.workgroup.reduce<addf> %a74 : f32
+  %red4x11 = kernel.workgroup.reduce<addf> %a75 : f32
+  %red4x12 = kernel.workgroup.reduce<addf> %a76 : f32
+  %red4x13 = kernel.workgroup.reduce<addf> %a77 : f32
+  %red4x14 = kernel.workgroup.reduce<addf> %a78 : f32
+  %red4x15 = kernel.workgroup.reduce<addf> %a79 : f32
+  %red5x0 = kernel.workgroup.reduce<addf> %a80 : f32
+  %red5x1 = kernel.workgroup.reduce<addf> %a81 : f32
+  %red5x2 = kernel.workgroup.reduce<addf> %a82 : f32
+  %red5x3 = kernel.workgroup.reduce<addf> %a83 : f32
+  %red5x4 = kernel.workgroup.reduce<addf> %a84 : f32
+  %red5x5 = kernel.workgroup.reduce<addf> %a85 : f32
+  %red5x6 = kernel.workgroup.reduce<addf> %a86 : f32
+  %red5x7 = kernel.workgroup.reduce<addf> %a87 : f32
+  %red5x8 = kernel.workgroup.reduce<addf> %a88 : f32
+  %red5x9 = kernel.workgroup.reduce<addf> %a89 : f32
+  %red5x10 = kernel.workgroup.reduce<addf> %a90 : f32
+  %red5x11 = kernel.workgroup.reduce<addf> %a91 : f32
+  %red5x12 = kernel.workgroup.reduce<addf> %a92 : f32
+  %red5x13 = kernel.workgroup.reduce<addf> %a93 : f32
+  %red5x14 = kernel.workgroup.reduce<addf> %a94 : f32
+  %red5x15 = kernel.workgroup.reduce<addf> %a95 : f32
+  %red6x0 = kernel.workgroup.reduce<addf> %a96 : f32
+  %red6x1 = kernel.workgroup.reduce<addf> %a97 : f32
+  %red6x2 = kernel.workgroup.reduce<addf> %a98 : f32
+  %red6x3 = kernel.workgroup.reduce<addf> %a99 : f32
+  %red6x4 = kernel.workgroup.reduce<addf> %a100 : f32
+  %red6x5 = kernel.workgroup.reduce<addf> %a101 : f32
+  %red6x6 = kernel.workgroup.reduce<addf> %a102 : f32
+  %red6x7 = kernel.workgroup.reduce<addf> %a103 : f32
+  %red6x8 = kernel.workgroup.reduce<addf> %a104 : f32
+  %red6x9 = kernel.workgroup.reduce<addf> %a105 : f32
+  %red6x10 = kernel.workgroup.reduce<addf> %a106 : f32
+  %red6x11 = kernel.workgroup.reduce<addf> %a107 : f32
+  %red6x12 = kernel.workgroup.reduce<addf> %a108 : f32
+  %red6x13 = kernel.workgroup.reduce<addf> %a109 : f32
+  %red6x14 = kernel.workgroup.reduce<addf> %a110 : f32
+  %red6x15 = kernel.workgroup.reduce<addf> %a111 : f32
+  %red7x0 = kernel.workgroup.reduce<addf> %a112 : f32
+  %red7x1 = kernel.workgroup.reduce<addf> %a113 : f32
+  %red7x2 = kernel.workgroup.reduce<addf> %a114 : f32
+  %red7x3 = kernel.workgroup.reduce<addf> %a115 : f32
+  %red7x4 = kernel.workgroup.reduce<addf> %a116 : f32
+  %red7x5 = kernel.workgroup.reduce<addf> %a117 : f32
+  %red7x6 = kernel.workgroup.reduce<addf> %a118 : f32
+  %red7x7 = kernel.workgroup.reduce<addf> %a119 : f32
+  %red7x8 = kernel.workgroup.reduce<addf> %a120 : f32
+  %red7x9 = kernel.workgroup.reduce<addf> %a121 : f32
+  %red7x10 = kernel.workgroup.reduce<addf> %a122 : f32
+  %red7x11 = kernel.workgroup.reduce<addf> %a123 : f32
+  %red7x12 = kernel.workgroup.reduce<addf> %a124 : f32
+  %red7x13 = kernel.workgroup.reduce<addf> %a125 : f32
+  %red7x14 = kernel.workgroup.reduce<addf> %a126 : f32
+  %red7x15 = kernel.workgroup.reduce<addf> %a127 : f32
+  %lane_i32 = index.cast %lane : index to i32
+  %is0 = scalar.cmpi eq, %lane_i32, %zero_i32 : i32
+  scf.if %is0 {
+    %rr0 = index.constant 0 : index
+    %row0 = index.add %base_row, %rr0 : index
+    %dc0 = index.mul %col, %rows_bounded : index
+    %di0 = index.add %row0, %dc0 : index
+    view.store %red0, %dst_view[%di0] : f32, view<[%dst_count]xf32>
+  }
+  scf.if %is0 {
+    %rr1 = index.constant 1 : index
+    %row1 = index.add %base_row, %rr1 : index
+    %dc1 = index.mul %col, %rows_bounded : index
+    %di1 = index.add %row1, %dc1 : index
+    view.store %red1, %dst_view[%di1] : f32, view<[%dst_count]xf32>
+  }
+  scf.if %is0 {
+    %rr2 = index.constant 2 : index
+    %row2 = index.add %base_row, %rr2 : index
+    %dc2 = index.mul %col, %rows_bounded : index
+    %di2 = index.add %row2, %dc2 : index
+    view.store %red2, %dst_view[%di2] : f32, view<[%dst_count]xf32>
+  }
+  scf.if %is0 {
+    %rr3 = index.constant 3 : index
+    %row3 = index.add %base_row, %rr3 : index
+    %dc3 = index.mul %col, %rows_bounded : index
+    %di3 = index.add %row3, %dc3 : index
+    view.store %red3, %dst_view[%di3] : f32, view<[%dst_count]xf32>
+  }
+  scf.if %is0 {
+    %rr4 = index.constant 4 : index
+    %row4 = index.add %base_row, %rr4 : index
+    %dc4 = index.mul %col, %rows_bounded : index
+    %di4 = index.add %row4, %dc4 : index
+    view.store %red4, %dst_view[%di4] : f32, view<[%dst_count]xf32>
+  }
+  scf.if %is0 {
+    %rr5 = index.constant 5 : index
+    %row5 = index.add %base_row, %rr5 : index
+    %dc5 = index.mul %col, %rows_bounded : index
+    %di5 = index.add %row5, %dc5 : index
+    view.store %red5, %dst_view[%di5] : f32, view<[%dst_count]xf32>
+  }
+  scf.if %is0 {
+    %rr6 = index.constant 6 : index
+    %row6 = index.add %base_row, %rr6 : index
+    %dc6 = index.mul %col, %rows_bounded : index
+    %di6 = index.add %row6, %dc6 : index
+    view.store %red6, %dst_view[%di6] : f32, view<[%dst_count]xf32>
+  }
+  scf.if %is0 {
+    %rr7 = index.constant 7 : index
+    %row7 = index.add %base_row, %rr7 : index
+    %dc7 = index.mul %col, %rows_bounded : index
+    %di7 = index.add %row7, %dc7 : index
+    view.store %red7, %dst_view[%di7] : f32, view<[%dst_count]xf32>
+  }
+  scf.if %is0 {
+    %rr8 = index.constant 8 : index
+    %row8 = index.add %base_row, %rr8 : index
+    %dc8 = index.mul %col, %rows_bounded : index
+    %di8 = index.add %row8, %dc8 : index
+    view.store %red8, %dst_view[%di8] : f32, view<[%dst_count]xf32>
+  }
+  scf.if %is0 {
+    %rr9 = index.constant 9 : index
+    %row9 = index.add %base_row, %rr9 : index
+    %dc9 = index.mul %col, %rows_bounded : index
+    %di9 = index.add %row9, %dc9 : index
+    view.store %red9, %dst_view[%di9] : f32, view<[%dst_count]xf32>
+  }
+  scf.if %is0 {
+    %rr10 = index.constant 10 : index
+    %row10 = index.add %base_row, %rr10 : index
+    %dc10 = index.mul %col, %rows_bounded : index
+    %di10 = index.add %row10, %dc10 : index
+    view.store %red10, %dst_view[%di10] : f32, view<[%dst_count]xf32>
+  }
+  scf.if %is0 {
+    %rr11 = index.constant 11 : index
+    %row11 = index.add %base_row, %rr11 : index
+    %dc11 = index.mul %col, %rows_bounded : index
+    %di11 = index.add %row11, %dc11 : index
+    view.store %red11, %dst_view[%di11] : f32, view<[%dst_count]xf32>
+  }
+  scf.if %is0 {
+    %rr12 = index.constant 12 : index
+    %row12 = index.add %base_row, %rr12 : index
+    %dc12 = index.mul %col, %rows_bounded : index
+    %di12 = index.add %row12, %dc12 : index
+    view.store %red12, %dst_view[%di12] : f32, view<[%dst_count]xf32>
+  }
+  scf.if %is0 {
+    %rr13 = index.constant 13 : index
+    %row13 = index.add %base_row, %rr13 : index
+    %dc13 = index.mul %col, %rows_bounded : index
+    %di13 = index.add %row13, %dc13 : index
+    view.store %red13, %dst_view[%di13] : f32, view<[%dst_count]xf32>
+  }
+  scf.if %is0 {
+    %rr14 = index.constant 14 : index
+    %row14 = index.add %base_row, %rr14 : index
+    %dc14 = index.mul %col, %rows_bounded : index
+    %di14 = index.add %row14, %dc14 : index
+    view.store %red14, %dst_view[%di14] : f32, view<[%dst_count]xf32>
+  }
+  scf.if %is0 {
+    %rr15 = index.constant 15 : index
+    %row15 = index.add %base_row, %rr15 : index
+    %dc15 = index.mul %col, %rows_bounded : index
+    %di15 = index.add %row15, %dc15 : index
+    view.store %red15, %dst_view[%di15] : f32, view<[%dst_count]xf32>
+  scf.if %is0 {
+    scf.if %ccmp1 {
+      %srr1_0 = index.constant 0 : index
+      %srw1_0 = index.add %base_row, %srr1_0 : index
+      %sdc1_0 = index.mul %cok1, %rows_bounded : index
+      %sdi1_0 = index.add %srw1_0, %sdc1_0 : index
+      view.store %red1x0, %dst_view[%sdi1_0] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp1 {
+      %srr1_1 = index.constant 1 : index
+      %srw1_1 = index.add %base_row, %srr1_1 : index
+      %sdc1_1 = index.mul %cok1, %rows_bounded : index
+      %sdi1_1 = index.add %srw1_1, %sdc1_1 : index
+      view.store %red1x1, %dst_view[%sdi1_1] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp1 {
+      %srr1_2 = index.constant 2 : index
+      %srw1_2 = index.add %base_row, %srr1_2 : index
+      %sdc1_2 = index.mul %cok1, %rows_bounded : index
+      %sdi1_2 = index.add %srw1_2, %sdc1_2 : index
+      view.store %red1x2, %dst_view[%sdi1_2] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp1 {
+      %srr1_3 = index.constant 3 : index
+      %srw1_3 = index.add %base_row, %srr1_3 : index
+      %sdc1_3 = index.mul %cok1, %rows_bounded : index
+      %sdi1_3 = index.add %srw1_3, %sdc1_3 : index
+      view.store %red1x3, %dst_view[%sdi1_3] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp1 {
+      %srr1_4 = index.constant 4 : index
+      %srw1_4 = index.add %base_row, %srr1_4 : index
+      %sdc1_4 = index.mul %cok1, %rows_bounded : index
+      %sdi1_4 = index.add %srw1_4, %sdc1_4 : index
+      view.store %red1x4, %dst_view[%sdi1_4] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp1 {
+      %srr1_5 = index.constant 5 : index
+      %srw1_5 = index.add %base_row, %srr1_5 : index
+      %sdc1_5 = index.mul %cok1, %rows_bounded : index
+      %sdi1_5 = index.add %srw1_5, %sdc1_5 : index
+      view.store %red1x5, %dst_view[%sdi1_5] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp1 {
+      %srr1_6 = index.constant 6 : index
+      %srw1_6 = index.add %base_row, %srr1_6 : index
+      %sdc1_6 = index.mul %cok1, %rows_bounded : index
+      %sdi1_6 = index.add %srw1_6, %sdc1_6 : index
+      view.store %red1x6, %dst_view[%sdi1_6] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp1 {
+      %srr1_7 = index.constant 7 : index
+      %srw1_7 = index.add %base_row, %srr1_7 : index
+      %sdc1_7 = index.mul %cok1, %rows_bounded : index
+      %sdi1_7 = index.add %srw1_7, %sdc1_7 : index
+      view.store %red1x7, %dst_view[%sdi1_7] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp1 {
+      %srr1_8 = index.constant 8 : index
+      %srw1_8 = index.add %base_row, %srr1_8 : index
+      %sdc1_8 = index.mul %cok1, %rows_bounded : index
+      %sdi1_8 = index.add %srw1_8, %sdc1_8 : index
+      view.store %red1x8, %dst_view[%sdi1_8] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp1 {
+      %srr1_9 = index.constant 9 : index
+      %srw1_9 = index.add %base_row, %srr1_9 : index
+      %sdc1_9 = index.mul %cok1, %rows_bounded : index
+      %sdi1_9 = index.add %srw1_9, %sdc1_9 : index
+      view.store %red1x9, %dst_view[%sdi1_9] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp1 {
+      %srr1_10 = index.constant 10 : index
+      %srw1_10 = index.add %base_row, %srr1_10 : index
+      %sdc1_10 = index.mul %cok1, %rows_bounded : index
+      %sdi1_10 = index.add %srw1_10, %sdc1_10 : index
+      view.store %red1x10, %dst_view[%sdi1_10] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp1 {
+      %srr1_11 = index.constant 11 : index
+      %srw1_11 = index.add %base_row, %srr1_11 : index
+      %sdc1_11 = index.mul %cok1, %rows_bounded : index
+      %sdi1_11 = index.add %srw1_11, %sdc1_11 : index
+      view.store %red1x11, %dst_view[%sdi1_11] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp1 {
+      %srr1_12 = index.constant 12 : index
+      %srw1_12 = index.add %base_row, %srr1_12 : index
+      %sdc1_12 = index.mul %cok1, %rows_bounded : index
+      %sdi1_12 = index.add %srw1_12, %sdc1_12 : index
+      view.store %red1x12, %dst_view[%sdi1_12] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp1 {
+      %srr1_13 = index.constant 13 : index
+      %srw1_13 = index.add %base_row, %srr1_13 : index
+      %sdc1_13 = index.mul %cok1, %rows_bounded : index
+      %sdi1_13 = index.add %srw1_13, %sdc1_13 : index
+      view.store %red1x13, %dst_view[%sdi1_13] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp1 {
+      %srr1_14 = index.constant 14 : index
+      %srw1_14 = index.add %base_row, %srr1_14 : index
+      %sdc1_14 = index.mul %cok1, %rows_bounded : index
+      %sdi1_14 = index.add %srw1_14, %sdc1_14 : index
+      view.store %red1x14, %dst_view[%sdi1_14] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp1 {
+      %srr1_15 = index.constant 15 : index
+      %srw1_15 = index.add %base_row, %srr1_15 : index
+      %sdc1_15 = index.mul %cok1, %rows_bounded : index
+      %sdi1_15 = index.add %srw1_15, %sdc1_15 : index
+      view.store %red1x15, %dst_view[%sdi1_15] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp2 {
+      %srr2_0 = index.constant 0 : index
+      %srw2_0 = index.add %base_row, %srr2_0 : index
+      %sdc2_0 = index.mul %cok2, %rows_bounded : index
+      %sdi2_0 = index.add %srw2_0, %sdc2_0 : index
+      view.store %red2x0, %dst_view[%sdi2_0] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp2 {
+      %srr2_1 = index.constant 1 : index
+      %srw2_1 = index.add %base_row, %srr2_1 : index
+      %sdc2_1 = index.mul %cok2, %rows_bounded : index
+      %sdi2_1 = index.add %srw2_1, %sdc2_1 : index
+      view.store %red2x1, %dst_view[%sdi2_1] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp2 {
+      %srr2_2 = index.constant 2 : index
+      %srw2_2 = index.add %base_row, %srr2_2 : index
+      %sdc2_2 = index.mul %cok2, %rows_bounded : index
+      %sdi2_2 = index.add %srw2_2, %sdc2_2 : index
+      view.store %red2x2, %dst_view[%sdi2_2] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp2 {
+      %srr2_3 = index.constant 3 : index
+      %srw2_3 = index.add %base_row, %srr2_3 : index
+      %sdc2_3 = index.mul %cok2, %rows_bounded : index
+      %sdi2_3 = index.add %srw2_3, %sdc2_3 : index
+      view.store %red2x3, %dst_view[%sdi2_3] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp2 {
+      %srr2_4 = index.constant 4 : index
+      %srw2_4 = index.add %base_row, %srr2_4 : index
+      %sdc2_4 = index.mul %cok2, %rows_bounded : index
+      %sdi2_4 = index.add %srw2_4, %sdc2_4 : index
+      view.store %red2x4, %dst_view[%sdi2_4] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp2 {
+      %srr2_5 = index.constant 5 : index
+      %srw2_5 = index.add %base_row, %srr2_5 : index
+      %sdc2_5 = index.mul %cok2, %rows_bounded : index
+      %sdi2_5 = index.add %srw2_5, %sdc2_5 : index
+      view.store %red2x5, %dst_view[%sdi2_5] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp2 {
+      %srr2_6 = index.constant 6 : index
+      %srw2_6 = index.add %base_row, %srr2_6 : index
+      %sdc2_6 = index.mul %cok2, %rows_bounded : index
+      %sdi2_6 = index.add %srw2_6, %sdc2_6 : index
+      view.store %red2x6, %dst_view[%sdi2_6] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp2 {
+      %srr2_7 = index.constant 7 : index
+      %srw2_7 = index.add %base_row, %srr2_7 : index
+      %sdc2_7 = index.mul %cok2, %rows_bounded : index
+      %sdi2_7 = index.add %srw2_7, %sdc2_7 : index
+      view.store %red2x7, %dst_view[%sdi2_7] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp2 {
+      %srr2_8 = index.constant 8 : index
+      %srw2_8 = index.add %base_row, %srr2_8 : index
+      %sdc2_8 = index.mul %cok2, %rows_bounded : index
+      %sdi2_8 = index.add %srw2_8, %sdc2_8 : index
+      view.store %red2x8, %dst_view[%sdi2_8] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp2 {
+      %srr2_9 = index.constant 9 : index
+      %srw2_9 = index.add %base_row, %srr2_9 : index
+      %sdc2_9 = index.mul %cok2, %rows_bounded : index
+      %sdi2_9 = index.add %srw2_9, %sdc2_9 : index
+      view.store %red2x9, %dst_view[%sdi2_9] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp2 {
+      %srr2_10 = index.constant 10 : index
+      %srw2_10 = index.add %base_row, %srr2_10 : index
+      %sdc2_10 = index.mul %cok2, %rows_bounded : index
+      %sdi2_10 = index.add %srw2_10, %sdc2_10 : index
+      view.store %red2x10, %dst_view[%sdi2_10] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp2 {
+      %srr2_11 = index.constant 11 : index
+      %srw2_11 = index.add %base_row, %srr2_11 : index
+      %sdc2_11 = index.mul %cok2, %rows_bounded : index
+      %sdi2_11 = index.add %srw2_11, %sdc2_11 : index
+      view.store %red2x11, %dst_view[%sdi2_11] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp2 {
+      %srr2_12 = index.constant 12 : index
+      %srw2_12 = index.add %base_row, %srr2_12 : index
+      %sdc2_12 = index.mul %cok2, %rows_bounded : index
+      %sdi2_12 = index.add %srw2_12, %sdc2_12 : index
+      view.store %red2x12, %dst_view[%sdi2_12] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp2 {
+      %srr2_13 = index.constant 13 : index
+      %srw2_13 = index.add %base_row, %srr2_13 : index
+      %sdc2_13 = index.mul %cok2, %rows_bounded : index
+      %sdi2_13 = index.add %srw2_13, %sdc2_13 : index
+      view.store %red2x13, %dst_view[%sdi2_13] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp2 {
+      %srr2_14 = index.constant 14 : index
+      %srw2_14 = index.add %base_row, %srr2_14 : index
+      %sdc2_14 = index.mul %cok2, %rows_bounded : index
+      %sdi2_14 = index.add %srw2_14, %sdc2_14 : index
+      view.store %red2x14, %dst_view[%sdi2_14] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp2 {
+      %srr2_15 = index.constant 15 : index
+      %srw2_15 = index.add %base_row, %srr2_15 : index
+      %sdc2_15 = index.mul %cok2, %rows_bounded : index
+      %sdi2_15 = index.add %srw2_15, %sdc2_15 : index
+      view.store %red2x15, %dst_view[%sdi2_15] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp3 {
+      %srr3_0 = index.constant 0 : index
+      %srw3_0 = index.add %base_row, %srr3_0 : index
+      %sdc3_0 = index.mul %cok3, %rows_bounded : index
+      %sdi3_0 = index.add %srw3_0, %sdc3_0 : index
+      view.store %red3x0, %dst_view[%sdi3_0] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp3 {
+      %srr3_1 = index.constant 1 : index
+      %srw3_1 = index.add %base_row, %srr3_1 : index
+      %sdc3_1 = index.mul %cok3, %rows_bounded : index
+      %sdi3_1 = index.add %srw3_1, %sdc3_1 : index
+      view.store %red3x1, %dst_view[%sdi3_1] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp3 {
+      %srr3_2 = index.constant 2 : index
+      %srw3_2 = index.add %base_row, %srr3_2 : index
+      %sdc3_2 = index.mul %cok3, %rows_bounded : index
+      %sdi3_2 = index.add %srw3_2, %sdc3_2 : index
+      view.store %red3x2, %dst_view[%sdi3_2] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp3 {
+      %srr3_3 = index.constant 3 : index
+      %srw3_3 = index.add %base_row, %srr3_3 : index
+      %sdc3_3 = index.mul %cok3, %rows_bounded : index
+      %sdi3_3 = index.add %srw3_3, %sdc3_3 : index
+      view.store %red3x3, %dst_view[%sdi3_3] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp3 {
+      %srr3_4 = index.constant 4 : index
+      %srw3_4 = index.add %base_row, %srr3_4 : index
+      %sdc3_4 = index.mul %cok3, %rows_bounded : index
+      %sdi3_4 = index.add %srw3_4, %sdc3_4 : index
+      view.store %red3x4, %dst_view[%sdi3_4] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp3 {
+      %srr3_5 = index.constant 5 : index
+      %srw3_5 = index.add %base_row, %srr3_5 : index
+      %sdc3_5 = index.mul %cok3, %rows_bounded : index
+      %sdi3_5 = index.add %srw3_5, %sdc3_5 : index
+      view.store %red3x5, %dst_view[%sdi3_5] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp3 {
+      %srr3_6 = index.constant 6 : index
+      %srw3_6 = index.add %base_row, %srr3_6 : index
+      %sdc3_6 = index.mul %cok3, %rows_bounded : index
+      %sdi3_6 = index.add %srw3_6, %sdc3_6 : index
+      view.store %red3x6, %dst_view[%sdi3_6] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp3 {
+      %srr3_7 = index.constant 7 : index
+      %srw3_7 = index.add %base_row, %srr3_7 : index
+      %sdc3_7 = index.mul %cok3, %rows_bounded : index
+      %sdi3_7 = index.add %srw3_7, %sdc3_7 : index
+      view.store %red3x7, %dst_view[%sdi3_7] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp3 {
+      %srr3_8 = index.constant 8 : index
+      %srw3_8 = index.add %base_row, %srr3_8 : index
+      %sdc3_8 = index.mul %cok3, %rows_bounded : index
+      %sdi3_8 = index.add %srw3_8, %sdc3_8 : index
+      view.store %red3x8, %dst_view[%sdi3_8] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp3 {
+      %srr3_9 = index.constant 9 : index
+      %srw3_9 = index.add %base_row, %srr3_9 : index
+      %sdc3_9 = index.mul %cok3, %rows_bounded : index
+      %sdi3_9 = index.add %srw3_9, %sdc3_9 : index
+      view.store %red3x9, %dst_view[%sdi3_9] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp3 {
+      %srr3_10 = index.constant 10 : index
+      %srw3_10 = index.add %base_row, %srr3_10 : index
+      %sdc3_10 = index.mul %cok3, %rows_bounded : index
+      %sdi3_10 = index.add %srw3_10, %sdc3_10 : index
+      view.store %red3x10, %dst_view[%sdi3_10] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp3 {
+      %srr3_11 = index.constant 11 : index
+      %srw3_11 = index.add %base_row, %srr3_11 : index
+      %sdc3_11 = index.mul %cok3, %rows_bounded : index
+      %sdi3_11 = index.add %srw3_11, %sdc3_11 : index
+      view.store %red3x11, %dst_view[%sdi3_11] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp3 {
+      %srr3_12 = index.constant 12 : index
+      %srw3_12 = index.add %base_row, %srr3_12 : index
+      %sdc3_12 = index.mul %cok3, %rows_bounded : index
+      %sdi3_12 = index.add %srw3_12, %sdc3_12 : index
+      view.store %red3x12, %dst_view[%sdi3_12] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp3 {
+      %srr3_13 = index.constant 13 : index
+      %srw3_13 = index.add %base_row, %srr3_13 : index
+      %sdc3_13 = index.mul %cok3, %rows_bounded : index
+      %sdi3_13 = index.add %srw3_13, %sdc3_13 : index
+      view.store %red3x13, %dst_view[%sdi3_13] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp3 {
+      %srr3_14 = index.constant 14 : index
+      %srw3_14 = index.add %base_row, %srr3_14 : index
+      %sdc3_14 = index.mul %cok3, %rows_bounded : index
+      %sdi3_14 = index.add %srw3_14, %sdc3_14 : index
+      view.store %red3x14, %dst_view[%sdi3_14] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp3 {
+      %srr3_15 = index.constant 15 : index
+      %srw3_15 = index.add %base_row, %srr3_15 : index
+      %sdc3_15 = index.mul %cok3, %rows_bounded : index
+      %sdi3_15 = index.add %srw3_15, %sdc3_15 : index
+      view.store %red3x15, %dst_view[%sdi3_15] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp4 {
+      %srr4_0 = index.constant 0 : index
+      %srw4_0 = index.add %base_row, %srr4_0 : index
+      %sdc4_0 = index.mul %cok4, %rows_bounded : index
+      %sdi4_0 = index.add %srw4_0, %sdc4_0 : index
+      view.store %red4x0, %dst_view[%sdi4_0] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp4 {
+      %srr4_1 = index.constant 1 : index
+      %srw4_1 = index.add %base_row, %srr4_1 : index
+      %sdc4_1 = index.mul %cok4, %rows_bounded : index
+      %sdi4_1 = index.add %srw4_1, %sdc4_1 : index
+      view.store %red4x1, %dst_view[%sdi4_1] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp4 {
+      %srr4_2 = index.constant 2 : index
+      %srw4_2 = index.add %base_row, %srr4_2 : index
+      %sdc4_2 = index.mul %cok4, %rows_bounded : index
+      %sdi4_2 = index.add %srw4_2, %sdc4_2 : index
+      view.store %red4x2, %dst_view[%sdi4_2] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp4 {
+      %srr4_3 = index.constant 3 : index
+      %srw4_3 = index.add %base_row, %srr4_3 : index
+      %sdc4_3 = index.mul %cok4, %rows_bounded : index
+      %sdi4_3 = index.add %srw4_3, %sdc4_3 : index
+      view.store %red4x3, %dst_view[%sdi4_3] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp4 {
+      %srr4_4 = index.constant 4 : index
+      %srw4_4 = index.add %base_row, %srr4_4 : index
+      %sdc4_4 = index.mul %cok4, %rows_bounded : index
+      %sdi4_4 = index.add %srw4_4, %sdc4_4 : index
+      view.store %red4x4, %dst_view[%sdi4_4] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp4 {
+      %srr4_5 = index.constant 5 : index
+      %srw4_5 = index.add %base_row, %srr4_5 : index
+      %sdc4_5 = index.mul %cok4, %rows_bounded : index
+      %sdi4_5 = index.add %srw4_5, %sdc4_5 : index
+      view.store %red4x5, %dst_view[%sdi4_5] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp4 {
+      %srr4_6 = index.constant 6 : index
+      %srw4_6 = index.add %base_row, %srr4_6 : index
+      %sdc4_6 = index.mul %cok4, %rows_bounded : index
+      %sdi4_6 = index.add %srw4_6, %sdc4_6 : index
+      view.store %red4x6, %dst_view[%sdi4_6] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp4 {
+      %srr4_7 = index.constant 7 : index
+      %srw4_7 = index.add %base_row, %srr4_7 : index
+      %sdc4_7 = index.mul %cok4, %rows_bounded : index
+      %sdi4_7 = index.add %srw4_7, %sdc4_7 : index
+      view.store %red4x7, %dst_view[%sdi4_7] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp4 {
+      %srr4_8 = index.constant 8 : index
+      %srw4_8 = index.add %base_row, %srr4_8 : index
+      %sdc4_8 = index.mul %cok4, %rows_bounded : index
+      %sdi4_8 = index.add %srw4_8, %sdc4_8 : index
+      view.store %red4x8, %dst_view[%sdi4_8] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp4 {
+      %srr4_9 = index.constant 9 : index
+      %srw4_9 = index.add %base_row, %srr4_9 : index
+      %sdc4_9 = index.mul %cok4, %rows_bounded : index
+      %sdi4_9 = index.add %srw4_9, %sdc4_9 : index
+      view.store %red4x9, %dst_view[%sdi4_9] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp4 {
+      %srr4_10 = index.constant 10 : index
+      %srw4_10 = index.add %base_row, %srr4_10 : index
+      %sdc4_10 = index.mul %cok4, %rows_bounded : index
+      %sdi4_10 = index.add %srw4_10, %sdc4_10 : index
+      view.store %red4x10, %dst_view[%sdi4_10] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp4 {
+      %srr4_11 = index.constant 11 : index
+      %srw4_11 = index.add %base_row, %srr4_11 : index
+      %sdc4_11 = index.mul %cok4, %rows_bounded : index
+      %sdi4_11 = index.add %srw4_11, %sdc4_11 : index
+      view.store %red4x11, %dst_view[%sdi4_11] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp4 {
+      %srr4_12 = index.constant 12 : index
+      %srw4_12 = index.add %base_row, %srr4_12 : index
+      %sdc4_12 = index.mul %cok4, %rows_bounded : index
+      %sdi4_12 = index.add %srw4_12, %sdc4_12 : index
+      view.store %red4x12, %dst_view[%sdi4_12] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp4 {
+      %srr4_13 = index.constant 13 : index
+      %srw4_13 = index.add %base_row, %srr4_13 : index
+      %sdc4_13 = index.mul %cok4, %rows_bounded : index
+      %sdi4_13 = index.add %srw4_13, %sdc4_13 : index
+      view.store %red4x13, %dst_view[%sdi4_13] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp4 {
+      %srr4_14 = index.constant 14 : index
+      %srw4_14 = index.add %base_row, %srr4_14 : index
+      %sdc4_14 = index.mul %cok4, %rows_bounded : index
+      %sdi4_14 = index.add %srw4_14, %sdc4_14 : index
+      view.store %red4x14, %dst_view[%sdi4_14] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp4 {
+      %srr4_15 = index.constant 15 : index
+      %srw4_15 = index.add %base_row, %srr4_15 : index
+      %sdc4_15 = index.mul %cok4, %rows_bounded : index
+      %sdi4_15 = index.add %srw4_15, %sdc4_15 : index
+      view.store %red4x15, %dst_view[%sdi4_15] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp5 {
+      %srr5_0 = index.constant 0 : index
+      %srw5_0 = index.add %base_row, %srr5_0 : index
+      %sdc5_0 = index.mul %cok5, %rows_bounded : index
+      %sdi5_0 = index.add %srw5_0, %sdc5_0 : index
+      view.store %red5x0, %dst_view[%sdi5_0] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp5 {
+      %srr5_1 = index.constant 1 : index
+      %srw5_1 = index.add %base_row, %srr5_1 : index
+      %sdc5_1 = index.mul %cok5, %rows_bounded : index
+      %sdi5_1 = index.add %srw5_1, %sdc5_1 : index
+      view.store %red5x1, %dst_view[%sdi5_1] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp5 {
+      %srr5_2 = index.constant 2 : index
+      %srw5_2 = index.add %base_row, %srr5_2 : index
+      %sdc5_2 = index.mul %cok5, %rows_bounded : index
+      %sdi5_2 = index.add %srw5_2, %sdc5_2 : index
+      view.store %red5x2, %dst_view[%sdi5_2] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp5 {
+      %srr5_3 = index.constant 3 : index
+      %srw5_3 = index.add %base_row, %srr5_3 : index
+      %sdc5_3 = index.mul %cok5, %rows_bounded : index
+      %sdi5_3 = index.add %srw5_3, %sdc5_3 : index
+      view.store %red5x3, %dst_view[%sdi5_3] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp5 {
+      %srr5_4 = index.constant 4 : index
+      %srw5_4 = index.add %base_row, %srr5_4 : index
+      %sdc5_4 = index.mul %cok5, %rows_bounded : index
+      %sdi5_4 = index.add %srw5_4, %sdc5_4 : index
+      view.store %red5x4, %dst_view[%sdi5_4] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp5 {
+      %srr5_5 = index.constant 5 : index
+      %srw5_5 = index.add %base_row, %srr5_5 : index
+      %sdc5_5 = index.mul %cok5, %rows_bounded : index
+      %sdi5_5 = index.add %srw5_5, %sdc5_5 : index
+      view.store %red5x5, %dst_view[%sdi5_5] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp5 {
+      %srr5_6 = index.constant 6 : index
+      %srw5_6 = index.add %base_row, %srr5_6 : index
+      %sdc5_6 = index.mul %cok5, %rows_bounded : index
+      %sdi5_6 = index.add %srw5_6, %sdc5_6 : index
+      view.store %red5x6, %dst_view[%sdi5_6] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp5 {
+      %srr5_7 = index.constant 7 : index
+      %srw5_7 = index.add %base_row, %srr5_7 : index
+      %sdc5_7 = index.mul %cok5, %rows_bounded : index
+      %sdi5_7 = index.add %srw5_7, %sdc5_7 : index
+      view.store %red5x7, %dst_view[%sdi5_7] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp5 {
+      %srr5_8 = index.constant 8 : index
+      %srw5_8 = index.add %base_row, %srr5_8 : index
+      %sdc5_8 = index.mul %cok5, %rows_bounded : index
+      %sdi5_8 = index.add %srw5_8, %sdc5_8 : index
+      view.store %red5x8, %dst_view[%sdi5_8] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp5 {
+      %srr5_9 = index.constant 9 : index
+      %srw5_9 = index.add %base_row, %srr5_9 : index
+      %sdc5_9 = index.mul %cok5, %rows_bounded : index
+      %sdi5_9 = index.add %srw5_9, %sdc5_9 : index
+      view.store %red5x9, %dst_view[%sdi5_9] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp5 {
+      %srr5_10 = index.constant 10 : index
+      %srw5_10 = index.add %base_row, %srr5_10 : index
+      %sdc5_10 = index.mul %cok5, %rows_bounded : index
+      %sdi5_10 = index.add %srw5_10, %sdc5_10 : index
+      view.store %red5x10, %dst_view[%sdi5_10] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp5 {
+      %srr5_11 = index.constant 11 : index
+      %srw5_11 = index.add %base_row, %srr5_11 : index
+      %sdc5_11 = index.mul %cok5, %rows_bounded : index
+      %sdi5_11 = index.add %srw5_11, %sdc5_11 : index
+      view.store %red5x11, %dst_view[%sdi5_11] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp5 {
+      %srr5_12 = index.constant 12 : index
+      %srw5_12 = index.add %base_row, %srr5_12 : index
+      %sdc5_12 = index.mul %cok5, %rows_bounded : index
+      %sdi5_12 = index.add %srw5_12, %sdc5_12 : index
+      view.store %red5x12, %dst_view[%sdi5_12] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp5 {
+      %srr5_13 = index.constant 13 : index
+      %srw5_13 = index.add %base_row, %srr5_13 : index
+      %sdc5_13 = index.mul %cok5, %rows_bounded : index
+      %sdi5_13 = index.add %srw5_13, %sdc5_13 : index
+      view.store %red5x13, %dst_view[%sdi5_13] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp5 {
+      %srr5_14 = index.constant 14 : index
+      %srw5_14 = index.add %base_row, %srr5_14 : index
+      %sdc5_14 = index.mul %cok5, %rows_bounded : index
+      %sdi5_14 = index.add %srw5_14, %sdc5_14 : index
+      view.store %red5x14, %dst_view[%sdi5_14] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp5 {
+      %srr5_15 = index.constant 15 : index
+      %srw5_15 = index.add %base_row, %srr5_15 : index
+      %sdc5_15 = index.mul %cok5, %rows_bounded : index
+      %sdi5_15 = index.add %srw5_15, %sdc5_15 : index
+      view.store %red5x15, %dst_view[%sdi5_15] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp6 {
+      %srr6_0 = index.constant 0 : index
+      %srw6_0 = index.add %base_row, %srr6_0 : index
+      %sdc6_0 = index.mul %cok6, %rows_bounded : index
+      %sdi6_0 = index.add %srw6_0, %sdc6_0 : index
+      view.store %red6x0, %dst_view[%sdi6_0] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp6 {
+      %srr6_1 = index.constant 1 : index
+      %srw6_1 = index.add %base_row, %srr6_1 : index
+      %sdc6_1 = index.mul %cok6, %rows_bounded : index
+      %sdi6_1 = index.add %srw6_1, %sdc6_1 : index
+      view.store %red6x1, %dst_view[%sdi6_1] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp6 {
+      %srr6_2 = index.constant 2 : index
+      %srw6_2 = index.add %base_row, %srr6_2 : index
+      %sdc6_2 = index.mul %cok6, %rows_bounded : index
+      %sdi6_2 = index.add %srw6_2, %sdc6_2 : index
+      view.store %red6x2, %dst_view[%sdi6_2] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp6 {
+      %srr6_3 = index.constant 3 : index
+      %srw6_3 = index.add %base_row, %srr6_3 : index
+      %sdc6_3 = index.mul %cok6, %rows_bounded : index
+      %sdi6_3 = index.add %srw6_3, %sdc6_3 : index
+      view.store %red6x3, %dst_view[%sdi6_3] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp6 {
+      %srr6_4 = index.constant 4 : index
+      %srw6_4 = index.add %base_row, %srr6_4 : index
+      %sdc6_4 = index.mul %cok6, %rows_bounded : index
+      %sdi6_4 = index.add %srw6_4, %sdc6_4 : index
+      view.store %red6x4, %dst_view[%sdi6_4] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp6 {
+      %srr6_5 = index.constant 5 : index
+      %srw6_5 = index.add %base_row, %srr6_5 : index
+      %sdc6_5 = index.mul %cok6, %rows_bounded : index
+      %sdi6_5 = index.add %srw6_5, %sdc6_5 : index
+      view.store %red6x5, %dst_view[%sdi6_5] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp6 {
+      %srr6_6 = index.constant 6 : index
+      %srw6_6 = index.add %base_row, %srr6_6 : index
+      %sdc6_6 = index.mul %cok6, %rows_bounded : index
+      %sdi6_6 = index.add %srw6_6, %sdc6_6 : index
+      view.store %red6x6, %dst_view[%sdi6_6] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp6 {
+      %srr6_7 = index.constant 7 : index
+      %srw6_7 = index.add %base_row, %srr6_7 : index
+      %sdc6_7 = index.mul %cok6, %rows_bounded : index
+      %sdi6_7 = index.add %srw6_7, %sdc6_7 : index
+      view.store %red6x7, %dst_view[%sdi6_7] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp6 {
+      %srr6_8 = index.constant 8 : index
+      %srw6_8 = index.add %base_row, %srr6_8 : index
+      %sdc6_8 = index.mul %cok6, %rows_bounded : index
+      %sdi6_8 = index.add %srw6_8, %sdc6_8 : index
+      view.store %red6x8, %dst_view[%sdi6_8] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp6 {
+      %srr6_9 = index.constant 9 : index
+      %srw6_9 = index.add %base_row, %srr6_9 : index
+      %sdc6_9 = index.mul %cok6, %rows_bounded : index
+      %sdi6_9 = index.add %srw6_9, %sdc6_9 : index
+      view.store %red6x9, %dst_view[%sdi6_9] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp6 {
+      %srr6_10 = index.constant 10 : index
+      %srw6_10 = index.add %base_row, %srr6_10 : index
+      %sdc6_10 = index.mul %cok6, %rows_bounded : index
+      %sdi6_10 = index.add %srw6_10, %sdc6_10 : index
+      view.store %red6x10, %dst_view[%sdi6_10] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp6 {
+      %srr6_11 = index.constant 11 : index
+      %srw6_11 = index.add %base_row, %srr6_11 : index
+      %sdc6_11 = index.mul %cok6, %rows_bounded : index
+      %sdi6_11 = index.add %srw6_11, %sdc6_11 : index
+      view.store %red6x11, %dst_view[%sdi6_11] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp6 {
+      %srr6_12 = index.constant 12 : index
+      %srw6_12 = index.add %base_row, %srr6_12 : index
+      %sdc6_12 = index.mul %cok6, %rows_bounded : index
+      %sdi6_12 = index.add %srw6_12, %sdc6_12 : index
+      view.store %red6x12, %dst_view[%sdi6_12] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp6 {
+      %srr6_13 = index.constant 13 : index
+      %srw6_13 = index.add %base_row, %srr6_13 : index
+      %sdc6_13 = index.mul %cok6, %rows_bounded : index
+      %sdi6_13 = index.add %srw6_13, %sdc6_13 : index
+      view.store %red6x13, %dst_view[%sdi6_13] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp6 {
+      %srr6_14 = index.constant 14 : index
+      %srw6_14 = index.add %base_row, %srr6_14 : index
+      %sdc6_14 = index.mul %cok6, %rows_bounded : index
+      %sdi6_14 = index.add %srw6_14, %sdc6_14 : index
+      view.store %red6x14, %dst_view[%sdi6_14] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp6 {
+      %srr6_15 = index.constant 15 : index
+      %srw6_15 = index.add %base_row, %srr6_15 : index
+      %sdc6_15 = index.mul %cok6, %rows_bounded : index
+      %sdi6_15 = index.add %srw6_15, %sdc6_15 : index
+      view.store %red6x15, %dst_view[%sdi6_15] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp7 {
+      %srr7_0 = index.constant 0 : index
+      %srw7_0 = index.add %base_row, %srr7_0 : index
+      %sdc7_0 = index.mul %cok7, %rows_bounded : index
+      %sdi7_0 = index.add %srw7_0, %sdc7_0 : index
+      view.store %red7x0, %dst_view[%sdi7_0] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp7 {
+      %srr7_1 = index.constant 1 : index
+      %srw7_1 = index.add %base_row, %srr7_1 : index
+      %sdc7_1 = index.mul %cok7, %rows_bounded : index
+      %sdi7_1 = index.add %srw7_1, %sdc7_1 : index
+      view.store %red7x1, %dst_view[%sdi7_1] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp7 {
+      %srr7_2 = index.constant 2 : index
+      %srw7_2 = index.add %base_row, %srr7_2 : index
+      %sdc7_2 = index.mul %cok7, %rows_bounded : index
+      %sdi7_2 = index.add %srw7_2, %sdc7_2 : index
+      view.store %red7x2, %dst_view[%sdi7_2] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp7 {
+      %srr7_3 = index.constant 3 : index
+      %srw7_3 = index.add %base_row, %srr7_3 : index
+      %sdc7_3 = index.mul %cok7, %rows_bounded : index
+      %sdi7_3 = index.add %srw7_3, %sdc7_3 : index
+      view.store %red7x3, %dst_view[%sdi7_3] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp7 {
+      %srr7_4 = index.constant 4 : index
+      %srw7_4 = index.add %base_row, %srr7_4 : index
+      %sdc7_4 = index.mul %cok7, %rows_bounded : index
+      %sdi7_4 = index.add %srw7_4, %sdc7_4 : index
+      view.store %red7x4, %dst_view[%sdi7_4] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp7 {
+      %srr7_5 = index.constant 5 : index
+      %srw7_5 = index.add %base_row, %srr7_5 : index
+      %sdc7_5 = index.mul %cok7, %rows_bounded : index
+      %sdi7_5 = index.add %srw7_5, %sdc7_5 : index
+      view.store %red7x5, %dst_view[%sdi7_5] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp7 {
+      %srr7_6 = index.constant 6 : index
+      %srw7_6 = index.add %base_row, %srr7_6 : index
+      %sdc7_6 = index.mul %cok7, %rows_bounded : index
+      %sdi7_6 = index.add %srw7_6, %sdc7_6 : index
+      view.store %red7x6, %dst_view[%sdi7_6] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp7 {
+      %srr7_7 = index.constant 7 : index
+      %srw7_7 = index.add %base_row, %srr7_7 : index
+      %sdc7_7 = index.mul %cok7, %rows_bounded : index
+      %sdi7_7 = index.add %srw7_7, %sdc7_7 : index
+      view.store %red7x7, %dst_view[%sdi7_7] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp7 {
+      %srr7_8 = index.constant 8 : index
+      %srw7_8 = index.add %base_row, %srr7_8 : index
+      %sdc7_8 = index.mul %cok7, %rows_bounded : index
+      %sdi7_8 = index.add %srw7_8, %sdc7_8 : index
+      view.store %red7x8, %dst_view[%sdi7_8] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp7 {
+      %srr7_9 = index.constant 9 : index
+      %srw7_9 = index.add %base_row, %srr7_9 : index
+      %sdc7_9 = index.mul %cok7, %rows_bounded : index
+      %sdi7_9 = index.add %srw7_9, %sdc7_9 : index
+      view.store %red7x9, %dst_view[%sdi7_9] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp7 {
+      %srr7_10 = index.constant 10 : index
+      %srw7_10 = index.add %base_row, %srr7_10 : index
+      %sdc7_10 = index.mul %cok7, %rows_bounded : index
+      %sdi7_10 = index.add %srw7_10, %sdc7_10 : index
+      view.store %red7x10, %dst_view[%sdi7_10] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp7 {
+      %srr7_11 = index.constant 11 : index
+      %srw7_11 = index.add %base_row, %srr7_11 : index
+      %sdc7_11 = index.mul %cok7, %rows_bounded : index
+      %sdi7_11 = index.add %srw7_11, %sdc7_11 : index
+      view.store %red7x11, %dst_view[%sdi7_11] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp7 {
+      %srr7_12 = index.constant 12 : index
+      %srw7_12 = index.add %base_row, %srr7_12 : index
+      %sdc7_12 = index.mul %cok7, %rows_bounded : index
+      %sdi7_12 = index.add %srw7_12, %sdc7_12 : index
+      view.store %red7x12, %dst_view[%sdi7_12] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp7 {
+      %srr7_13 = index.constant 13 : index
+      %srw7_13 = index.add %base_row, %srr7_13 : index
+      %sdc7_13 = index.mul %cok7, %rows_bounded : index
+      %sdi7_13 = index.add %srw7_13, %sdc7_13 : index
+      view.store %red7x13, %dst_view[%sdi7_13] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp7 {
+      %srr7_14 = index.constant 14 : index
+      %srw7_14 = index.add %base_row, %srr7_14 : index
+      %sdc7_14 = index.mul %cok7, %rows_bounded : index
+      %sdi7_14 = index.add %srw7_14, %sdc7_14 : index
+      view.store %red7x14, %dst_view[%sdi7_14] : f32, view<[%dst_count]xf32>
+    }
+  }
+  scf.if %is0 {
+    scf.if %ccmp7 {
+      %srr7_15 = index.constant 15 : index
+      %srw7_15 = index.add %base_row, %srr7_15 : index
+      %sdc7_15 = index.mul %cok7, %rows_bounded : index
+      %sdi7_15 = index.add %srw7_15, %sdc7_15 : index
+      view.store %red7x15, %dst_view[%sdi7_15] : f32, view<[%dst_count]xf32>
+    }
+  }
+  }
+  kernel.return
+}
