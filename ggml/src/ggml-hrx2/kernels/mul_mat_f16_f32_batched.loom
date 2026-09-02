@@ -5,15 +5,15 @@ config.decl @hrx2.shape.mul_mat_f16.dst_ne2 : %value: index where [range(%value,
 config.decl @hrx2.shape.mul_mat_f16.dst_ne3 : %value: index where [range(%value, 1, 4096)]
 config.decl @hrx2.shape.mul_mat_f16.src0_ne2 : %value: index where [range(%value, 1, 4096)]
 config.decl @hrx2.shape.mul_mat_f16.src0_ne3 : %value: index where [range(%value, 1, 4096)]
-config.decl @hrx2.shape.mul_mat_f16.src0_stride_row : %value: index where [range(%value, 1, 104857600)]
-config.decl @hrx2.shape.mul_mat_f16.src0_stride_ne2 : %value: index where [range(%value, 1, 104857600)]
-config.decl @hrx2.shape.mul_mat_f16.src0_stride_ne3 : %value: index where [range(%value, 1, 104857600)]
-config.decl @hrx2.shape.mul_mat_f16.src1_stride_col : %value: index where [range(%value, 1, 104857600)]
-config.decl @hrx2.shape.mul_mat_f16.src1_stride_ne2 : %value: index where [range(%value, 1, 104857600)]
-config.decl @hrx2.shape.mul_mat_f16.src1_stride_ne3 : %value: index where [range(%value, 1, 104857600)]
-config.decl @hrx2.shape.mul_mat_f16.dst_stride_col : %value: index where [range(%value, 1, 104857600)]
-config.decl @hrx2.shape.mul_mat_f16.dst_stride_ne2 : %value: index where [range(%value, 1, 104857600)]
-config.decl @hrx2.shape.mul_mat_f16.dst_stride_ne3 : %value: index where [range(%value, 1, 104857600)]
+config.decl @hrx2.shape.mul_mat_f16.src0_stride_row : %value: index where [range(%value, 1, 1073741824)]
+config.decl @hrx2.shape.mul_mat_f16.src0_stride_ne2 : %value: index where [range(%value, 1, 1073741824)]
+config.decl @hrx2.shape.mul_mat_f16.src0_stride_ne3 : %value: index where [range(%value, 1, 1073741824)]
+config.decl @hrx2.shape.mul_mat_f16.src1_stride_col : %value: index where [range(%value, 1, 1073741824)]
+config.decl @hrx2.shape.mul_mat_f16.src1_stride_ne2 : %value: index where [range(%value, 1, 1073741824)]
+config.decl @hrx2.shape.mul_mat_f16.src1_stride_ne3 : %value: index where [range(%value, 1, 1073741824)]
+config.decl @hrx2.shape.mul_mat_f16.dst_stride_col : %value: index where [range(%value, 1, 1073741824)]
+config.decl @hrx2.shape.mul_mat_f16.dst_stride_ne2 : %value: index where [range(%value, 1, 1073741824)]
+config.decl @hrx2.shape.mul_mat_f16.dst_stride_ne3 : %value: index where [range(%value, 1, 1073741824)]
 config.decl @hrx2.tuning.mul_mat_f16.workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
 
 kernel.def export("hrx2_mul_mat_f16_f32_batched") @hrx2_mul_mat_f16_f32_batched() {
@@ -70,9 +70,12 @@ kernel.def export("hrx2_mul_mat_f16_f32_batched") @hrx2_mul_mat_f16_f32_batched(
   %src0_i03 = index.div %i13, %src0_group_scale3 : index
 
   %src0_last_row_off = index.mul %rows, %src0_stride_row : index
+  %src0_last_ne2 = index.sub %src0_ne2, %unit : index
+  %src0_last_ne2_off = index.mul %src0_last_ne2, %src0_stride_ne2 : index
   %src0_last_ne3 = index.sub %src0_ne3, %unit : index
   %src0_last_ne3_off = index.mul %src0_last_ne3, %src0_stride_ne3 : index
-  %src0_count_base = index.add %src0_last_row_off, %src0_last_ne3_off : index
+  %src0_count_base0 = index.add %src0_last_row_off, %src0_last_ne2_off : index
+  %src0_count_base = index.add %src0_count_base0, %src0_last_ne3_off : index
   %src0_count = index.div %src0_count_base, %two : index
   %src1_ne2_total = index.mul %dst_ne2, %src1_stride_ne2 : index
   %src1_ne3_total = index.mul %dst_ne3, %src1_stride_ne3 : index
@@ -195,9 +198,12 @@ kernel.def export("hrx2_mul_mat_f16_f32_batched_cols8") @hrx2_mul_mat_f16_f32_ba
   %src0_i03 = index.div %i13, %src0_group_scale3 : index
 
   %src0_last_row_off = index.mul %rows, %src0_stride_row : index
+  %src0_last_ne2 = index.sub %src0_ne2, %unit : index
+  %src0_last_ne2_off = index.mul %src0_last_ne2, %src0_stride_ne2 : index
   %src0_last_ne3 = index.sub %src0_ne3, %unit : index
   %src0_last_ne3_off = index.mul %src0_last_ne3, %src0_stride_ne3 : index
-  %src0_count_base = index.add %src0_last_row_off, %src0_last_ne3_off : index
+  %src0_count_base0 = index.add %src0_last_row_off, %src0_last_ne2_off : index
+  %src0_count_base = index.add %src0_count_base0, %src0_last_ne3_off : index
   %src0_count = index.div %src0_count_base, %two : index
   %src1_ne2_total = index.mul %dst_ne2, %src1_stride_ne2 : index
   %src1_ne3_total = index.mul %dst_ne3, %src1_stride_ne3 : index
@@ -403,9 +409,12 @@ kernel.def export("hrx2_mul_mat_f16_f32_batched_rows2_cols8") @hrx2_mul_mat_f16_
   %src0_i03 = index.div %i13, %src0_group_scale3 : index
 
   %src0_last_row_off = index.mul %rows, %src0_stride_row : index
+  %src0_last_ne2 = index.sub %src0_ne2, %unit : index
+  %src0_last_ne2_off = index.mul %src0_last_ne2, %src0_stride_ne2 : index
   %src0_last_ne3 = index.sub %src0_ne3, %unit : index
   %src0_last_ne3_off = index.mul %src0_last_ne3, %src0_stride_ne3 : index
-  %src0_count_base = index.add %src0_last_row_off, %src0_last_ne3_off : index
+  %src0_count_base0 = index.add %src0_last_row_off, %src0_last_ne2_off : index
+  %src0_count_base = index.add %src0_count_base0, %src0_last_ne3_off : index
   %src0_count = index.div %src0_count_base, %two : index
   %src1_ne2_total = index.mul %dst_ne2, %src1_stride_ne2 : index
   %src1_ne3_total = index.mul %dst_ne3, %src1_stride_ne3 : index
@@ -656,9 +665,12 @@ kernel.def export("hrx2_mul_mat_f16_f32_batched_cols8_contiguous") @hrx2_mul_mat
   %src0_i03 = index.div %i13, %src0_group_scale3 : index
 
   %src0_last_row_off = index.mul %rows, %src0_stride_row : index
+  %src0_last_ne2 = index.sub %src0_ne2, %unit : index
+  %src0_last_ne2_off = index.mul %src0_last_ne2, %src0_stride_ne2 : index
   %src0_last_ne3 = index.sub %src0_ne3, %unit : index
   %src0_last_ne3_off = index.mul %src0_last_ne3, %src0_stride_ne3 : index
-  %src0_count_base = index.add %src0_last_row_off, %src0_last_ne3_off : index
+  %src0_count_base0 = index.add %src0_last_row_off, %src0_last_ne2_off : index
+  %src0_count_base = index.add %src0_count_base0, %src0_last_ne3_off : index
   %src0_count = index.div %src0_count_base, %two : index
   %src1_ne2_total = index.mul %dst_ne2, %src1_stride_ne2 : index
   %src1_ne3_total = index.mul %dst_ne3, %src1_stride_ne3 : index

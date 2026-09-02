@@ -11557,6 +11557,10 @@ static bool ggml_backend_hrx2_device_supports_op(ggml_backend_dev_t dev, const g
             // embedding lookup: HRX2 get_rows_f32 route (CPU would have to
             // read/write shared GTT -> per-dispatch coherency tax)
             return ggml_backend_hrx2_supports_get_rows_route(devctx, op);
+        case GGML_OP_MUL_MAT:
+            // attention KQ^T/kqv mms: F16 src0 (KV cache) x F32 src1 (q/kq),
+            // strided GQA batched views -> existing mul_mat_f16_f32_batched kernel
+            return ggml_backend_hrx2_supports_mul_mat_f16_f32_route(devctx, op);
         default:
             return false;
     }

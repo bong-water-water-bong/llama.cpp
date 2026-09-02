@@ -261,12 +261,12 @@
    "cols_per_workgroup": 8
   },
   "shape_domain": {
-   "name": "attention_batched_f16_f32_cols8_k128_512_rows128_512_cols512",
+   "name": "attention_batched_f16_f32_cols8_k128_65536_rows128_262144_cols8_512",
    "k_min": 128,
    "k_max": 65536,
    "rows_min": 128,
    "rows_max": 262144,
-   "cols_min": 512,
+   "cols_min": 8,
    "cols_max": 512
   },
   "shape_guards": {
