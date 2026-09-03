@@ -430,7 +430,8 @@ extern "C" {
         GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
         GGML_TYPE_Q1_0    = 41,
         GGML_TYPE_Q2_0    = 42,
-        GGML_TYPE_COUNT   = 43,
+        GGML_TYPE_Q4NX    = 43, // 1bit-MONSTER Q4NX: 5120-byte tile = [32 BF16 rows x 256 cols]
+        GGML_TYPE_COUNT   = 44,
     };
 
     // precision
