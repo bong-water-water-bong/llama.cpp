@@ -157,6 +157,7 @@ struct llama_hparams {
     uint32_t ssm_d_conv  = 0;
     uint32_t ssm_d_inner = 0;
     uint32_t ssm_d_state = 0;
+    uint32_t zaya_n_embd_s = 0; // zaya: conv_state(2*n_qk) + prev_hs(n_embd)
     uint32_t ssm_dt_rank = 0;
     uint32_t ssm_n_group = 0;
 
