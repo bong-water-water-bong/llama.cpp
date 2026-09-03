@@ -22,6 +22,8 @@ if(HRX_SOURCE_DIR)
         -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
         -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
         -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+        -DCMAKE_C_FLAGS=-Wno-error=array-bounds -Wno-array-bounds
+        -DCMAKE_CXX_FLAGS=-Wno-error=array-bounds -Wno-array-bounds
         -DIREE_BUILD_TESTS=OFF
         -DIREE_BUILD_BENCHMARKS=OFF
         -DIREE_HAL_DRIVER_DEFAULTS=OFF

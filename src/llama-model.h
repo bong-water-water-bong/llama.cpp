@@ -352,6 +352,27 @@ struct llama_layer {
 
     // mamba bias
     struct ggml_tensor * ssm_conv1d_b = nullptr;
+
+    // zaya (1bit-MONSTER) CCA attention + 17-slot router (round-28 port)
+    struct ggml_tensor * post_attn_norm   = nullptr;
+    struct ggml_tensor * cca_conv_grp     = nullptr;
+    struct ggml_tensor * cca_conv_grp_b   = nullptr;
+    struct ggml_tensor * cca_k_scale      = nullptr;
+    struct ggml_tensor * cca_val_proj1    = nullptr;
+    struct ggml_tensor * cca_val_proj2    = nullptr;
+    struct ggml_tensor * res_scale_hs     = nullptr;
+    struct ggml_tensor * res_scale_hs_b   = nullptr;
+    struct ggml_tensor * res_scale_res    = nullptr;
+    struct ggml_tensor * res_scale_res_b  = nullptr;
+    struct ggml_tensor * res_scale_hs_mlp     = nullptr;
+    struct ggml_tensor * res_scale_hs_mlp_b   = nullptr;
+    struct ggml_tensor * res_scale_res_mlp    = nullptr;
+    struct ggml_tensor * res_scale_res_mlp_b  = nullptr;
+    struct ggml_tensor * zaya_router_mlp2     = nullptr;
+    struct ggml_tensor * zaya_router_mlp2_b   = nullptr;
+    struct ggml_tensor * zaya_router_mlp4     = nullptr;
+    struct ggml_tensor * zaya_router_biases   = nullptr;
+    struct ggml_tensor * zaya_router_eda_scale = nullptr;
     struct ggml_tensor * ssm_dt_b     = nullptr;
 
     // qwen3next
@@ -560,6 +581,8 @@ struct llama_model {
     // for classifier models
     std::vector<std::string> classifier_labels;
 
+    struct ggml_tensor * input_hidden_states_scale = nullptr;
+    struct ggml_tensor * input_hidden_states_bias  = nullptr;
     struct ggml_tensor * tok_embd   = nullptr;
     struct ggml_tensor * type_embd  = nullptr;
     struct ggml_tensor * pos_embd   = nullptr;
