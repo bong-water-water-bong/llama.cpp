@@ -1029,6 +1029,8 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
 
     "MUL_MAT",
     "MUL_MAT_ID",
+    "MUL_MAT_Q4NX",
+    "MUL_MAT_ID_Q4NX",
     "OUT_PROD",
 
     "SCALE",
@@ -1108,7 +1110,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "GLU",
 };
 
-static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
+static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1143,6 +1145,8 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "l2_norm(x)",
 
     "X*Y",
+    "q4nx_mm",
+    "q4nx_id_mm",
     "X[i]*Y",
     "X*Y",
 
@@ -1223,7 +1227,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "glu(x)",
 };
 
-static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
+static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -3283,10 +3287,43 @@ static inline bool ggml_can_mul_mat(const struct ggml_tensor * t0, const struct 
            (t1->ne[3]%t0->ne[3] == 0);
 }
 
+struct ggml_tensor * ggml_mul_mat_q4nx(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * a,
+        struct ggml_tensor  * b) {
+    // 1bit-MONSTER Q4NX fused matmul: a is a GGML_TYPE_Q4NX weight stored
+    // tile-major as [8192, n_tiles] (each 8192-element ggml row = one 5120-byte
+    // tile = [32 rows x 256 cols]); tiles in (tile_row, tile_col) order with
+    // tile_col = t % n_tc, n_tc = b->ne[0]/256. b is the F32 activation
+    // [in, cols], in % 256 == 0. result F32 [n_tr*32, cols].
+    GGML_ASSERT(a->type == GGML_TYPE_Q4NX);
+    GGML_ASSERT(a->ne[0] == 8192);
+    GGML_ASSERT(b->type == GGML_TYPE_F32);
+    GGML_ASSERT(b->ne[0] % 256 == 0);
+    GGML_ASSERT(!ggml_is_transposed(a) && !ggml_is_transposed(b));
+
+    const int64_t n_tc    = b->ne[0] / 256;
+    const int64_t n_tiles = a->ne[1];
+    GGML_ASSERT(n_tc >= 1 && n_tiles % n_tc == 0);
+    const int64_t n_tr = n_tiles / n_tc;
+    const int64_t rows = n_tr * 32;
+    const int64_t ne[4] = { rows, b->ne[1], b->ne[2], b->ne[3] };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    result->op     = GGML_OP_MUL_MAT_Q4NX;
+    result->src[0] = a;
+    result->src[1] = b;
+
+    return result;
+}
+
 struct ggml_tensor * ggml_mul_mat(
         struct ggml_context * ctx,
         struct ggml_tensor  * a,
         struct ggml_tensor  * b) {
+    if (a->type == GGML_TYPE_Q4NX) {
+        return ggml_mul_mat_q4nx(ctx, a, b);
+    }
     GGML_ASSERT(ggml_can_mul_mat(a, b));
     GGML_ASSERT(!ggml_is_transposed(a));
 
@@ -3334,11 +3371,43 @@ void ggml_mul_mat_set_hint(
 
     c ~= as[:,:,i] @ b[:,i%r,t], i = ids[e,t] for all e,t in ids
 */
+struct ggml_tensor * ggml_mul_mat_id_q4nx(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * as,
+        struct ggml_tensor  * b,
+        struct ggml_tensor  * ids) {
+    // 1bit-MONSTER Q4NX expert matmul: as is GGML_TYPE_Q4NX stored 3-D
+    // tile-major [8192, tiles_per_expert, n_expert]; tiles of one expert are
+    // contiguous. b F32 [k, ntokens], ids [nselected, ntokens].
+    GGML_ASSERT(as->type == GGML_TYPE_Q4NX);
+    GGML_ASSERT(as->ne[0] == 8192);
+    GGML_ASSERT(b->type == GGML_TYPE_F32);
+    GGML_ASSERT(b->ne[0] % 256 == 0);
+    GGML_ASSERT(ids->type == GGML_TYPE_I32);
+
+    const int64_t n_tc = b->ne[0] / 256;
+    const int64_t tpe  = as->ne[1];
+    GGML_ASSERT(n_tc >= 1 && tpe % n_tc == 0);
+    const int64_t rows = (tpe / n_tc) * 32;
+    const int64_t ne[4] = { rows, ids->ne[0], b->ne[2], 1 };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    result->op     = GGML_OP_MUL_MAT_ID_Q4NX;
+    result->src[0] = as;
+    result->src[1] = b;
+    result->src[2] = ids;
+
+    return result;
+}
+
 struct ggml_tensor * ggml_mul_mat_id(
         struct ggml_context * ctx,
         struct ggml_tensor  * as,
         struct ggml_tensor  * b,
         struct ggml_tensor  * ids) {
+    if (as->type == GGML_TYPE_Q4NX) {
+        return ggml_mul_mat_id_q4nx(ctx, as, b, ids);
+    }
     GGML_ASSERT(!ggml_is_transposed(as));
     GGML_ASSERT(ids->type == GGML_TYPE_I32);
 

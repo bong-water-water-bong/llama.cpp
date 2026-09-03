@@ -513,6 +513,8 @@ extern "C" {
 
         GGML_OP_MUL_MAT,
         GGML_OP_MUL_MAT_ID,
+        GGML_OP_MUL_MAT_Q4NX, // 1bit-MONSTER: src0 GGML_TYPE_Q4NX [8192, n_tiles]
+        GGML_OP_MUL_MAT_ID_Q4NX, // 1bit-MONSTER: 3-D Q4NX experts [8192, tpe, n_expert]
         GGML_OP_OUT_PROD,
 
         GGML_OP_SCALE,

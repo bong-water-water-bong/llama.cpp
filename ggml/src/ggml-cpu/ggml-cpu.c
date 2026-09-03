@@ -7,6 +7,7 @@
 #include "ggml-cpu-impl.h"
 #include "ggml-impl.h"
 #include "quants.h"
+#include "../ggml-quants.h"
 #include "ggml-threading.h"
 #include "unary-ops.h"
 #include "binary-ops.h"
@@ -1251,12 +1252,140 @@ static void ggml_compute_forward_mul_mat_one_chunk(
     }
 }
 
+// Q4NX (1bit-MONSTER) MUL_MAT_Q4NX CPU compute. src0: GGML_TYPE_Q4NX weight
+// stored tile-major [8192, n_tiles]; tile t = (tr = t/n_tc, tc = t%n_tc) covers
+// out rows [tr*32, tr*32+32) x in cols [tc*256, tc*256+256); n_tc = in/256.
+// dequantize_row_q4nx(tile) -> [32 rows x 256 cols] row-major.
+static void ggml_compute_forward_mul_mat_q4nx(
+        const struct ggml_compute_params * params,
+              struct ggml_tensor * dst) {
+    const struct ggml_tensor * src0 = dst->src[0]; // [8192, n_tiles] Q4NX
+    const struct ggml_tensor * src1 = dst->src[1]; // [in, cols] f32
+    GGML_TENSOR_BINARY_OP_LOCALS
+
+    const int64_t in   = ne10;           // src1 rows (in)
+    const int64_t n_tc = in / 256;
+    GGML_ASSERT(in % 256 == 0);
+    const int64_t n_tiles = ne01;
+    const int64_t n_tr    = n_tiles / n_tc;
+    const int64_t n_cols  = ne11;        // src1 columns (tokens)
+    GGML_ASSERT(src0->type == GGML_TYPE_Q4NX && src1->type == GGML_TYPE_F32);
+    GGML_ASSERT(ne00 == 8192);
+
+    float * tile = (float *) malloc(8192 * sizeof(float));
+    if (!tile) { GGML_ABORT("q4nx mm oom"); }
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    // Each out row spans n_tc column tiles -> a tile only contributes a
+    // 256-wide partial dot. Parallelize over tokens (deterministic per column).
+    for (int64_t j = ith; j < n_cols; j += nth) {
+        const float * src1_col = (const float *) ((const char *) src1->data + j * nb11);
+        float       * dst_col  = (float *)       ((char *)  dst->data  + j * nb1);
+        const size_t dst_stride = nb1 / sizeof(float);
+
+        // zero the output column
+        for (int64_t o = 0; o < dst->ne[0]; ++o) {
+            dst_col[o * dst_stride] = 0.0f;
+        }
+        for (int64_t t = 0; t < n_tiles; ++t) {
+            const int64_t tr = t / n_tc;
+            const int64_t tc = t % n_tc;
+            const void * tile_data = (const void *) ((const char *) src0->data + t * 5120);
+            dequantize_row_q4nx(tile_data, tile, 8192);
+            for (int64_t r = 0; r < 32; ++r) {
+                const int64_t o = tr * 32 + r;
+                if (o >= dst->ne[0]) continue;
+                const float * wrow = tile + r * 256;
+                float sum = 0.0f;
+                for (int64_t c = 0; c < 256; ++c) {
+                    sum += wrow[c] * src1_col[tc * 256 + c];
+                }
+                dst_col[o * dst_stride] += sum;
+            }
+        }
+    }
+    free(tile);
+}
+
+
+static void ggml_compute_forward_mul_mat_id_q4nx(
+        const struct ggml_compute_params * params,
+              struct ggml_tensor * dst) {
+    const struct ggml_tensor * src0 = dst->src[0]; // [8192, tpe, n_expert] Q4NX
+    const struct ggml_tensor * src1 = dst->src[1]; // [k, ntokens] f32
+    const struct ggml_tensor * ids  = dst->src[2]; // [nselected, ntokens] i32
+    GGML_TENSOR_BINARY_OP_LOCALS
+
+    const int64_t in   = ne10;
+    const int64_t n_tc = in / 256;
+    const int64_t tpe  = ne01;
+    const int64_t n_ex = ne02;
+    const int64_t n_tok = ne11;
+    const int64_t n_sel = ids->ne[0];
+    GGML_ASSERT(src0->type == GGML_TYPE_Q4NX && src1->type == GGML_TYPE_F32);
+    GGML_ASSERT(ne00 == 8192 && in % 256 == 0 && tpe % n_tc == 0);
+
+    const int32_t * ids_data = (const int32_t *) ids->data;
+
+    float * tile = (float *) malloc(8192 * sizeof(float));
+    if (!tile) { GGML_ABORT("q4nx id mm oom"); }
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    const int64_t total = n_tok * n_sel;
+    for (int64_t t_ = ith; t_ < total; t_ += nth) {
+        const int64_t j = t_ / n_sel;        // token
+        const int64_t si = t_ % n_sel;       // selected slot
+
+        const int32_t e = ids_data[si * n_tok + j];
+        if (e < 0 || e >= n_ex) continue;
+
+        // expert e tiles are contiguous: base = e * tpe * 5120
+        const int64_t rows = (tpe / n_tc) * 32;
+        float * dst_col = (float *) ((char *) dst->data + ((si * dst->ne[1] + j) * 0) ); // placeholder
+        (void) dst_col; (void) rows;
+
+        const float * src1_col = (const float *) ((const char *) src1->data + j * nb11);
+        float * dst_o = (float *) ((char *) dst->data + (si * dst->ne[1] + j) * 0); // nb for dims 1/2
+        // dst layout [rows, n_sel, n_tok]: element (o, si, j) at ((j*n_sel)+si)*rows + o? ggml ne-minor: (o,si,j): o + rows*(si + n_sel*j)
+        const size_t dst_stride_j = (size_t) dst->nb[1]; // offset per si within token j? nb: nb1=rowlen*rows?
+        // simpler: compute via nb:
+        char * dst_base = (char *) dst->data + si * dst->nb[1] + j * dst->nb[2];
+        float * dst_row = (float *) dst_base;
+
+        for (int64_t t = 0; t < tpe; ++t) {
+            const int64_t tr = t / n_tc;
+            const int64_t tc = t % n_tc;
+            const void * tile_data = (const void *) ((const char *) src0->data + ((int64_t)e * tpe + t) * 5120);
+            dequantize_row_q4nx(tile_data, tile, 8192);
+            for (int64_t r = 0; r < 32; ++r) {
+                const int64_t o = tr * 32 + r;
+                const float * wrow = tile + r * 256;
+                float sum = 0.0f;
+                for (int64_t c = 0; c < 256; ++c) {
+                    sum += wrow[c] * src1_col[tc * 256 + c];
+                }
+                dst_row[o * (dst->nb[0] / sizeof(float))] += sum;
+            }
+        }
+    }
+    free(tile);
+}
+
 void ggml_compute_forward_mul_mat(
         const struct ggml_compute_params * params,
               struct ggml_tensor * dst) {
 
     const struct ggml_tensor * src0 = dst->src[0];
     const struct ggml_tensor * src1 = dst->src[1];
+
+    if (dst->op == GGML_OP_MUL_MAT_Q4NX || src0->type == GGML_TYPE_Q4NX) {
+        ggml_compute_forward_mul_mat_q4nx(params, dst);
+        return;
+    }
 
     const int32_t hint = ggml_get_op_params_i32(dst, 1);
     if (hint == GGML_HINT_SRC0_IS_HADAMARD && !params->use_ref) {
@@ -1841,6 +1970,14 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_mul_mat_id(params, tensor);
             } break;
+        case GGML_OP_MUL_MAT_Q4NX:
+            {
+                ggml_compute_forward_mul_mat_q4nx(params, tensor);
+            } break;
+        case GGML_OP_MUL_MAT_ID_Q4NX:
+            {
+                ggml_compute_forward_mul_mat_id_q4nx(params, tensor);
+            } break;
         case GGML_OP_OUT_PROD:
             {
                 ggml_compute_forward_out_prod(params, tensor);
@@ -2329,6 +2466,8 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_CONCAT:
         case GGML_OP_MUL_MAT:
         case GGML_OP_MUL_MAT_ID:
+        case GGML_OP_MUL_MAT_Q4NX:
+        case GGML_OP_MUL_MAT_ID_Q4NX:
         case GGML_OP_OUT_PROD:
             {
                 n_tasks = n_threads;
