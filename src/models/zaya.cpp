@@ -454,7 +454,7 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
             /* type_op */         LLM_FFN_SILU,
             /* norm_w */          false,
             /* w_scale */         1.0f,
-            /* gating_op */       LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX_WEIGHT,
+            /* gating_op */       LLAMA_EXPERT_GATING_FUNC_TYPE_NONE,
             /* il */              il,
             /* probs_in */        gate_probs,
             /* gate_up_exps */    layer.ffn_gate_up_exps);
