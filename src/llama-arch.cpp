@@ -144,6 +144,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
     { LLM_ARCH_TALKIE,           "talkie"           },
     { LLM_ARCH_MELLUM,           "mellum"           },
     { LLM_ARCH_NANBEIGE,         "nanbeige"         },
+    { LLM_ARCH_ZAYA,             "zaya"             },
     { LLM_ARCH_UNKNOWN,          "(unknown)"        },
 };
 
@@ -381,6 +382,7 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
 static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_TOKEN_EMBD,                             "token_embd" },
     { LLM_TENSOR_OUTPUT_NORM,                            "output_norm" },
+
     { LLM_TENSOR_OUTPUT_NORM_LFM2,                       "token_embd_norm" }, // fix for wrong tensor name
     { LLM_TENSOR_OUTPUT,                                 "output" },
     { LLM_TENSOR_ROPE_FREQS,                             "rope_freqs" },
@@ -449,6 +451,24 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_SSM_CONV1D_Q,                           "blk.%d.ssm_conv1d_q" },
     { LLM_TENSOR_SSM_CONV1D_K,                           "blk.%d.ssm_conv1d_k" },
     { LLM_TENSOR_SSM_CONV1D_V,                           "blk.%d.ssm_conv1d_v" },
+
+    { LLM_TENSOR_POST_ATTN_NORM,                      "blk.%d.post_attn_norm" },
+    { LLM_TENSOR_CCA_CONV_GRP,                            "blk.%d.cca_conv_grp" },
+    { LLM_TENSOR_CCA_K_SCALE,                             "blk.%d.cca_k_scale" },
+    { LLM_TENSOR_CCA_VAL_PROJ1,                           "blk.%d.cca_val_proj1" },
+    { LLM_TENSOR_CCA_VAL_PROJ2,                           "blk.%d.cca_val_proj2" },
+    { LLM_TENSOR_ZAYA_ROUTER_MLP2,                        "blk.%d.zaya_router_mlp2" },
+    { LLM_TENSOR_ZAYA_ROUTER_MLP4,                        "blk.%d.zaya_router_mlp4" },
+    { LLM_TENSOR_ZAYA_ROUTER_BIASES,                      "blk.%d.zaya_router_biases" },
+    { LLM_TENSOR_ZAYA_ROUTER_EDA_SCALE,                   "blk.%d.zaya_router_eda" },
+    { LLM_TENSOR_INPUT_HIDDEN_STATES_SCALE,               "input_hidden_states_scale" },
+    { LLM_TENSOR_INPUT_HIDDEN_STATES_BIAS,                "input_hidden_states_bias" },
+    { LLM_TENSOR_RES_SCALE_HS,                            "blk.%d.res_scale_hs" },
+    { LLM_TENSOR_RES_SCALE_RES,                           "blk.%d.res_scale_res" },
+    { LLM_TENSOR_RES_SCALE_HS_MLP,                        "blk.%d.res_scale_hs_mlp" },
+    { LLM_TENSOR_RES_SCALE_RES_MLP,                       "blk.%d.res_scale_res_mlp" },
+    { LLM_TENSOR_RES_SCALE_HS_FINAL,                      "output_norm.res_scale_hs" },
+    { LLM_TENSOR_RES_SCALE_RES_FINAL,                     "output_norm.res_scale_res" },
     { LLM_TENSOR_SSM_F_A,                                "blk.%d.ssm_f_a" },
     { LLM_TENSOR_SSM_F_B,                                "blk.%d.ssm_f_b" },
     { LLM_TENSOR_SSM_BETA,                               "blk.%d.ssm_beta" },
@@ -643,6 +663,24 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
     {LLM_TENSOR_DENSE_2_OUT,                {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}}, // Dense layer output
     {LLM_TENSOR_DENSE_3_OUT,                {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}}, // Dense layer output
     {LLM_TENSOR_OUTPUT_NORM,                {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL}},
+    {LLM_TENSOR_POST_ATTN_NORM,             {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_CCA_CONV_GRP,               {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_CCA_K_SCALE,                {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_CCA_VAL_PROJ1,              {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_CCA_VAL_PROJ2,              {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_ZAYA_ROUTER_MLP2,           {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_ZAYA_ROUTER_MLP4,           {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_ZAYA_ROUTER_BIASES,         {LLM_TENSOR_LAYER_REPEATING, GGML_OP_ADD}},
+    {LLM_TENSOR_ZAYA_ROUTER_EDA_SCALE,      {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_RES_SCALE_HS,               {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_RES_SCALE_RES,              {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_RES_SCALE_HS_MLP,           {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_RES_SCALE_RES_MLP,          {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_RES_SCALE_HS_FINAL,         {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL}},
+    {LLM_TENSOR_RES_SCALE_RES_FINAL,        {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL}},
+    {LLM_TENSOR_INPUT_HIDDEN_STATES_SCALE,  {LLM_TENSOR_LAYER_INPUT,     GGML_OP_MUL}},
+    {LLM_TENSOR_INPUT_HIDDEN_STATES_BIAS,   {LLM_TENSOR_LAYER_INPUT,     GGML_OP_ADD}},
+
     {LLM_TENSOR_OUTPUT_NORM_LFM2,           {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL}},
     {LLM_TENSOR_DEC_OUTPUT_NORM,            {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL}},
     {LLM_TENSOR_ENC_OUTPUT_NORM,            {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL}},
@@ -968,6 +1006,7 @@ bool llm_arch_is_hybrid(const llm_arch & arch) {
         case LLM_ARCH_KIMI_LINEAR:
         case LLM_ARCH_QWEN35:
         case LLM_ARCH_QWEN35MOE:
+        case LLM_ARCH_ZAYA:
             return true;
         default:
             return false;

@@ -868,11 +868,22 @@ const struct ggml_tensor * llama_model_loader::check_tensor_dims(const std::stri
     }
 
     {
-        bool is_ok = true;
-        for (size_t i = 0; i < GGML_MAX_DIMS; ++i) {
-            if ((i < ne.size() && ne[i] != cur->ne[i]) || (i >= ne.size() && cur->ne[i] != 1)) {
-                is_ok = false;
-                break;
+        // Q4NX (1bit-MONSTER, GGML_TYPE_Q4NX) weights are stored tile-framed
+        // ([n_tiles*32, 256]) — compare element count, not dims (round-28 port).
+        const bool q4nx_ok = cur->type == GGML_TYPE_Q4NX;
+        bool is_ok = q4nx_ok;
+        if (q4nx_ok) {
+            int64_t n_expect = 1, n_got = 1;
+            for (auto v : ne)  n_expect *= v;
+            for (int i = 0; i < GGML_MAX_DIMS; ++i) n_got *= cur->ne[i];
+            is_ok = n_expect == n_got;
+        } else {
+            is_ok = true;
+            for (size_t i = 0; i < GGML_MAX_DIMS; ++i) {
+                if ((i < ne.size() && ne[i] != cur->ne[i]) || (i >= ne.size() && cur->ne[i] != 1)) {
+                    is_ok = false;
+                    break;
+                }
             }
         }
         if (!is_ok) {

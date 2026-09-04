@@ -311,6 +311,9 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_kimi_linear(params);
         case LLM_ARCH_STEP35:
             return new llama_model_step35(params);
+        case LLM_ARCH_ZAYA:
+            return new llama_model_zaya(params);
+
         default:
             throw std::runtime_error(std::string("unsupported model architecture: '") + llm_arch_name(arch) + "'");
     }
@@ -2164,6 +2167,11 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                     llama_memory_hybrid::layer_filter_cb filter_attn = nullptr;
                     llama_memory_hybrid::layer_filter_cb filter_recr = nullptr;
                     if (arch == LLM_ARCH_FALCON_H1) {
+                        filter_attn = [&](uint32_t) { return true; };
+                        filter_recr = [&](uint32_t) { return true; };
+                    } else if (arch == LLM_ARCH_ZAYA) {
+                        // Zaya runs BOTH CCA attention (KV) and the conv-state
+                        // recurrent cache on every layer.
                         filter_attn = [&](uint32_t) { return true; };
                         filter_recr = [&](uint32_t) { return true; };
                     } else if (arch == LLM_ARCH_NEMOTRON_H || arch == LLM_ARCH_NEMOTRON_H_MOE) {
