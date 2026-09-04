@@ -2295,6 +2295,19 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
                 GGML_ABORT("fatal error");
             }
     }
+
+    if (getenv("GGML_DUMP_NODE") && params->ith == 0 && tensor->op != GGML_OP_NONE) {
+        const char * filter = getenv("GGML_DUMP_FILTER");
+        if (!filter || strstr(tensor->name, filter)) {
+            static int dump_seq = 0;
+            char path[512];
+            snprintf(path, sizeof path, "/tmp/nodedump/%03d_%s_%s.bin", dump_seq++,
+                ggml_op_name(tensor->op), tensor->name[0] ? tensor->name : "anon");
+            FILE * df = fopen(path, "wb");
+            if (df) { size_t nb = ggml_nbytes(tensor); fwrite(tensor->data, 1, nb, df); fclose(df); }
+            fprintf(stderr, "[dump] %s\n", path);
+        }
+    }
 }
 
 // Android's libc implementation "bionic" does not support setting affinity
