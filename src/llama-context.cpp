@@ -106,6 +106,12 @@ llama_context::llama_context(
                         __func__, cparams.n_rs_seq);
         cparams.n_rs_seq = 0;
     }
+    // Zaya: recurrent conv-state carry-over needs snapshot rollback so that
+    // server seq_rm rolls back instead of clearing the single recurrent cell
+    // (issue #2089). Default a bounded snapshot window when none was requested.
+    if (cparams.n_rs_seq == 0 && model.arch == LLM_ARCH_ZAYA) {
+        cparams.n_rs_seq = 16;
+    }
 
     cparams.n_threads               = params.n_threads;
     cparams.n_threads_batch         = params.n_threads_batch;

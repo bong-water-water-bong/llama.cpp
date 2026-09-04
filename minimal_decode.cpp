@@ -62,6 +62,15 @@ int main() {
     int r = llama_decode(ctx, llama_batch_get_one(toks.data(), n));
     fprintf(stderr, "[min] decode prompt ret=%d\n", r);
 
+    // read logits RIGHT AFTER the prompt decode (predict next token = oracle 9079)
+    {
+        const float * logits = llama_get_logits(ctx);
+        int n_vocab = llama_vocab_n_tokens(vocab);
+        int argmax = 0;
+        for (int i = 1; i < n_vocab; i++) { if (logits[i] > logits[argmax]) argmax = i; }
+        fprintf(stderr, "[min] AFTER-PROMPT argmax=%d val=%g logits[9079]=%g\n", argmax, logits[argmax], logits[9079]);
+    }
+
     llama_token gen = 0;
     fprintf(stderr, "[min] === decode 1 generated token ===\n");
     r = llama_decode(ctx, llama_batch_get_one(&gen, 1));
