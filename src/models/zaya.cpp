@@ -88,6 +88,11 @@ void llama_model_zaya::load_arch_hparams(llama_model_loader & ml) {
     // recurrent conv-state cache: conv_state (2*(n_q+n_k)) + prev_hs (n_embd)
     const int64_t hd = hparams.n_embd_head_k();
     hparams.zaya_n_embd_s = (uint32_t)(2*(int64_t)(hparams.n_head() + hparams.n_head_kv())*hd + hparams.n_embd);
+    hparams.n_rot_full = (uint32_t)(hd / 2); // rope.dimension_count = 64 (partial rotary 0.5)
+    hparams.n_rot_swa  = (uint32_t)(hd / 2);
+    hparams.ssm_d_inner = (uint32_t)(2*(int64_t)(hparams.n_head() + hparams.n_head_kv())*hd + hparams.n_embd);
+    hparams.ssm_d_state = 1;
+    hparams.ssm_n_group = 0;
 }
 
 void llama_model_zaya::load_arch_tensors(llama_model_loader & ml) {
@@ -209,8 +214,12 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
 
     const int64_t n_rot      = hparams.n_rot();
     const int64_t n_ctx_orig = cparams.n_ctx_orig_yarn;
+    fprintf(stderr, "[zaya] dbg: n_rot=%lld head_k=%d n_head=%d n_head_kv=%d ssm_d_conv=%u n_ff_exp=%u n_expert=%u n_embd_s=%u\n",
+        (long long)n_rot, (int)hparams.n_embd_head_k(), (int)hparams.n_head(), (int)hparams.n_head_kv(),
+        hparams.ssm_d_conv, hparams.n_ff_exp, hparams.n_expert, hparams.n_embd_s());
 
-    for (int il = 0; il < n_layer; ++il) {
+    const int n_layer_run = getenv("ZAYA_1LAYER") ? 1 : n_layer;
+    for (int il = 0; il < n_layer_run; ++il) {
         const auto & layer = model.layers[il];
 
         const int64_t n_head    = hparams.n_head();

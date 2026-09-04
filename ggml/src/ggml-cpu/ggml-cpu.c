@@ -1289,6 +1289,7 @@ static void ggml_compute_forward_mul_mat_q4nx(
         for (int64_t o = 0; o < dst->ne[0]; ++o) {
             dst_col[o * dst_stride] = 0.0f;
         }
+        if (getenv("Q4NX_DBG") && j == 0) fprintf(stderr,"dbg: ne0=%lld n_tiles=%lld n_tc=%lld nb1=%zu stride=%zu\n",(long long)dst->ne[0],(long long)n_tiles,(long long)n_tc,(size_t)nb1,(size_t)dst_stride);
         for (int64_t t = 0; t < n_tiles; ++t) {
             const int64_t tr = t / n_tc;
             const int64_t tc = t % n_tc;
@@ -1303,6 +1304,7 @@ static void ggml_compute_forward_mul_mat_q4nx(
                     sum += wrow[c] * src1_col[tc * 256 + c];
                 }
                 dst_col[o * dst_stride] += sum;
+                if (getenv("Q4NX_DBG") && j == 0 && t < 8 && o < 3) fprintf(stderr,"dbg t=%lld tr=%lld r=%lld o=%lld sum=%f -> %f\n",(long long)t,(long long)tr,(long long)r,(long long)o,(double)sum,(double)dst_col[o*dst_stride]);
             }
         }
     }
@@ -1344,9 +1346,6 @@ static void ggml_compute_forward_mul_mat_id_q4nx(
         if (e < 0 || e >= n_ex) continue;
 
         // expert e tiles are contiguous: base = e * tpe * 5120
-        const int64_t rows = (tpe / n_tc) * 32;
-        float * dst_col = (float *) ((char *) dst->data + ((si * dst->ne[1] + j) * 0) ); // placeholder
-        (void) dst_col; (void) rows;
 
         const float * src1_col = (const float *) ((const char *) src1->data + j * nb11);
         float * dst_o = (float *) ((char *) dst->data + (si * dst->ne[1] + j) * 0); // nb for dims 1/2
@@ -1355,6 +1354,11 @@ static void ggml_compute_forward_mul_mat_id_q4nx(
         // simpler: compute via nb:
         char * dst_base = (char *) dst->data + si * dst->nb[1] + j * dst->nb[2];
         float * dst_row = (float *) dst_base;
+        // zero the output rows for this (token, slot)
+        const int64_t rows = (tpe / n_tc) * 32;
+        for (int64_t o = 0; o < rows; ++o) {
+            dst_row[o * (dst->nb[0] / sizeof(float))] = 0.0f;
+        }
 
         for (int64_t t = 0; t < tpe; ++t) {
             const int64_t tr = t / n_tc;
@@ -1847,6 +1851,19 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
     // extra_buffer op?
     if (ggml_cpu_extra_compute_forward(params, tensor)) {
         return;
+    }
+
+    if (getenv("GGML_DUMP_NODE") && params->ith == 0) {
+        const char * filter = getenv("GGML_DUMP_FILTER");
+        if (!filter || strstr(tensor->name, filter)) {
+            static int dump_seq = 0;
+            char path[512];
+            snprintf(path, sizeof path, "/tmp/nodedump/%03d_%s_%s.bin", dump_seq++,
+                ggml_op_name(tensor->op), tensor->name[0] ? tensor->name : "anon");
+            FILE * df = fopen(path, "wb");
+            if (df) { size_t nb = ggml_nbytes(tensor); fwrite(tensor->data, 1, nb, df); fclose(df); }
+            fprintf(stderr, "[dump] %s\n", path);
+        }
     }
 
     switch (tensor->op) {
