@@ -1286,7 +1286,7 @@ static void ggml_compute_forward_mul_mat_q4nx(
     for (int64_t j = ith; j < n_cols; j += nth) {
         const float * src1_col = (const float *) ((const char *) src1->data + j * nb11);
         float       * dst_col  = (float *)       ((char *)  dst->data  + j * nb1);
-        const size_t dst_stride = nb1 / sizeof(float);
+        const size_t dst_stride = nb0 / sizeof(float);
 
         // zero the output column
         for (int64_t o = 0; o < dst->ne[0]; ++o) {
