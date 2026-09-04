@@ -1858,7 +1858,8 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
         if (!filter || strstr(tensor->name, filter)) {
             static int dump_seq = 0;
             char path[512];
-            snprintf(path, sizeof path, "/tmp/nodedump/%03d_%s_%s.bin", dump_seq++,
+            snprintf(path, sizeof path, "/tmp/nodedump/%03d_%lldx%lldx%lldx%lld_%s_%s.bin", dump_seq++,
+                (long long)tensor->ne[0], (long long)tensor->ne[1], (long long)tensor->ne[2], (long long)tensor->ne[3],
                 ggml_op_name(tensor->op), tensor->name[0] ? tensor->name : "anon");
             FILE * df = fopen(path, "wb");
             if (df) { size_t nb = ggml_nbytes(tensor); fwrite(tensor->data, 1, nb, df); fclose(df); }
