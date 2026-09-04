@@ -4883,6 +4883,8 @@ static void ggml_compute_forward_get_rows_q(
         const int64_t i10 = (i - i12*ne11*ne10 - i11*ne10);
         const int64_t i01 = *(int32_t *) ((char *) src1->data + i10*nb10 + i11*nb11 + i12*nb12);
 
+        if (getenv("DBG_GETROWS") && i < 24) fprintf(stderr, "[getrows] nth=%d ith=%d name=%.24s nr=%lld i=%lld i01=%lld\n", (int)nth, (int)ith, dst->name, (long long)nr, (long long)i, (long long)i01);
+
         GGML_ASSERT(i01 >= 0 && i01 < ne01);
 
         dequantize_row_q(
@@ -5005,6 +5007,7 @@ static void ggml_compute_forward_get_rows_f32(
         const int64_t i11 = (i - i12*ne11*ne10)/ne10;
         const int64_t i10 = (i - i12*ne11*ne10 - i11*ne10);
         const int64_t i01 = *(int32_t *) ((char *) src1->data + i10*nb10 + i11*nb11 + i12*nb12);
+        if (getenv("DBG_GETROWS") && i < 24) fprintf(stderr, "[getrows] nth=%d ith=%d name=%.24s nr=%lld i=%lld i01=%lld\n", (int)nth, (int)ith, dst->name, (long long)nr, (long long)i, (long long)i01);
 
         GGML_ASSERT(i01 >= 0 && i01 < ne01);
 

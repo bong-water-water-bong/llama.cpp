@@ -172,6 +172,7 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
     const int64_t n_embd_head = hparams.n_embd_head_k();
     const int64_t n_expert    = hparams.n_expert;
     const int64_t n_seqs      = ubatch.n_seqs;
+    if (getenv("ZAYA_DBG_TOK")) { fprintf(stderr, "[zaya] ubatch n_tokens=%u n_seqs=%lld tokens:", ubatch.n_tokens, (long long)n_seqs); for (uint32_t _i=0; _i<ubatch.n_tokens && _i<24; _i++) fprintf(stderr, " %d", (int)ubatch.token[_i]); fprintf(stderr, "\n"); }
 
     GGML_ASSERT(n_seqs != 0);
     GGML_ASSERT(ubatch.equal_seqs());
