@@ -132,6 +132,7 @@ llama_kv_cache::llama_kv_cache(
 
     GGML_ASSERT(n_stream == 1 || n_stream == n_seq_max);
 
+    if (getenv("KV_CLEAR_DBG")) fprintf(stderr, "[memdbg] llama_kv_cache CTOR this=%p\n", (void*)this);
     v_heads.resize(n_stream);
     for (uint32_t s = 0; s < n_stream; ++s) {
         v_heads[s] = 0;
@@ -304,7 +305,20 @@ llama_kv_cache::llama_kv_cache(
 
         LLAMA_LOG_INFO("%s: %10s KV buffer size = %8.2f MiB\n", __func__, ggml_backend_buffer_name(buf), ggml_backend_buffer_get_size(buf)/1024.0/1024.0);
 
+        if (getenv("KV_CLEAR_DBG")) {
+            fprintf(stderr, "[kvclear] clearing buf=%p BASE=%p size=%zu\n", (void*)buf, ggml_backend_buffer_get_base(buf), ggml_backend_buffer_get_size(buf));
+        }
         ggml_backend_buffer_clear(buf, 0);
+        if (getenv("KV_CLEAR_DBG")) {
+            // verify zeroed: scan the WHOLE buffer for non-zero / NaN
+            float * p = (float *) ggml_backend_buffer_get_base(buf);
+            if (p) {
+                size_t nf = ggml_backend_buffer_get_size(buf) / sizeof(float);
+                size_t nz = 0, nn = 0;
+                for (size_t i = 0; i < nf; i++) { if (p[i] != 0.0f) nz++; if (p[i] != p[i]) nn++; }
+                fprintf(stderr, "[kvclear] post-clear buf=%zu floats, non-zero=%zu, nan=%zu\n", nf, nz, nn);
+            }
+        }
         ctxs_bufs.emplace_back(std::move(ctx), buf);
     }
 
@@ -956,6 +970,14 @@ bool llama_kv_cache::update(llama_context * lctx, bool do_shift, const stream_co
 }
 
 llama_kv_cache::slot_info llama_kv_cache::find_slot(const llama_ubatch & ubatch, bool cont) const {
+    if (getenv("KV_CLEAR_DBG")) {
+        fprintf(stderr, "[findslot] n_tokens=%u n_seqs=%u n_seqs_unq=%u pos0=%d head=%u used=%u size=%u\n",
+            ubatch.n_tokens, ubatch.n_seqs, ubatch.n_seqs_unq,
+            (int)(ubatch.n_tokens ? ubatch.pos[0] : -1), v_heads[0], v_cells[0].get_used(), get_size());
+        fprintf(stderr, "[findslot] pos:");
+        for (uint32_t i = 0; i < ubatch.n_tokens && i < 24; i++) fprintf(stderr, " %d", (int)ubatch.pos[i]);
+        fprintf(stderr, "\n");
+    }
 
     if (debug > 0) {
         for (uint32_t s = 0; s < ubatch.n_seqs_unq; ++s) {
@@ -1473,6 +1495,16 @@ ggml_tensor * llama_kv_cache::cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggm
     // we can merge dims 0 and 1
     GGML_ASSERT(ggml_row_size(v_cur->type, n_embd_head) == v_cur->nb[1]);
 
+    if (getenv("GGML_DUMP_CPYV")) {
+        fprintf(stderr, "[cpy_v] il=%d v_cur ne=%lld,%lld,%lld,%lld nb=%zu,%zu,%zu,%zu type=%d | v ne=%lld,%lld,%lld,%lld nb=%zu,%zu,%zu,%zu type=%d v_trans=%d n_embd_gqa=%lld\n",
+            il,
+            (long long)v_cur->ne[0], (long long)v_cur->ne[1], (long long)v_cur->ne[2], (long long)v_cur->ne[3],
+            v_cur->nb[0], v_cur->nb[1], v_cur->nb[2], v_cur->nb[3], (int)v_cur->type,
+            (long long)v->ne[0], (long long)v->ne[1], (long long)v->ne[2], (long long)v->ne[3],
+            v->nb[0], v->nb[1], v->nb[2], v->nb[3], (int)v->type,
+            (int)v_trans, (long long)n_embd_gqa);
+    }
+
     const int64_t n_stream = v->ne[2];
 
     // take this branch when FA is enabled (the V cache is not transposed)
@@ -1624,6 +1656,14 @@ void llama_kv_cache::set_input_v_idxs(ggml_tensor * dst, const llama_ubatch * ub
 
     GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
     int64_t * data = (int64_t *) dst->data;
+
+    if (getenv("GGML_DUMP_IDXS")) {
+        for (uint32_t s = 0; s < sinfo.n_stream(); ++s) {
+            fprintf(stderr, "[idxs] v stream %u size %zu s0 %d: ", s, sinfo.size(), sinfo.s0);
+            for (size_t i = 0; i < sinfo.size(); ++i) fprintf(stderr, "%lld ", (long long) sinfo.idxs[s][i]);
+            fprintf(stderr, "\n");
+        }
+    }
 
     if (!v_trans) {
         for (uint32_t s = 0; s < sinfo.n_stream(); ++s) {
@@ -2787,6 +2827,10 @@ llama_kv_cache_context::llama_kv_cache_context(
 }
 
 llama_kv_cache_context::~llama_kv_cache_context() = default;
+
+llama_kv_cache::~llama_kv_cache() {
+    if (getenv("KV_CLEAR_DBG")) fprintf(stderr, "[memdbg] llama_kv_cache DTOR this=%p\n", (void*)this);
+}
 
 bool llama_kv_cache_context::next() {
     assert(status == LLAMA_MEMORY_STATUS_SUCCESS);

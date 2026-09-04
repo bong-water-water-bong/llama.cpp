@@ -10,6 +10,8 @@
 #include <cassert>
 #include <cstring>
 #include <limits>
+#include <execinfo.h>
+#include <cstdlib>
 #include <map>
 #include <stdexcept>
 
@@ -18,6 +20,7 @@
 //
 
 llama_memory_recurrent::llama_memory_recurrent(
+        // [dbg]
         const llama_model & model,
                 ggml_type   type_r,
                 ggml_type   type_s,
@@ -28,6 +31,7 @@ llama_memory_recurrent::llama_memory_recurrent(
     const layer_filter_cb & filter) : hparams(model.hparams), n_seq_max(n_seq_max) {
     const int32_t n_layer = hparams.n_layer();
 
+    if (getenv("KV_CLEAR_DBG")) fprintf(stderr, "[memdbg] llama_memory_recurrent CTOR this=%p\n", (void*)this);
     head = 0;
     size = mem_size;
     used = 0;
@@ -111,7 +115,14 @@ llama_memory_recurrent::llama_memory_recurrent(
         if (!buf) {
             throw std::runtime_error("failed to allocate buffer for rs cache");
         }
+        if (getenv("KV_CLEAR_DBG")) fprintf(stderr, "[rsclear] RS buf=%p BASE=%p size=%zu\n", (void*)buf, ggml_backend_buffer_get_base(buf), ggml_backend_buffer_get_size(buf));
         ggml_backend_buffer_clear(buf, 0);
+        if (getenv("KV_CLEAR_DBG")) {
+            float * p = (float *) ggml_backend_buffer_get_base(buf);
+            size_t nf = ggml_backend_buffer_get_size(buf)/sizeof(float); size_t nn=0;
+            if (p) for (size_t i=0;i<nf;i++) if (p[i]!=p[i]) nn++;
+            fprintf(stderr, "[rsclear] RS post-clear floats=%zu nan=%zu\n", nf, nn);
+        }
         LLAMA_LOG_INFO("%s: %10s RS buffer size = %8.2f MiB\n", __func__, ggml_backend_buffer_name(buf), ggml_backend_buffer_get_size(buf)/1024.0/1024.0);
         ctxs_bufs.emplace_back(std::move(ctx), buf);
     }
@@ -128,6 +139,14 @@ llama_memory_recurrent::llama_memory_recurrent(
 }
 
 void llama_memory_recurrent::clear(bool data) {
+    if (getenv("GGML_DUMP_RSZ")) {
+        fprintf(stderr, "[rsz] CLEAR called (data=%d)\n", (int)data);
+        void * bt[16];
+        int n = backtrace(bt, 16);
+        char ** sym = backtrace_symbols(bt, n);
+        for (int i = 0; i < n; i++) fprintf(stderr, "[rsz]   bt[%d] %s\n", i, sym[i]);
+        free(sym);
+    }
     for (int32_t i = 0; i < (int32_t) size; ++i) {
         cells[i].pos = -1;
         cells[i].seq_id.clear();
@@ -148,6 +167,14 @@ void llama_memory_recurrent::clear(bool data) {
 }
 
 bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
+    if (getenv("GGML_DUMP_RSZ")) {
+        fprintf(stderr, "[rsz] SEQ_RM called (seq_id=%d p0=%d p1=%d)\n", seq_id, p0, p1);
+        void * bt[16];
+        int nb = backtrace(bt, 16);
+        char ** sym = backtrace_symbols(bt, nb);
+        for (int i = 0; i < nb; i++) fprintf(stderr, "[rsz]   bt[%d] %s\n", i, sym[i]);
+        free(sym);
+    }
     uint32_t new_head = size;
 
     if (p0 < 0) {
@@ -464,6 +491,11 @@ bool llama_memory_recurrent::prepare(const std::vector<llama_ubatch> & ubatches)
     auto org_used = used;
     auto org_head = head;
 
+    if (getenv("GGML_DUMP_RSZ")) {
+        fprintf(stderr, "[rsz] PREPARE snapshot: cells[0].src=%d cells[0].src0=%d used=%u head=%u n=%u rs_z=%d ubatches=%zu\n",
+            cells[0].src, cells[0].src0, used, head, n, rs_z, ubatches.size());
+    }
+
     bool success = true;
 
     for (const auto & ubatch : ubatches) {
@@ -477,6 +509,11 @@ bool llama_memory_recurrent::prepare(const std::vector<llama_ubatch> & ubatches)
     cells = std::move(org_cells);
     used = org_used;
     head = org_head;
+
+    if (getenv("GGML_DUMP_RSZ")) {
+        fprintf(stderr, "[rsz] PREPARE revert: cells[0].src=%d cells[0].src0=%d used=%u head=%u n=%u rs_z=%d\n",
+            cells[0].src, cells[0].src0, used, head, n, rs_z);
+    }
 
     return success;
 }
@@ -679,6 +716,12 @@ bool llama_memory_recurrent::find_slot(const llama_ubatch & ubatch) {
                 cells[i].src0 = cells[i].src;
             }
             cells[i].src = i; // avoid moving or clearing twice
+        }
+
+        if (getenv("GGML_DUMP_RSZ")) {
+            fprintf(stderr, "[rsz] find_slot: min=%d max=%d rs_z=%d cells[0].src=%d cells[0].pos=%d cells[0].seqid_empty=%d refcounts[0]=%d size=%u used=%u n_seq_tokens=%u n_seqs=%u n_seq_id=%d seq_id0=%d pos0=%d\n",
+                min, max, rs_z, cells[0].src, cells[0].pos, (int)cells[0].seq_id.empty(), refcounts[0], size, used, n_seq_tokens, n_seqs,
+                (int)ubatch.n_seq_id[0], (int)ubatch.seq_id[0][0], ubatch.pos[0]);
         }
     }
 
@@ -1183,6 +1226,10 @@ llama_memory_recurrent_context::llama_memory_recurrent_context(
 
 llama_memory_recurrent_context::~llama_memory_recurrent_context() = default;
 
+llama_memory_recurrent::~llama_memory_recurrent() {
+    if (getenv("KV_CLEAR_DBG")) fprintf(stderr, "[memdbg] llama_memory_recurrent DTOR this=%p\n", (void*)this);
+}
+
 bool llama_memory_recurrent_context::next() {
     assert(status == LLAMA_MEMORY_STATUS_SUCCESS);
 
@@ -1204,6 +1251,9 @@ bool llama_memory_recurrent_context::apply() {
         return true;
     }
 
+    if (getenv("GGML_DUMP_RSZ")) {
+        fprintf(stderr, "[rsz] APPLY i_next=%zu n_tokens=%u pos0=%d\n", i_next, ubatches[i_next].n_tokens, ubatches[i_next].pos[0]);
+    }
     mem->find_slot(ubatches[i_next]);
 
     return true;

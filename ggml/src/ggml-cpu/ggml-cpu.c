@@ -49,6 +49,9 @@
 
 #ifdef GGML_USE_LLAMAFILE
 #include "llamafile/sgemm.h"
+
+// debug tooling: incremented once per graph compute (GGML_DUMP_NODE run id)
+static int ggml_cpu_dump_run = 0;
 #endif
 
 #ifdef GGML_USE_CPU_RISCV64_SPACEMIT
@@ -1324,12 +1327,20 @@ static void ggml_compute_forward_mul_mat_id_q4nx(
     const int64_t n_tc = in / 256;
     const int64_t tpe  = ne01;
     const int64_t n_ex = ne02;
-    const int64_t n_tok = ne11;
+    const int64_t n_tok = ne11 * ne12 * ne13;   // all batch dims (tokens), mirror ggml_mul_mat_id
     const int64_t n_sel = ids->ne[0];
     GGML_ASSERT(src0->type == GGML_TYPE_Q4NX && src1->type == GGML_TYPE_F32);
     GGML_ASSERT(ne00 == 8192 && in % 256 == 0 && tpe % n_tc == 0);
 
     const int32_t * ids_data = (const int32_t *) ids->data;
+    if (getenv("Q4NX_ID_DBG")) {
+        fprintf(stderr, "[q4nxid] dst nb0=%zu nb1=%zu nb2=%zu nb3=%zu ne=%lld,%lld,%lld,%lld\n", dst->nb[0], dst->nb[1], dst->nb[2], dst->nb[3], (long long)dst->ne[0], (long long)dst->ne[1], (long long)dst->ne[2], (long long)dst->ne[3]);
+        fprintf(stderr, "[q4nxid] ne00=%lld ne01=%lld ne02=%lld | src1 ne=%lld,%lld,%lld,%lld nb1=%zu nb2=%zu | tpe=%lld n_tc=%lld n_tok=%lld n_sel=%lld total=%lld\n",
+            (long long)ne00, (long long)ne01, (long long)ne02,
+            (long long)src1->ne[0], (long long)src1->ne[1], (long long)src1->ne[2], (long long)src1->ne[3],
+            src1->nb[1], src1->nb[2],
+            (long long)tpe, (long long)n_tc, (long long)n_tok, (long long)n_sel, (long long)(n_tok*n_sel));
+    }
 
     float * tile = (float *) malloc(8192 * sizeof(float));
     if (!tile) { GGML_ABORT("q4nx id mm oom"); }
@@ -1342,12 +1353,18 @@ static void ggml_compute_forward_mul_mat_id_q4nx(
         const int64_t j = t_ / n_sel;        // token
         const int64_t si = t_ % n_sel;       // selected slot
 
-        const int32_t e = ids_data[si * n_tok + j];
+        const int32_t e = *(const int32_t *) ((const char *) ids->data + si * ids->nb[0] + j * ids->nb[1]);
         if (e < 0 || e >= n_ex) continue;
 
         // expert e tiles are contiguous: base = e * tpe * 5120
 
-        const float * src1_col = (const float *) ((const char *) src1->data + j * nb11);
+        // flatten (i11,i12,i13) -> src1 column, mirroring the standard
+        // ggml_mul_mat_id row mapping (row_size stride = nb11).
+        const int64_t i11 = j % ne11;
+        const int64_t i12 = (j / ne11) % ne12;
+        const int64_t i13 = j / (ne11 * ne12);
+        const float * src1_col = (const float *) ((const char *) src1->data
+            + (i11 + i12 * ne11 + i13 * ne12 * ne11) * nb11);
         float * dst_o = (float *) ((char *) dst->data + (si * dst->ne[1] + j) * 0); // nb for dims 1/2
         // dst layout [rows, n_sel, n_tok]: element (o, si, j) at ((j*n_sel)+si)*rows + o? ggml ne-minor: (o,si,j): o + rows*(si + n_sel*j)
         const size_t dst_stride_j = (size_t) dst->nb[1]; // offset per si within token j? nb: nb1=rowlen*rows?
@@ -1360,11 +1377,24 @@ static void ggml_compute_forward_mul_mat_id_q4nx(
             dst_row[o * (dst->nb[0] / sizeof(float))] = 0.0f;
         }
 
+        if (getenv("Q4NX_ID_DBG") && j == 0 && si == 0) {
+            fprintf(stderr, "[q4nxid] before tile0: dst_row[0..7]:");
+            for (int z = 0; z < 8; z++) fprintf(stderr, " %.6f", dst_row[z * (dst->nb[0]/sizeof(float))]);
+            fprintf(stderr, "\n");
+        }
         for (int64_t t = 0; t < tpe; ++t) {
             const int64_t tr = t / n_tc;
             const int64_t tc = t % n_tc;
             const void * tile_data = (const void *) ((const char *) src0->data + ((int64_t)e * tpe + t) * 5120);
             dequantize_row_q4nx(tile_data, tile, 8192);
+            if (getenv("Q4NX_ID_DBG") && t_ == 0 && t == 0) {
+                fprintf(stderr, "[q4nxid] e=%d tile0 first16:", (int)e);
+                for (int z = 0; z < 16; z++) fprintf(stderr, " %.6f", tile[z]);
+                fprintf(stderr, "\n");
+                fprintf(stderr, "[q4nxid] tile row8 (r=1) first8:");
+                for (int z = 0; z < 8; z++) fprintf(stderr, " %.6f", tile[256 + z]);
+                fprintf(stderr, "\n");
+            }
             for (int64_t r = 0; r < 32; ++r) {
                 const int64_t o = tr * 32 + r;
                 const float * wrow = tile + r * 256;
@@ -1374,6 +1404,11 @@ static void ggml_compute_forward_mul_mat_id_q4nx(
                 }
                 dst_row[o * (dst->nb[0] / sizeof(float))] += sum;
             }
+        if (getenv("Q4NX_ID_DBG") && si == 0 && tpe == 1024) {
+            fprintf(stderr, "[q4nxid] j=%d e=%d src1_col[0..3]: %.6f %.6f %.6f %.6f | final dst_row[0..3]: %.6f %.6f %.6f %.6f\n",
+                (int)j, (int)e, src1_col[0], src1_col[1], src1_col[2], src1_col[3],
+                dst_row[0], dst_row[1], dst_row[2], dst_row[3]);
+        }
         }
     }
     free(tile);
@@ -1853,20 +1888,6 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
         return;
     }
 
-    if (getenv("GGML_DUMP_NODE") && params->ith == 0) {
-        const char * filter = getenv("GGML_DUMP_FILTER");
-        if (!filter || strstr(tensor->name, filter)) {
-            static int dump_seq = 0;
-            char path[512];
-            snprintf(path, sizeof path, "/tmp/nodedump/%03d_%lldx%lldx%lldx%lld_%s_%s.bin", dump_seq++,
-                (long long)tensor->ne[0], (long long)tensor->ne[1], (long long)tensor->ne[2], (long long)tensor->ne[3],
-                ggml_op_name(tensor->op), tensor->name[0] ? tensor->name : "anon");
-            FILE * df = fopen(path, "wb");
-            if (df) { size_t nb = ggml_nbytes(tensor); fwrite(tensor->data, 1, nb, df); fclose(df); }
-            fprintf(stderr, "[dump] %s\n", path);
-        }
-    }
-
     switch (tensor->op) {
         case GGML_OP_DUP:
             {
@@ -2302,11 +2323,21 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
         if (!filter || strstr(tensor->name, filter)) {
             static int dump_seq = 0;
             char path[512];
-            snprintf(path, sizeof path, "/tmp/nodedump/%03d_%s_%s.bin", dump_seq++,
+            snprintf(path, sizeof path, "/tmp/nodedump/r%02d_%03d_%lldx%lldx%lldx%lld_%s_%s.bin", ggml_cpu_dump_run, dump_seq++,
+                (long long)tensor->ne[0], (long long)tensor->ne[1], (long long)tensor->ne[2], (long long)tensor->ne[3],
                 ggml_op_name(tensor->op), tensor->name[0] ? tensor->name : "anon");
             FILE * df = fopen(path, "wb");
             if (df) { size_t nb = ggml_nbytes(tensor); fwrite(tensor->data, 1, nb, df); fclose(df); }
             fprintf(stderr, "[dump] %s\n", path);
+            if (getenv("GGML_DUMP_MUL_SRC") && tensor->op == GGML_OP_MUL) {
+                for (int si = 0; si < 2 && tensor->src[si]; si++) {
+                    const struct ggml_tensor * s = tensor->src[si];
+                    snprintf(path, sizeof path, "/tmp/nodedump/mulsrc_%lldx%lldx%lldx%lld_%s_src%d.bin",
+                        (long long)s->ne[0], (long long)s->ne[1], (long long)s->ne[2], (long long)s->ne[3], tensor->name[0]?tensor->name:"anon", si);
+                    FILE * sf = fopen(path, "wb");
+                    if (sf) { size_t nb = ggml_nbytes(s); fwrite(s->data, 1, nb, sf); fclose(sf); }
+                }
+            }
         }
     }
 }
@@ -3258,6 +3289,9 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
     for (int node_n = 0; node_n < cgraph->n_nodes && atomic_load_explicit(&tp->abort, memory_order_relaxed) != node_n; node_n++) {
         struct ggml_tensor * node = cgraph->nodes[node_n];
 
+        if (node_n == 0) {
+            ggml_cpu_dump_run++;   // one graph compute = one "run" (debug tooling)
+        }
         if (ggml_op_is_empty(node->op)) {
             // skip NOPs
             continue;

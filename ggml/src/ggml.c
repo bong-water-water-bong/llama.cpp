@@ -3389,7 +3389,7 @@ struct ggml_tensor * ggml_mul_mat_id_q4nx(
     const int64_t tpe  = as->ne[1];
     GGML_ASSERT(n_tc >= 1 && tpe % n_tc == 0);
     const int64_t rows = (tpe / n_tc) * 32;
-    const int64_t ne[4] = { rows, ids->ne[0], b->ne[2], 1 };
+    const int64_t ne[4] = { rows, ids->ne[0], b->ne[1] * b->ne[2] * b->ne[3], 1 };
     struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
 
     result->op     = GGML_OP_MUL_MAT_ID_Q4NX;

@@ -5111,6 +5111,18 @@ static void ggml_compute_forward_set_rows_impl(
     const int ith = params->ith;
     const int nth = params->nth;
 
+    if (getenv("SETROWS_DBG") && ith == 0) {
+        // dump the position indices (src1)
+        fprintf(stderr, "[setrows] dst ne=%lld,%lld src0 ne=%lld,%lld src1 ne=%lld,%lld idx:", (long long)ne0, (long long)ne1, (long long)ne00, (long long)ne01, (long long)src1->ne[0], (long long)src1->ne[1]);
+        int bad = 0;
+        for (int64_t j = 0; j < src1->ne[0] && j < 32; j++) {
+            int64_t v = *(int64_t *)((char*)src1->data + j*((int64_t)src1->nb[0]));
+            fprintf(stderr, " %lld", (long long)v);
+            if (v < 0 || v >= ne1) bad++;
+        }
+        fprintf(stderr, "  (bad_oob=%d)\n", bad);
+    }
+
     // rows per thread
     const int64_t dr = (nr + nth - 1)/nth;
 
@@ -9107,6 +9119,41 @@ static void ggml_compute_forward_flash_attn_ext_f16(
 
     const int ith = params->ith;
     const int nth = params->nth;
+
+    if (getenv("GGML_DUMP_FA") && ith == 0) {
+        auto dump_t = [](const char * tag, const ggml_tensor * t) {
+            FILE * f = fopen(tag, "wb");
+            if (f) {
+                int64_t ne[4] = {t->ne[0], t->ne[1], t->ne[2], t->ne[3]};
+                int64_t nb[4] = {(int64_t)t->nb[0], (int64_t)t->nb[1], (int64_t)t->nb[2], (int64_t)t->nb[3]};
+                int64_t type = (int64_t)t->type;
+                fwrite(ne, sizeof(int64_t), 4, f);
+                fwrite(nb, sizeof(int64_t), 4, f);
+                fwrite(&type, sizeof(int64_t), 1, f);
+                const size_t es = ggml_type_size(t->type);
+                for (int64_t i3 = 0; i3 < ne[3]; i3++)
+                for (int64_t i2 = 0; i2 < ne[2]; i2++)
+                for (int64_t i1 = 0; i1 < ne[1]; i1++)
+                    fwrite((char *)t->data + i1*nb[1] + i2*nb[2] + i3*nb[3], 1, (size_t)(ne[0]*es), f);
+                fclose(f);
+            }
+        };
+        static int fa_dump_seq = 0;
+        if (getenv("FA_DBG")) {
+            fprintf(stderr, "[fadbg] seq=%d q=%p(%lldx%lldx%lldx%lld nb=%zu,%zu,%zu,%zu) k=%p(%lldx%lldx%lldx%lld nb=%zu,%zu,%zu,%zu) v=%p(%lldx%lldx%lldx%lldx%lldx%lldx%lld nb=%zu,%zu,%zu,%zu) n_tokens=%d\n",
+                fa_dump_seq,
+                (void*)q->data, (long long)q->ne[0], (long long)q->ne[1], (long long)q->ne[2], (long long)q->ne[3], q->nb[0], q->nb[1], q->nb[2], q->nb[3],
+                (void*)k->data, (long long)k->ne[0], (long long)k->ne[1], (long long)k->ne[2], (long long)k->ne[3], k->nb[0], k->nb[1], k->nb[2], k->nb[3],
+                (void*)v->data, (long long)v->ne[0], (long long)v->ne[1], (long long)v->ne[2], (long long)v->ne[3], v->nb[0], v->nb[1], v->nb[2], v->nb[3],
+                (int)N);
+        }
+        char path[512];
+        snprintf(path, sizeof path, "/tmp/fainput/%03d_q.bin", fa_dump_seq); dump_t(path, q);
+        snprintf(path, sizeof path, "/tmp/fainput/%03d_k.bin", fa_dump_seq); dump_t(path, k);
+        snprintf(path, sizeof path, "/tmp/fainput/%03d_v.bin", fa_dump_seq); dump_t(path, v);
+        if (dst->src[3]) { snprintf(path, sizeof path, "/tmp/fainput/%03d_mask.bin", fa_dump_seq); dump_t(path, dst->src[3]); }
+        fa_dump_seq++;
+    }
 
     // When use_ref is set, force the vec-only reference implementation (no tiling, no KV-chunking)
     const bool use_ref = params->use_ref;

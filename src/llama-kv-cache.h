@@ -114,7 +114,7 @@ public:
         const  layer_reuse_cb & reuse,
         const  layer_share_cb & share);
 
-    ~llama_kv_cache() = default;
+    ~llama_kv_cache();
 
     //
     // llama_memory_i

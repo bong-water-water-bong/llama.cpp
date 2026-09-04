@@ -217,6 +217,25 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
     fprintf(stderr, "[zaya] dbg: n_rot=%lld head_k=%d n_head=%d n_head_kv=%d ssm_d_conv=%u n_ff_exp=%u n_expert=%u n_embd_s=%u\n",
         (long long)n_rot, (int)hparams.n_embd_head_k(), (int)hparams.n_head(), (int)hparams.n_head_kv(),
         hparams.ssm_d_conv, hparams.n_ff_exp, hparams.n_expert, hparams.n_embd_s());
+    if (getenv("ZAYA_DBG_TENSORS")) {
+        fprintf(stderr, "[zaya] layer0 tensors: attn_norm=%p post_attn_norm=%p res_scale_hs=%p res_scale_res=%p res_scale_hs_mlp=%p res_scale_res_mlp=%p ffn_norm=%p\n",
+            (void*)model.layers[0].attn_norm, (void*)model.layers[0].post_attn_norm,
+            (void*)model.layers[0].res_scale_hs, (void*)model.layers[0].res_scale_res,
+            (void*)model.layers[0].res_scale_hs_mlp, (void*)model.layers[0].res_scale_res_mlp,
+            (void*)model.layers[0].ffn_norm);
+        auto dbg_t = [](const char * tag, const ggml_tensor * t) {
+            if (!t) { fprintf(stderr, "[zaya]   %s = NULL\n", tag); return; }
+            fprintf(stderr, "[zaya]   %s ne=%lld,%lld,%lld,%lld type=%d dataptr=%p view_src=%p op=%d\n", tag,
+                (long long)t->ne[0], (long long)t->ne[1], (long long)t->ne[2], (long long)t->ne[3], (int)t->type, (void*)t->data, (void*)t->view_src, (int)t->op);
+            if (t->data && t->type == GGML_TYPE_F32) { const float * p = (const float *)t->data; fprintf(stderr, "[zaya]     %s[0..3] = %g %g %g %g\n", tag, p[0], p[1], p[2], p[3]); }
+        };
+        dbg_t("res_scale_res", model.layers[0].res_scale_res);
+        dbg_t("res_scale_res_b", model.layers[0].res_scale_res_b);
+        dbg_t("res_scale_hs", model.layers[0].res_scale_hs);
+        dbg_t("wq", model.layers[0].wq);
+        dbg_t("wk", model.layers[0].wk);
+        dbg_t("wo", model.layers[0].wo);
+    }
 
     const int n_layer_run = getenv("ZAYA_1LAYER") ? 1 : n_layer;
     for (int il = 0; il < n_layer_run; ++il) {
@@ -315,6 +334,10 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
         cb(last_conv_states, "cca_last_conv_states", il);
 
         const auto kv_head = inp_recr->mctx->get_head();
+        if (getenv("ZAYA_DBG_HEAD")) {
+            fprintf(stderr, "[zaya] il=%d kv_head=%u n_seqs=%lld n_rs=%u rs_z=%d\n", il, kv_head, (long long)n_seqs,
+                inp_recr->mctx->get_n_rs(), inp_recr->mctx->get_rs_z());
+        }
         ggml_tensor * conv_state_update_target = ggml_view_2d(ctx0, cca_state_all, conv_state_size, n_seqs,
                 cca_state_all->nb[1],
                 kv_head*cca_state_size*ggml_element_size(cca_state_all));

@@ -61,6 +61,13 @@ static void apply_binary_op(const ggml_compute_params * params, ggml_tensor * ds
     const auto [ir0, ir1] = get_thread_range(params, src0);
     const bool is_src1_contiguous_rows = ggml_is_contiguous_rows(src1);
 
+    if (getenv("GGML_DUMP_MUL_CHK2") && params->ith == 0) {
+        fprintf(stderr, "[mulchk2] %s nth=%d ir0=%lld ir1=%lld ne00=%lld ne01=%lld ne10=%lld contig=%d nr0=%lld dstptr=%p src0ptr=%p src1ptr=%p\n",
+            dst->name[0]?dst->name:"anon", (int)params->nth, (long long)ir0, (long long)ir1,
+            (long long)ne00, (long long)ne01, (long long)ne10,
+            (int)is_src1_contiguous_rows, (long long)(ne00/ne10), (void*)dst->data, (void*)src0->data, (void*)src1->data);
+    }
+
 #ifdef GGML_USE_ACCELERATE
     vDSP_fn_t vDSP_op = nullptr;
     // TODO - avoid the f32-only check using type 'trait' lookup tables and row-based src-to-float conversion functions
@@ -103,7 +110,13 @@ static void apply_binary_op(const ggml_compute_params * params, ggml_tensor * ds
                     }
                 }
 #endif
+                if (getenv("GGML_DUMP_MUL_CHK3") && params->ith == 0 && dst->name[0]) {
+                    fprintf(stderr, "[mulchk3] %s BEFORE dst[0]=%g src0[0]=%g src1[0]=%g\n", dst->name, (double)((float*)dst_ptr)[0], (double)((float*)src0_ptr)[0], (double)((float*)src1_ptr)[0]);
+                }
                 vec_binary_op_contiguous<op>(ne10, dst_ptr + r*ne10, src0_ptr + r*ne10, src1_ptr);
+                if (getenv("GGML_DUMP_MUL_CHK3") && params->ith == 0 && dst->name[0]) {
+                    fprintf(stderr, "[mulchk3] %s AFTER  dst[0]=%g\n", dst->name, (double)((float*)dst_ptr)[0]);
+                }
             }
         } else {
             vec_binary_op_non_contiguous<op>(ne0, ne10, nb10, dst_ptr, src0_ptr, src1_ptr);
@@ -147,6 +160,25 @@ void ggml_compute_forward_sub(const ggml_compute_params * params, ggml_tensor * 
 
 void ggml_compute_forward_mul(const ggml_compute_params * params, ggml_tensor * dst) {
     binary_op<op_mul>(params, dst);
+
+    if (getenv("GGML_DUMP_MUL_CHK") && params->ith == 0 && dst->src[0] && dst->src[1]) {
+        const ggml_tensor * s0 = dst->src[0];
+        const ggml_tensor * s1 = dst->src[1];
+        if (s0->type == GGML_TYPE_F32 && s1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32 && s1->ne[0] == s0->ne[0]) {
+            const float * x = (const float *) s0->data;
+            const float * y = (const float *) s1->data;
+            const float * z = (const float *) dst->data;
+            float maxdiff = 0.0f;
+            for (int i = 0; i < (int) s0->ne[0] && i < 8; i++) {
+                float expect = x[i] * y[i];
+                float d = fabsf(z[i] - expect);
+                if (d > maxdiff) maxdiff = d;
+            }
+            fprintf(stderr, "[mulchk] %s ne=%lld,%lld,%lld,%lld src0[0..3]=%g %g %g %g src1[0..3]=%g %g %g %g dst[0..3]=%g %g %g %g maxdiff=%g\n",
+                dst->name[0]?dst->name:"anon", (long long)dst->ne[0],(long long)dst->ne[1],(long long)dst->ne[2],(long long)dst->ne[3],
+                x[0],x[1],x[2],x[3], y[0],y[1],y[2],y[3], z[0],z[1],z[2],z[3], maxdiff);
+        }
+    }
 }
 
 void ggml_compute_forward_div(const ggml_compute_params * params, ggml_tensor * dst) {
