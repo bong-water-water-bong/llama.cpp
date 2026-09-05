@@ -229,3 +229,30 @@ c. MoE expert path details (MUL_MAT_ID with the type42 custom CPU op today;
 d. T3-A type42->F32 loader dequant (llama-model-loader create_tensor +
    load_data scatter) - then standard HRX MUL_MAT on bf16/f32 weights.
 e. numeric gate (oracle 9079...) + >=15-17 t/s single-seq + multi-seq (task 5).
+Round 7 (2026-09-05): VIEW blocker characterized precisely (instrumented, then
+stripped - tree clean, qwen still pp256 10856 / tg64 241).
+
+The failing node in the zaya -ngl 99 decode is the Vcur flash-attention feed:
+  VIEW "Vcur-0 (cont) (reshaped) (view)" [128,2,2]->[256,2], input from a MUL
+  (in the HRX subgraph), consumer SET_ROWS/KV.
+Import diagnostics: the view output value is NOT aliased (alias_source=-1) and
+same_storage(input,output)=0 because the ggml view tensor's view_src POINTS
+PAST its immediate src0 - the tensor is a (cont)->(reshape)->(view) chain where
+view_src != src0 (cont materialized a separate buffer). The HRX import only
+aliases when output.view_src == the in-graph input tensor; a view over a
+cont/reshape chain with a dangling view_src becomes an opaque separate-storage
+value, so the dispatch scheduler cannot elide the VIEW and no VIEW dispatch
+exists -> "unsupported HRX node".
+
+Fix candidates (NOT attempted - risk to the working qwen path, which also has
+cont->reshape->view chains that alias correctly):
+  a. import: for layout-alias ops with equal element count + contiguous in/out,
+     alias the output to the input value (record view_offs when nonzero). Must
+     verify against qwen (its chains alias via view_src already; the change
+     should be a no-op for them) and confirm the zaya cont's real buffer is the
+     one bound.
+  b. llama graph side: avoid the (cont)->reshape->view chain over a CPU-derived
+     tensor (make the zaya attention build feed flash-attn a directly-shaped
+     contiguous value).
+Then the remaining port map (from round 6): conv/SSM ops, MoE expert path, T3-A
+type42->F32 dequant, numeric + perf gate.
