@@ -279,3 +279,20 @@ B. SPEED: ~1 t/s because the type42 expert GEMMs (the per-layer cost) run the
 
 State: branch fix/hrx-ngl-init-order (15 commits), spec rounds 1-8, all qwen
 wins intact. Stale fork zaya bar: 15.2-16.8 t/s.
+Round 9 (2026-09-05): GGML_HRX_DISABLE knob landed (3de16b1); pure-CPU zaya = oracle
+- create_registry_context honors GGML_HRX_DISABLE=1 (0 devices). Use for pure-CPU
+  reference runs: env GGML_HRX_DISABLE=1 <binary> -ngl 0.
+- RESULT: current-tree zaya-q4nx-c43 CPU decode reproduces oracle 9079/"Paris".
+  Round 6-8 changes (relayout alias, SOFT_MAX/ARGSORT/GET_ROWS/ROPE claims,
+  MUL_MAT carve-out, empty guard) are numerically EXONERATED on the CPU path.
+- The ngl0-with-HRX-live divergence ("Consultation Financial") = type42 weights
+  pinned on HRX0_HOST + claimable f32 ops (RMS_NORM/ROPE/...) routed to HRX
+  host kernels, whose numerics differ from CPU kernels. Expected mixed-kernel
+  artifact of the half-ported state; resolves when zaya runs coherently on one
+  path.
+- PATH FORWARD (unlocked): T3-A type42->F32 dequant-at-load (llama-model-loader
+  create_tensor + load_data scatter, logical dims from the expected ne) so the
+  expert GEMMs become standard HRX MUL_MAT like qwen; then validate whole-graph
+  HRX decode vs the GGML_HRX_DISABLE=1 CPU oracle per-op (ZAYA_1LAYER), then
+  multi-seq + perf gate. The refreshed-fork zaya GPU port spec is complete
+  (rounds 1-9): the remaining work is T3-A + validation, both well-scoped.
