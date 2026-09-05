@@ -434,7 +434,13 @@ GraphProgramMatch GraphProgram::match_current_graph(const ggml_cgraph & current_
             result.status.log("external value %d is missing from the current graph", id.value);
             return result;
         }
-        result.external_bindings.push_back({ id, tensor_by_value[static_cast<size_t>(id.value)] });
+        const ggml_tensor * t = tensor_by_value[static_cast<size_t>(id.value)];
+        result.external_bindings.push_back({ id, t });
+        if (getenv("GGML_HRX_BIND_DBG")) {
+            fprintf(stderr, "[bind] external value %d -> tensor %s type=%d ne=%lld,%lld,%lld,%lld nbytes=%zu buf=%p\n",
+                id.value, t->name ? t->name : "(anon)", (int)t->type, (long long)t->ne[0], (long long)t->ne[1],
+                (long long)t->ne[2], (long long)t->ne[3], ggml_nbytes(t), (void*)(t->buffer));
+        }
     }
     return result;
 }

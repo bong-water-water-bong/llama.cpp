@@ -810,10 +810,17 @@ static bool device_supports_op(ggml_backend_dev_t device, const ggml_tensor * op
     if (op == nullptr) {
         return false;
     }
-    // Empty tensors (0 elements, e.g. 0-token ubatches during slot rollback)
-    // have no kernel path; split to CPU where empty ops no-op cleanly.
-    if (ggml_nelements(op) == 0 || (op->src[0] != nullptr && ggml_nelements(op->src[0]) == 0)) {
+    // Empty tensors (0 elements, e.g. 0-token ubatches / 0-width recurrent
+    // state slices during decode) have no kernel path and break the HRX
+    // external-binding builder (length-0 bindings are a hard error). Split to
+    // CPU where empty ops no-op cleanly.
+    if (ggml_nelements(op) == 0) {
         return false;
+    }
+    for (int i = 0; i < GGML_MAX_SRC; ++i) {
+        if (op->src[i] != nullptr && ggml_nelements(op->src[i]) == 0) {
+            return false;
+        }
     }
     const bool supported_binary = supported_binary_f32_tensor(op);
     if (supported_binary) {

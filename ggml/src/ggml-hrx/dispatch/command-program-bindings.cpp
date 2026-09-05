@@ -37,15 +37,23 @@ CommandProgramBindings CommandProgramBindings::from_bindings(std::vector<Command
                                                              const Status &                     errors) {
     CommandProgramBindings result;
     result.status.append(errors);
-    result.bindings_ = std::move(bindings);
-    for (const CommandProgramBinding & binding : result.bindings_) {
+    // Drop zero-length external bindings: a 0-byte external (e.g. a 0-width
+    // recurrent-state slice during decode) carries no data, so kernels that
+    // touch it are no-ops. Previously this hard-errored and killed any zaya
+    // decode once the recurrent graph produced a 0-row slice.
+    std::vector<CommandProgramBinding> kept;
+    kept.reserve(bindings.size());
+    for (const CommandProgramBinding & binding : bindings) {
+        if (binding.length == 0) {
+            continue;
+        }
         if (binding.buffer == nullptr && binding.host_data == nullptr) {
             result.status.log("external value %d has a null binding", binding.value.value);
+            continue;
         }
-        if (binding.length == 0) {
-            result.status.log("external value %d has an empty binding", binding.value.value);
-        }
+        kept.push_back(binding);
     }
+    result.bindings_ = std::move(kept);
     return result;
 }
 
