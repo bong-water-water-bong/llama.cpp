@@ -1281,7 +1281,24 @@ struct ggml_tensor * llama_model_loader::create_tensor(
     }
 
     ggml_tensor * t_meta = get_tensor_meta(tn.str().c_str());
-    ggml_backend_buffer_type_t buft = buft_for_tensor(t_meta);
+    // Q4NX tensors are dequantized to F32/F16 logical layout (T3-A); choose the
+    // buffer type from the CONVERTED type so weights can land on the device
+    // (probing the Q4NX meta only ever yields a host buffer, which forced
+    // host-resident weights and the broken HRX host-execution path at ngl>0).
+    ggml_tensor probe_meta;
+    ggml_tensor * probe = t_meta;
+    if (t_meta != nullptr && t_meta->type == GGML_TYPE_Q4NX) {
+        memset(&probe_meta, 0, sizeof(probe_meta));
+        const bool f16 = getenv("GGML_ZAYA_DEQUANT_F16") != nullptr;
+        probe_meta.type = f16 ? GGML_TYPE_F16 : GGML_TYPE_F32;
+        for (size_t dim = 0; dim < GGML_MAX_DIMS; ++dim) {
+            probe_meta.ne[dim] = dim < ne.size() ? ne.begin()[dim] : 1;
+            probe_meta.nb[dim] = dim == 0 ? ggml_type_size(probe_meta.type)
+                                          : probe_meta.ne[dim-1] * probe_meta.nb[dim-1];
+        }
+        probe = &probe_meta;
+    }
+    ggml_backend_buffer_type_t buft = buft_for_tensor(probe);
     if (buft == nullptr) {
         return nullptr; // return type is ggml_tensor *
     }

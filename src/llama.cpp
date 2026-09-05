@@ -263,6 +263,16 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
         // add RPC servers at the front of the list to minimize network transfers
         model->devices.insert(model->devices.begin(), rpc_servers.begin(), rpc_servers.end());
 
+        // When nothing is offloaded (n_gpu_layers == 0) the graph must run
+        // entirely on CPU: leaving GPU devices in the model device list makes
+        // the context scheduler route non-weight ops to them (the ggml-hrx
+        // host path is not a drop-in CPU replacement and mis-executes / errors
+        // on fine-grained CPU-mixed graphs - qwen3-0.6B ngl0 gave "command
+        // buffer is not in a recording state", zaya diverged silently).
+        if (params.n_gpu_layers == 0) {
+            gpus.clear();
+            igpus.clear();
+        }
         // add GPUs
         model->devices.insert(model->devices.end(), gpus.begin(), gpus.end());
 
