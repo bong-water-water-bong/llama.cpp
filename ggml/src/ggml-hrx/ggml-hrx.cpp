@@ -585,7 +585,12 @@ static bool eager_capability_declared(enum ggml_op op) {
         case GGML_OP_ARGSORT:
         case GGML_OP_CLAMP:
         case GGML_OP_FLASH_ATTN_EXT:
-        case GGML_OP_GET_ROWS:
+        // GET_ROWS is NOT eager-claimed: the loom kernels only cover the qwen
+        // attention-projection pattern (claimed via
+        // supported_qwen_attention_projection_get_rows_tensor). Claiming all
+        // GET_ROWS made the scheduler route large-vocab embedding lookups
+        // (zaya: f32[2048, 262272]) to HRX where compute fails at runtime.
+        // Unclaimed shapes now split to CPU. (1bit-MONSTER zaya port, 2026-09-05)
         case GGML_OP_GLU:
         case GGML_OP_MUL_MAT:
         case GGML_OP_MUL_MAT_ID:
@@ -838,9 +843,12 @@ static std::unique_ptr<ggml_backend_hrx_reg_context> create_registry_context() {
     hrx_status_t status  = hrx_gpu_initialize(0);
     if (hrx_status_is_ok(status)) {
         context->initialized = true;
+        GGML_LOG_INFO("ggml_hrx: init OK\n");
     } else if (hrx_status_code(status) == HRX_STATUS_ALREADY_EXISTS) {
         hrx_status_ignore(status);
+        GGML_LOG_INFO("ggml_hrx: init ALREADY_EXISTS\n");
     } else {
+        GGML_LOG_ERROR("ggml_hrx: hrx_gpu_initialize(0) failed code=%d\n", (int)hrx_status_code(status));
         hrx_status_ignore(status);
         return context;
     }
@@ -848,6 +856,7 @@ static std::unique_ptr<ggml_backend_hrx_reg_context> create_registry_context() {
     if (!HRX_CHECK(hrx_gpu_device_count(&count))) {
         return context;
     }
+    GGML_LOG_INFO("ggml_hrx: device_count=%d\n", count);
     context->device_contexts.reserve(count);
     context->devices.reserve(count);
     for (int i = 0; i < count; ++i) {

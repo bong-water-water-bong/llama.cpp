@@ -161,3 +161,35 @@ Bar for zaya decode (single-seq): stale fork today = pp64 152 t/s, tg32
 Recommendation: treat the refreshed-fork zaya GPU path as a dedicated port
 project (this spec + T3-A). The qwen3-roster FLM-parity goal is already met
 on the refreshed fork (see RESULTS-qwen3-roster-2026-09-05.md).
+
+# Round 4 (2026-09-05): two backend fixes landed; next blocker = HRX program-cache validation
+
+Landed (this session):
+1. llama-memory-recurrent.cpp — recurrent state pinned to CPU when the layer
+   device is HRX (HRX can't run SCALE/conv-family ops on cache_r/cache_s).
+   Removes the "-ngl 99 abort: pre-allocated tensor cache_s_l0 ... cannot run
+   SCALE".
+2. ggml-hrx eager_capability_declared — GET_ROWS no longer eager-claimed
+   (loom kernels only cover the qwen attention-projection GET_ROWS, claimed
+   via supported_qwen_attention_projection_get_rows_tensor). Large-vocab
+   embedding lookups (zaya f32[2048, 262272]) previously routed to HRX and
+   failed at compute ("unsupported HRX node GET_ROWS"); now split to CPU.
+   Regression check: qwen3-0.6B still decodes on HRX (pp256 10868, tg64 239).
+
+Next blocker (precise): after both fixes, zaya -ngl 99 fails with
+  ggml-backend sched graph compute: "node 0 input value 0 metadata does not
+  match current tensor"
+Source: ggml/src/ggml-hrx/runtime/graph-program-cache.cpp bind_current_value()
+— the HRX GraphProgramCache validated a cached program's expected input
+metadata against the current tensors and it differs. Working hypothesis: the
+mixed CPU/HRX split (embed + recr on CPU) makes the HRX subgraph's input copy
+tensors (CPU->HRX edges) fresh per graph with metadata the program-cache key
+did not anticipate (program key = command structure, not full tensor metadata),
+so prefill->decode or per-ubatch rebuilds collide on the key with different
+input shapes. Next steps: (a) reproduce with a tiny CPU-split graph to confirm,
+(b) extend the program shape key to include input tensor ne/type metadata, or
+(c) bypass: make the first HRX op's input a stable-shape buffer.
+
+Then remaining for the zaya port: conv/SSM/grouped-conv op coverage on HRX +
+the type42->F32 loader dequant (T3-A) + numeric gate (oracle 9079...) +
+>= 15-17 t/s single-seq.
