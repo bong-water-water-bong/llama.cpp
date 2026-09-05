@@ -14,6 +14,16 @@
 #include <future>
 #include <regex>
 
+// Q4NX (GGML_TYPE_Q4NX = 43) load-time dequant support: the tile-framed
+// 5120-byte blocks are dequantized to F32 logical layout in the model loader
+// (T3-A). block_q4nx is opaque here (pointer-only use); dequantize_row_q4nx is
+// exported by libggml-base (ggml-quants.c).
+typedef struct ggml_block_q4nx_loader {
+    unsigned char data[5120];
+} ggml_block_q4nx_loader;
+extern "C" void dequantize_row_q4nx(const ggml_block_q4nx_loader * x, float * y, long long k);
+
+
 static const size_t kiB = 1024;
 static const size_t MiB = 1024*kiB;
 static const size_t GiB = 1024*MiB;
@@ -697,6 +707,19 @@ llama_model_loader::llama_model_loader(
     n_kv      = gguf_get_n_kv(metadata);
     n_tensors = weights_map.size();
 
+    // Q4NX (1bit-MONSTER, GGML_TYPE_Q4NX) tensors are dequantized to F32
+    // logical layout at load (T3-A) - they need real buffers, so mmap cannot
+    // be used for the whole model.
+    if (this->use_mmap) {
+        for (const auto & entry : weights_map) {
+            if (entry.second.tensor != nullptr && entry.second.tensor->type == GGML_TYPE_Q4NX) {
+                this->use_mmap = false;
+                LLAMA_LOG_INFO("%s: model has Q4NX tensors - mmap disabled for load-time dequant\n", __func__);
+                break;
+            }
+        }
+    }
+
     fver = (enum llama_fver) gguf_get_version(metadata);
 
     LLAMA_LOG_INFO("%s: loaded meta data with %d key-value pairs and %d tensors from %s (version %s)\n",
@@ -1281,8 +1304,32 @@ struct ggml_tensor * llama_model_loader::create_tensor(
 
     const bool duplicated = flags & TENSOR_DUPLICATED;
 
-    struct ggml_tensor * tensor = ggml_dup_tensor(ctx, cur);
-    ggml_set_name(tensor, ggml_get_name(cur));
+    struct ggml_tensor * tensor;
+    if (cur->type == GGML_TYPE_Q4NX) {
+        // T3-A: dequantize the tile-framed Q4NX weight ([8192, n_tiles(, n_expert)])
+        // into a F32 tensor of the logical layout (ne as expected by the arch).
+        // Tile t=tr*n_tc+tc holds logical rows [tr*32,+32) x cols [tc*256,+256);
+        // the fill happens in load_data_for().
+        struct ggml_tensor t_meta;
+        memset(&t_meta, 0, sizeof(t_meta));
+        const bool f16 = getenv("GGML_ZAYA_DEQUANT_F16") != nullptr;
+        t_meta.type = f16 ? GGML_TYPE_F16 : GGML_TYPE_F32;
+        for (size_t dim = 0; dim < GGML_MAX_DIMS; ++dim) {
+            t_meta.ne[dim] = dim < ne.size() ? ne.begin()[dim] : 1;
+            GGML_ASSERT(t_meta.ne[dim] >= 1);
+            t_meta.nb[dim] = dim == 0 ? ggml_type_size(t_meta.type)
+                                      : t_meta.ne[dim-1] * t_meta.nb[dim-1];
+        }
+        ggml_set_name(&t_meta, ggml_get_name(cur));
+        tensor = ggml_dup_tensor(ctx, &t_meta);
+        ggml_set_name(tensor, ggml_get_name(cur));
+        LLAMA_LOG_INFO("%s: Q4NX -> F32 logical dequant: %s ne=%lld,%lld,%lld,%lld\n", __func__,
+            ggml_get_name(cur), (long long)tensor->ne[0], (long long)tensor->ne[1],
+            (long long)tensor->ne[2], (long long)tensor->ne[3]);
+    } else {
+        tensor = ggml_dup_tensor(ctx, cur);
+        ggml_set_name(tensor, ggml_get_name(cur));
+    }
 
     if (duplicated) {
         size_data += ggml_nbytes(cur);
@@ -1389,8 +1436,73 @@ void llama_model_loader::get_mapping_range(size_t * first, size_t * last, void *
     }
 }
 
+// T3-A: dequantize a tile-framed Q4NX source tensor into the F32 logical tensor
+// created by create_tensor(). Source tile t=tr*n_tc+tc holds logical rows
+// [tr*32, tr*32+32) x cols [tc*256, tc*256+256) of the weight; for expert (3D)
+// tensors each expert owns tpe contiguous tiles.
+static void load_q4nx_scatter(struct ggml_tensor * cur, const uint8_t * src, const ggml_tensor * w_meta) {
+    const int64_t n_tiles  = (int64_t)(ggml_nbytes(w_meta) / sizeof(ggml_block_q4nx_loader));
+    const int64_t n_expert = cur->ne[2] > 1 ? cur->ne[2] : 1;
+    GGML_ASSERT(n_tiles % n_expert == 0);
+    const int64_t tpe = n_tiles / n_expert;   // tiles per expert
+    const int64_t K   = cur->ne[0];           // logical contract dim
+    const int64_t N_e = cur->ne[1];           // logical rows per expert
+    GGML_ASSERT(K % 256 == 0 && N_e % 32 == 0);
+    const int64_t n_tc = K / 256;
+    const int64_t n_tr = tpe / n_tc;
+    GGML_ASSERT(n_tr * 32 == N_e);
+
+    const bool   to_f16 = cur->type == GGML_TYPE_F16;
+    float tile[8192];
+    ggml_fp16_t hrow[256];
+    const int64_t ne1 = cur->ne[1];
+    for (int64_t e = 0; e < n_expert; ++e) {
+        for (int64_t tt = 0; tt < tpe; ++tt) {
+            const int64_t tr = tt / n_tc;
+            const int64_t tc = tt % n_tc;
+            const ggml_block_q4nx_loader * b = (const ggml_block_q4nx_loader *)(src + (size_t)(e * tpe + tt) * sizeof(ggml_block_q4nx_loader));
+            dequantize_row_q4nx(b, tile, 8192);
+            for (int64_t r = 0; r < 32; ++r) {
+                const int64_t n = tr * 32 + r;   // logical row within the expert
+                const int64_t base = (e * ne1 + n) * K;
+                if (to_f16) {
+                    for (int64_t c = 0; c < 256; ++c) {
+                        hrow[c] = ggml_fp32_to_fp16(tile[r * 256 + c]);
+                    }
+                    ggml_fp16_t * dst = (ggml_fp16_t *) cur->data + (base + tc * 256);
+                    memcpy(dst, hrow, 256 * sizeof(ggml_fp16_t));
+                } else {
+                    float * row = (float *) cur->data + base;
+                    for (int64_t c = 0; c < 256; ++c) {
+                        row[tc * 256 + c] = tile[r * 256 + c];
+                    }
+                }
+            }
+        }
+    }
+}
+
 void llama_model_loader::load_data_for(struct ggml_tensor * cur) const {
     const auto & w = require_weight(ggml_get_name(cur));
+
+    if (w.tensor != nullptr && w.tensor->type == GGML_TYPE_Q4NX) {
+        // cur is the F32 logical tensor created by create_tensor(); the file
+        // holds the tile-framed Q4NX bytes (ggml_nbytes(w.tensor) of them).
+        GGML_ASSERT(cur->type == GGML_TYPE_F32 && cur->data != nullptr);
+        const size_t n_src = ggml_nbytes(w.tensor);
+        std::vector<uint8_t> buf(n_src);
+        if (use_mmap) {
+            const auto & mapping = mappings.at(w.idx);
+            memcpy(buf.data(), (uint8_t *) mapping->addr() + w.offs, n_src);
+        } else {
+            GGML_ASSERT(w.idx < files.size());
+            const auto & file = files.at(w.idx);
+            file->seek(w.offs, SEEK_SET);
+            file->read_raw(buf.data(), n_src);
+        }
+        load_q4nx_scatter(cur, buf.data(), w.tensor);
+        return;
+    }
 
     if (use_mmap) {
         const auto & mapping = mappings.at(w.idx);
@@ -1541,6 +1653,32 @@ bool llama_model_loader::load_all_data(
         }
 
         size_t n_size = ggml_nbytes(cur);
+
+        if (weight->tensor != nullptr && weight->tensor->type == GGML_TYPE_Q4NX) {
+            // T3-A: dequantize the tile-framed Q4NX bytes into the F32 logical
+            // tensor created by create_tensor().
+            GGML_ASSERT(cur->type == GGML_TYPE_F32);
+            const size_t n_src = ggml_nbytes(weight->tensor);
+            std::vector<uint8_t> src_buf(n_src);
+            if (use_mmap) {
+                const auto & mapping = mappings.at(weight->idx);
+                memcpy(src_buf.data(), (uint8_t *) mapping->addr() + weight->offs, n_src);
+            } else {
+                const auto & file = files.at(weight->idx);
+                file->seek(weight->offs, SEEK_SET);
+                file->read_raw(src_buf.data(), n_src);
+            }
+            if (ggml_backend_buffer_is_host(cur->buffer)) {
+                load_q4nx_scatter(cur, src_buf.data(), weight->tensor);
+            } else {
+                std::vector<no_init<uint8_t>> host_tmp(ggml_nbytes(cur));
+                struct ggml_tensor mirror = *cur;
+                mirror.data = host_tmp.data();
+                load_q4nx_scatter(&mirror, src_buf.data(), weight->tensor);
+                ggml_backend_tensor_set(cur, host_tmp.data(), 0, ggml_nbytes(cur));
+            }
+            continue;
+        }
 
         if (use_mmap) {
             const auto & mapping = mappings.at(weight->idx);

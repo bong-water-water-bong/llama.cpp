@@ -593,7 +593,9 @@ static bool eager_capability_declared(enum ggml_op op) {
         // GET_ROWS made the scheduler route large-vocab embedding lookups
         // (zaya: f32[2048, 262272]) to HRX where compute fails at runtime.
         // Unclaimed shapes now split to CPU. (1bit-MONSTER zaya port, 2026-09-05)
-        case GGML_OP_GLU:
+        // GLU is not eager-claimed: the loom kernels cover specific fused-ffn
+        // glu patterns (qwen corpus); zaya fuses gate/up along ne2 -> no match.
+        // Dense qwen3 has no standalone GLU node.
         case GGML_OP_MUL_MAT:
         case GGML_OP_MUL_MAT_ID:
         case GGML_OP_PERMUTE:
@@ -834,9 +836,13 @@ static bool device_supports_op(ggml_backend_dev_t device, const ggml_tensor * op
         return supported_rope_tensor(op);
     }
     if (op->op == GGML_OP_MUL_MAT) {
-        // The mm kernels cap the dense output size at 262144 rows. Only the
-        // huge-vocab lm_head exceeds it (zaya vocab 262272); route it to CPU.
-        if (op->src[0] != nullptr && op->src[0]->ne[1] > 262144) {
+        // The mm kernels cap the dense output size at 262144 rows (only the
+        // huge-vocab lm_head exceeds it, zaya vocab 262272) and take F32
+        // activations (f16xBOTH-SIDES mms, e.g. the zaya CCA f16 path, are not
+        // in the corpus). Route those to CPU.
+        if ((op->src[0] != nullptr && op->src[0]->ne[1] > 262144) ||
+            op->type != GGML_TYPE_F32 ||
+            (op->src[1] != nullptr && op->src[1]->type != GGML_TYPE_F32)) {
             return false;
         }
     }
