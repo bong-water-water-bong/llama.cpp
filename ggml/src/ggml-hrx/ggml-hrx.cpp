@@ -890,8 +890,11 @@ static void * registry_proc(ggml_backend_reg_t registry, const char * name) {
 static const ggml_backend_reg_i registry_i = { registry_name, registry_device_count, registry_device, registry_proc };
 
 static std::unique_ptr<ggml_backend_hrx_reg_context> create_registry_context() {
-    auto         context = std::make_unique<ggml_backend_hrx_reg_context>();
-    hrx_status_t status  = hrx_gpu_initialize(0);
+    auto context = std::make_unique<ggml_backend_hrx_reg_context>();
+    if (environment_flag_enabled("GGML_HRX_DISABLE")) {
+        return context;  // 0 devices: scheduler never uses HRX (pure-CPU runs)
+    }
+    hrx_status_t status = hrx_gpu_initialize(0);
     if (hrx_status_is_ok(status)) {
         context->initialized = true;
         GGML_LOG_INFO("ggml_hrx: init OK\n");
