@@ -1657,7 +1657,7 @@ bool llama_model_loader::load_all_data(
         if (weight->tensor != nullptr && weight->tensor->type == GGML_TYPE_Q4NX) {
             // T3-A: dequantize the tile-framed Q4NX bytes into the F32 logical
             // tensor created by create_tensor().
-            GGML_ASSERT(cur->type == GGML_TYPE_F32);
+            GGML_ASSERT(cur->type == GGML_TYPE_F32 || cur->type == GGML_TYPE_F16);
             const size_t n_src = ggml_nbytes(weight->tensor);
             std::vector<uint8_t> src_buf(n_src);
             if (use_mmap) {
