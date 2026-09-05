@@ -296,3 +296,26 @@ Round 9 (2026-09-05): GGML_HRX_DISABLE knob landed (3de16b1); pure-CPU zaya = or
   HRX decode vs the GGML_HRX_DISABLE=1 CPU oracle per-op (ZAYA_1LAYER), then
   multi-seq + perf gate. The refreshed-fork zaya GPU port spec is complete
   (rounds 1-9): the remaining work is T3-A + validation, both well-scoped.
+Rounds 10-12 (2026-09-05): T3-A IMPLEMENTED + CPU-VALIDATED (loader dequant)
+- llama-model-loader.cpp: Q4NX tensors now dequantize at load into F32 (or F16
+  with GGML_ZAYA_DEQUANT_F16=1) LOGICAL-layout tensors (create_tensor uses the
+  arch's expected ne; load_all_data scatter-fills from the tile-framed Q4NX
+  bytes; mmap auto-disabled for Q4NX models). Custom GGML_OP_MUL_MAT_Q4NX no
+  longer used - standard MUL_MAT/MUL_MAT_ID on any backend.
+- VALIDATED: CPU decode (GGML_HRX_DISABLE=1, F32) = oracle 9079 "Paris" -
+  the tile->logical mapping is bit-correct. qwen3 unchanged (pp ~10630, tg
+  ~242). ggml-hrx.cpp round-11: MUL_MAT requires F32 activations (zaya f16
+  mms -> CPU); GLU not eager-claimed.
+- INCIDENT: an -ngl 99 F16 zaya run OOM'd the loaded box (88/122 GB) at 07:38
+  -> reboot at 07:42 (interrupted an in-flight link: llama-cli + libllama .431
+  were 0-byte; rebuilt clean). Lesson: dequant models need ~15-30 GB extra;
+  run GPU zaya validation on a quiet box or with servers stopped.
+- NEXT FRONTIER (GPU): zaya -ngl 99 F16 loads but graph compute fails:
+  "external value 9 has an empty binding" (HRX subgraph input without a bound
+  buffer) - a device/host buffer-binding issue in the mixed F16-device split.
+  Debug: find which external value (index 9) lacks a binding; likely a weight
+  or activation the scheduler expects on HRX0 but that resolved to a host
+  buffer (or the reverse). Then: perf gate + multi-seq (task 5).
+- Commits: 62db4e9 (T3-A + round-11 claims), assert fix. Branch
+  fix/hrx-ngl-init-order. NOTE /tmp is tmpfs - wiped on reboot (zgreedy4 +
+  harness must be rebuilt from research/ sources after any reboot).
