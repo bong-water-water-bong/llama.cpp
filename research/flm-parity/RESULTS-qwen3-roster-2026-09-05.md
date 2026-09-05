@@ -58,3 +58,22 @@ pp measurement). Directional only.
     # FLM side:
     /opt/fastflowlm/bin/flm serve qwen3:0.6b -p 8099   (also :1.7b -p 8101, :4b -p 8102)
     python3 research/flm-parity/flm_parity_bench.py --base http://127.0.0.1:PORT/v1 --model <tag> --ppl 256 --ngen 256 --reps 3
+
+## Multi-seq / continuous batching (llama-server, 4 slots, 0.6B)
+
+Concurrent chat completions, aggregate decode t/s:
+
+| concurrency | ours (HRX GPU, 8199) | FLM (NPU, 8099) |
+|------------:|---------------------:|-----------------:|
+| 1 | 219 (per-req ~229) | ~88 (serialized) |
+| 2 | 141 (per-req 70-77) | 30 (per-req ~61) |
+| 4 | 103 (per-req 25-67) | 22 (per-req 33-62) |
+
+- llama-server on the refreshed fork does real continuous batching across
+  slots; aggregate stays >= FLM single-seq at every concurrency and far above
+  FLM's concurrent aggregate (FLM serializes decode: aggregate drops with
+  concurrency to ~30 @2 / ~22 @4 for the 0.6B).
+- llama-batched-bench (the -npl harness) currently fails on the FIRST empty
+  ubatch: "unsupported HRX node GET_ROWS f32[1024,0,1,1]" - ggml-hrx rejects
+  0-row GET_ROWS. The stale fork had an empty-batch no-op for this. Open item
+  (server path unaffected; slots never dispatch empty batches).
