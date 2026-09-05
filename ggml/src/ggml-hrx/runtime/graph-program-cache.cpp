@@ -18,16 +18,25 @@ static bool tensor_metadata_matches(const Value & value, const ggml_tensor * ten
         value.byte_count != ggml_nbytes(tensor) || value.contiguous != ggml_is_contiguous(tensor)) {
         return false;
     }
-    const bool tensor_alias = tensor->view_src != nullptr;
-    const bool value_alias  = value.alias_source.value >= 0;
-    if (tensor_alias && (!value_alias || value.storage_offset != tensor->view_offs)) {
-        return false;
-    }
     for (int i = 0; i < GGML_MAX_DIMS; ++i) {
         if (value.ne[i] != tensor->ne[i] || value.nb[i] != tensor->nb[i]) {
             return false;
         }
     }
+    const bool tensor_alias = tensor->view_src != nullptr;
+    const bool value_alias  = value.alias_source.value >= 0;
+    if (tensor_alias && value_alias) {
+        return value.storage_offset == tensor->view_offs;
+    }
+    if (tensor_alias && !value_alias) {
+        // A zero-offset view with byte-identical layout is equivalent for the
+        // dispatched kernels: HRX DDR_PATCH rebinds the actual buffer per
+        // dispatch, so only the layout (checked above) matters. llama.cpp graph
+        // rebuilds can present the same logical input as a plain tensor in one
+        // pass and as a view (reshape result) in another (zaya recurrent state).
+        return tensor->view_offs == 0;
+    }
+    // non-view tensor: matches any cached value of identical layout.
     return true;
 }
 
@@ -92,6 +101,14 @@ static Status bind_current_value(const ValueMap &                               
     if (existing_tensor == nullptr && existing_value == value_by_tensor.end() &&
         !tensor_metadata_matches(*value, tensor)) {
         status.log("node %zu %s value %d metadata does not match current tensor", node_index, role, expected.value);
+        fprintf(stderr, "  expected: type=%d ne=%lld,%lld,%lld,%lld nb=%zu,%zu,%zu,%zu contig=%d alias=%d off=%lld elems=%lld bytes=%zu\n",
+            (int)value->type, (long long)value->ne[0], (long long)value->ne[1], (long long)value->ne[2], (long long)value->ne[3],
+            value->nb[0], value->nb[1], value->nb[2], value->nb[3], (int)value->contiguous, value->alias_source.value >= 0 ? 1 : 0,
+            (long long)value->storage_offset, (long long)value->element_count, value->byte_count);
+        fprintf(stderr, "  actual:   name=%s type=%d ne=%lld,%lld,%lld,%lld nb=%zu,%zu,%zu,%zu contig=%d view_src=%p view_off=%zu elems=%lld bytes=%zu\n",
+            tensor->name, (int)tensor->type, (long long)tensor->ne[0], (long long)tensor->ne[1], (long long)tensor->ne[2], (long long)tensor->ne[3],
+            tensor->nb[0], tensor->nb[1], tensor->nb[2], tensor->nb[3], (int)ggml_is_contiguous(tensor), (void*)tensor->view_src,
+            tensor->view_offs, (long long)ggml_nelements(tensor), ggml_nbytes(tensor));
         return status;
     }
 

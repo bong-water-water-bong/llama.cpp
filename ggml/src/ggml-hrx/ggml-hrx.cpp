@@ -597,7 +597,9 @@ static bool eager_capability_declared(enum ggml_op op) {
         case GGML_OP_PERMUTE:
         case GGML_OP_RESHAPE:
         case GGML_OP_RMS_NORM:
-        case GGML_OP_ROPE:
+        // ROPE is not eager-claimed: only full-head NORMAL/NEOX rotary shapes are
+        // in the kernel corpus (supported_rope_tensor). Partial-head/custom
+        // rotaries (zaya CCA) split to CPU. (1bit-MONSTER zaya port, 2026-09-05)
         case GGML_OP_SET_ROWS:
         case GGML_OP_SOFT_MAX:
         case GGML_OP_SUM_ROWS:
@@ -767,6 +769,34 @@ static bool supported_unary_f32_tensor(const ggml_tensor * op) {
     return ggml::hrx::unary_kind_supported(unary_kind);
 }
 
+// Standalone ROPE is claimable only when the ggml_rope_f32 loom kernel can
+// execute it: full-head rotary (n_dims == ne[0]), NORMAL/NEOX mode, bounded
+// dims, standard freq params. Partial-head / custom rotary variants (e.g. the
+// zaya CCA attention rope, n_rot < head_size) are not in the kernel corpus and
+// must split to CPU. Mirrors match_rope_f32 in dispatch-rope-set-rows.cpp.
+static bool supported_rope_tensor(const ggml_tensor * op) {
+    if (op == nullptr || op->op != GGML_OP_ROPE || op->type != GGML_TYPE_F32 ||
+        op->src[0] == nullptr || op->src[1] == nullptr || op->src[0]->type != GGML_TYPE_F32 ||
+        op->src[1]->type != GGML_TYPE_I32 || !ggml_is_contiguous(op) ||
+        !ggml_is_contiguous(op->src[0]) || !ggml_is_contiguous(op->src[1])) {
+        return false;
+    }
+    const int64_t head_size = op->ne[0];
+    if (head_size < 4 || head_size > 1024 || head_size % 4 != 0 || op->ne[1] < 1 || op->ne[1] > 64 ||
+        op->ne[2] < 1 || op->ne[2] > 2048 || op->ne[3] != 1) {
+        return false;
+    }
+    const int32_t n_dims       = ggml_get_op_params_i32(op, 1);
+    const int32_t mode         = ggml_get_op_params_i32(op, 2);
+    const float   freq_base    = ggml_get_op_params_f32(op, 5);
+    const float   freq_scale   = ggml_get_op_params_f32(op, 6);
+    const float   ext_factor   = ggml_get_op_params_f32(op, 7);
+    const float   attn_factor  = ggml_get_op_params_f32(op, 8);
+    const bool supported_mode  = mode == GGML_ROPE_TYPE_NORMAL || mode == GGML_ROPE_TYPE_NEOX;
+    return n_dims == head_size && supported_mode && std::isfinite(freq_base) && freq_base > 0.0f &&
+           std::isfinite(freq_scale) && freq_scale > 0.0f && ext_factor == 0.0f && attn_factor == 1.0f;
+}
+
 static bool device_supports_op(ggml_backend_dev_t device, const ggml_tensor * op) {
     GGML_UNUSED(device);
     if (op == nullptr) {
@@ -788,6 +818,9 @@ static bool device_supports_op(ggml_backend_dev_t device, const ggml_tensor * op
     const bool supported_unary = supported_unary_f32_tensor(op);
     if (supported_unary) {
         return true;
+    }
+    if (op->op == GGML_OP_ROPE) {
+        return supported_rope_tensor(op);
     }
     return eager_capability_declared(op->op);
 }
