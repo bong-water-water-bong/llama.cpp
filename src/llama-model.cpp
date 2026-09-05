@@ -1637,6 +1637,8 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         const int max_offloadable_layers       = n_layer_all + 1;
 
         LLAMA_LOG_INFO("%s: offloaded %d/%d layers to GPU\n", __func__, std::min(n_gpu_layers, max_offloadable_layers), max_backend_supported_layers);
+    } else if (n_gpu_layers > 0) {
+        LLAMA_LOG_WARN("%s: GPU offload requested (-ngl %d) but no GPU-capable backend device is available; running on CPU\n", __func__, n_gpu_layers);
     }
 
     // print memory requirements per buffer type
