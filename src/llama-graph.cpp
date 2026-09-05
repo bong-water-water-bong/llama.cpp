@@ -68,7 +68,6 @@ void llm_graph_input_embd::set_input(const llama_ubatch * ubatch) {
         const int64_t n_tokens = ubatch->n_tokens;
 
         ggml_backend_tensor_set(tokens, ubatch->token, 0, n_tokens*ggml_element_size(tokens));
-        if (getenv("DBG_TOK")) { fprintf(stderr, "[set_input] n=%lld tok:", (long long)n_tokens); for (int64_t _j=0; _j<n_tokens && _j<24; _j++) fprintf(stderr, " %d", (int)ubatch->token[_j]); fprintf(stderr, "\n"); }
     }
 
     if (ubatch->embd) {

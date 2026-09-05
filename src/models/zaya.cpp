@@ -172,7 +172,6 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
     const int64_t n_embd_head = hparams.n_embd_head_k();
     const int64_t n_expert    = hparams.n_expert;
     const int64_t n_seqs      = ubatch.n_seqs;
-    if (getenv("ZAYA_DBG_TOK")) { fprintf(stderr, "[zaya] ubatch n_tokens=%u n_seqs=%lld tokens:", ubatch.n_tokens, (long long)n_seqs); for (uint32_t _i=0; _i<ubatch.n_tokens && _i<24; _i++) fprintf(stderr, " %d", (int)ubatch.token[_i]); fprintf(stderr, "\n"); }
 
     GGML_ASSERT(n_seqs != 0);
     GGML_ASSERT(ubatch.equal_seqs());
@@ -323,7 +322,8 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
         cb(qk_mean_k, "qk_mean_k", il);
 
         ggml_tensor * QKraw_t = ggml_cont(ctx0, ggml_transpose(ctx0, QKraw));
-        QKraw_t = ggml_reshape_3d(ctx0, QKraw_t, n_seq_tokens, n_qk, n_seqs);
+        QKraw_t = ggml_reshape_3d(ctx0, QKraw_t, n_seq_tokens, n_seqs, n_qk);
+        QKraw_t = ggml_cont(ctx0, ggml_permute(ctx0, QKraw_t, 0, 2, 1, 3));
 
         ggml_tensor * conv_input = ggml_concat(ctx0, conv_state, QKraw_t, 0);
         cb(conv_input, "cca_conv_input", il);
@@ -335,10 +335,6 @@ llama_model_zaya::graph::graph(const llama_model & model, const llm_graph_params
         cb(last_conv_states, "cca_last_conv_states", il);
 
         const auto kv_head = inp_recr->mctx->get_head();
-        if (getenv("ZAYA_DBG_HEAD")) {
-            fprintf(stderr, "[zaya] il=%d kv_head=%u n_seqs=%lld n_rs=%u rs_z=%d\n", il, kv_head, (long long)n_seqs,
-                inp_recr->mctx->get_n_rs(), inp_recr->mctx->get_rs_z());
-        }
         ggml_tensor * conv_state_update_target = ggml_view_2d(ctx0, cca_state_all, conv_state_size, n_seqs,
                 cca_state_all->nb[1],
                 kv_head*cca_state_size*ggml_element_size(cca_state_all));
