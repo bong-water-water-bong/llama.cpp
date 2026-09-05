@@ -576,6 +576,22 @@ static ggml_backend_buffer_type_t device_host_buffer_type(ggml_backend_dev_t dev
 }
 
 static bool eager_capability_declared(enum ggml_op op) {
+    // Diagnostic: GGML_HRX_CPU_OPS=<OP1,OP2,...> forces those ops to CPU so the
+    // zaya mixed-split numerics can be bisected (which HRX op diverges from CPU).
+    {
+        const char * cpu_ops = std::getenv("GGML_HRX_CPU_OPS");
+        if (cpu_ops != nullptr && cpu_ops[0] != '\0') {
+            std::string hay = ",";
+            hay += ggml_op_name(op);
+            hay += ",";
+            std::string list = ",";
+            list += cpu_ops;
+            list += ",";
+            if (list.find(hay) != std::string::npos) {
+                return false;
+            }
+        }
+    }
     switch (op) {
         // The scheduler probes preallocated weight tensors as NONE operations when deciding whether their buffer type is
         // usable by this backend. Fused ops are declared here so graph-claim can validate the full dispatch pattern.

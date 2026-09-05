@@ -334,3 +334,33 @@ Round 13 (2026-09-05): ZAYA GPU EXECUTION ACHIEVED on the refreshed fork
   (compare one F16 expert mm vs CPU), boundary-copy audit, or forcing the
   recr-adjacent subgraph fully CPU while keeping the expert mms on HRX.
   Then: perf (reduce CPU/GPU round trips; target >=16.8) + multi-seq (task 5).
+Round 14 (2026-09-05): divergence isolation matrix - SYSTEMIC, not a single op
+
+1-layer + full-decode tests (CPU F16 oracle = 9079/"Paris"; ZAYA_1LAYER CPU
+token = 88048):
+- HRX default (-ngl 99, F16 dev weights): 1-layer token 28453 != 88048.
+- Force RMS_NORM->CPU: 52617 (still !=).
+- Force MUL_MAT_ID->CPU: 1926 (still !=).
+- Force MUL_MAT->CPU: 131213 (still !=).
+- Force RMS+MM+ID+SUM+CLAMP->CPU (only flash-attn HRX): 53440 (still !=).
+- Full decode, flash-attn->CPU (+ hybrid attn-KV pinned CPU): "LatestConf..." garbage.
+- Full decode, weights->CPU (-ot .*weight=CPU) + HRX live: garbage.
+- Full decode, weights CPU + flash CPU + all compute CPU + HRX STILL LIVE: garbage.
+- Full decode, GGML_HRX_DISABLE=1 (0 devices): ORACLE.
+
+CONCLUSION: with the HRX backend REGISTERED as a live device, the zaya decode
+diverges even when every weight and every compute op is forced to CPU. The
+corruption is SYSTEMIC to the scheduler/placement/buffer layer when HRX0 is a
+candidate backend (not a single op's numerics). Candidates: (a) some tensor is
+still placed/computed via HRX0/HRX0_HOST and misread (stale/alias across the
+CPU<->HRX boundary - possibly interacting with the round-8 force_alias_relayout
+or no-mmap loading), (b) the scheduler's split/claim interacts badly with the
+zaya recurrent-state views. The CPU-only path (HRX_DISABLE) is bit-correct.
+
+Diagnostic knobs added (env-gated, default-off, safe): GGML_HRX_NO_FLASH_ATTN
+(flash-attn->CPU + hybrid attn KV->CPU), GGML_HRX_CPU_OPS=<ops> (force listed
+ops to CPU), GGML_HRX_DISABLE (0 devices), GGML_ZAYA_DEQUANT_F16 (F16 dequant).
+
+RECOMMENDATION: this needs the ggml-hrx/round-28 owner (scheduler placement +
+boundary data-flow audit with a debugger), not more op-level toggling. All
+qwen3 wins + the CPU oracle path are intact and committed.

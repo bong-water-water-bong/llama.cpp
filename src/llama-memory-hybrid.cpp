@@ -31,13 +31,16 @@ llama_memory_hybrid::llama_memory_hybrid(
     const layer_filter_cb & filter_attn,
     const layer_filter_cb & filter_recr) :
     hparams(model.hparams),
+    // Diagnostic GGML_HRX_NO_FLASH_ATTN=1: keep the hybrid attention KV on CPU
+    // so the (CPU-forced) flash attention reads host memory; the ggml-hrx
+    // flash-attn kernel diverges on the zaya CCA-attention pattern.
     mem_attn(new llama_kv_cache(
         model,
         model.hparams,
         type_k,
         type_v,
         v_trans,
-        offload,
+        getenv("GGML_HRX_NO_FLASH_ATTN") != nullptr ? false : offload,
         unified,
         kv_size,
         n_seq_max,
