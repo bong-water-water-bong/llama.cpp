@@ -193,3 +193,15 @@ input shapes. Next steps: (a) reproduce with a tiny CPU-split graph to confirm,
 Then remaining for the zaya port: conv/SSM/grouped-conv op coverage on HRX +
 the type42->F32 loader dequant (T3-A) + numeric gate (oracle 9079...) +
 >= 15-17 t/s single-seq.
+
+Round 5 control result (2026-09-05): qwen3-0.6B with -ot "token_embd.weight=CPU"
+(-ngl 99, mixed CPU-embed/HRX split) DECODES FINE (generation ~77 t/s with the
+per-token embed copy; correct output). So the CPU/HRX mixed split mechanism
+itself works; the zaya "node 0 input value 0 metadata does not match current
+tensor" (graph-program-cache bind_current_value) is ZAYA-SPECIFIC. Differentiator
+vs qwen = the recurrent-state machinery (cache_s/cache_r now CPU-pinned, with
+per-step reshape/roll views feeding the HRX subgraph) and/or the CCA conv/SSM
+path. Next debug: minimal zaya graph slice with recr state -> HRX op to find the
+first node whose input metadata drifts between prefill and decode; likely fix in
+ggml-hrx graph-program-cache shape keying (include input ne/type) or by keeping
+the recr-origin tensors off the HRX subgraph boundary.
