@@ -88,9 +88,18 @@ llama_memory_recurrent::llama_memory_recurrent(
 
         if (offload) {
             auto * dev = model.dev_layer(i);
-            buft = ggml_backend_dev_buffer_type(dev);
-
-            dev_name = ggml_backend_dev_name(dev);
+            // The ggml-hrx (IREE/HRX) backend does not implement the SCALE /
+            // conv-family ops that run on the recurrent state (cache_r/cache_s);
+            // pin recurrent state to CPU for HRX devices so the scheduler can
+            // split those ops (1bit-MONSTER zaya on the refreshed AMD fork).
+            if (ggml_backend_dev_name(dev) != nullptr &&
+                strncmp(ggml_backend_dev_name(dev), "HRX", 3) == 0) {
+                dev_name = ggml_backend_dev_name(dev);
+                buft = ggml_backend_cpu_buffer_type();
+            } else {
+                buft = ggml_backend_dev_buffer_type(dev);
+                dev_name = ggml_backend_dev_name(dev);
+            }
         }
 
         LLAMA_LOG_DEBUG("%s, layer %3d: dev = %s\n", __func__, i, dev_name);

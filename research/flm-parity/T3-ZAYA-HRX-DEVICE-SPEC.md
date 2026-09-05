@@ -132,3 +132,32 @@ Observed abort with -ngl 99 (before any dequant work):
 ## Env (runs)
     export ROCMLIB=/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/lib
     export LD_LIBRARY_PATH=$ROCMLIB:$PWD/build/bin
+# Round 3 findings (2026-09-05): zaya-on-refreshed-GPU bring-up progress
+
+Landed:
+- llama-memory-recurrent.cpp: recurrent state (cache_r/cache_s) pinned to CPU
+  when the layer device is HRX (ggml-hrx cannot run SCALE/conv on that state).
+  Fixes the "-ngl 99 abort: pre-allocated tensor cache_s_l0 in buffer HRX0
+  cannot run SCALE". (uncommitted; part of the zaya port branch work)
+
+Next blockers found (each fix reveals the next backend limit - ggml-hrx is
+tuned for qwen/llama-class shapes):
+1. Embed GET_ROWS: ggml-hrx eager-declares GET_ROWS but the compute kernel
+   only covers qwen-pattern shapes. zaya embedding f32[2048, 262272]
+   (vocab 262272) fails: "unsupported HRX node 0: GET_ROWS". qwen3-0.6B
+   (vocab ~151936) works on HRX, so the limit is shape/vocab dependent.
+   -ot token_embd.weight=CPU overrides do NOT help: the scheduler still
+   assigns the GET_ROWS op to HRX (which over-claims support) and compute
+   fails. Fix options: (a) HRX get_rows kernel for large vocab tables, or
+   (b) tighten eager_capability_declared so GET_ROWS is only claimed for the
+   qwen-pattern shapes (supported_qwen_attention_projection_get_rows_tensor),
+   letting the scheduler split the embed lookup to CPU.
+2. After embed: expect conv/SSM/grouped-conv ops + the type42->F32 loader
+   dequant (T3-A spec) to be needed in sequence.
+
+Bar for zaya decode (single-seq): stale fork today = pp64 152 t/s, tg32
+15.2 t/s (DISABLE_FUSION=1). Refreshed fork target >= that.
+
+Recommendation: treat the refreshed-fork zaya GPU path as a dedicated port
+project (this spec + T3-A). The qwen3-roster FLM-parity goal is already met
+on the refreshed fork (see RESULTS-qwen3-roster-2026-09-05.md).
