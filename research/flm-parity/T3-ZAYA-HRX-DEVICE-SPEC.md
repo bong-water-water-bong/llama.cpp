@@ -256,3 +256,26 @@ cont->reshape->view chains that alias correctly):
      contiguous value).
 Then the remaining port map (from round 6): conv/SSM ops, MoE expert path, T3-A
 type42->F32 dequant, numeric + perf gate.
+Round 8 (2026-09-05): zaya -ngl 99 now EXECUTES end-to-end on the refreshed fork (commit 437b7ec)
+Five more gaps closed (all qwen-regression-clean): (1) import relayout alias for
+dangling-view_src chains (graph.cpp + value-map force_alias_relayout) - VIEWs
+now elide; (2) SOFT_MAX not eager; (3) ARGSORT not eager; (4) MUL_MAT output
+>262144 rows -> CPU (lm_head vocab 262272); (5) empty-tensor guard -> CPU.
+
+NEXT FRONTIER (two issues):
+A. MIXED-MODE NUMERICS: -ngl 99 runs but output != CPU oracle (ngl 0 gives
+   "Paris..."; ngl 99 gives "informative Financial Financial..."). Some HRX-split
+   op produces wrong data vs the all-CPU path (or a cross-device data-flow bug).
+   Bisect with the round-28 per-op dump tooling: run one layer with ngl 99 vs
+   the f32 CPU reference, find the first divergent node. NOTE: even ngl 0 via
+   this llama-cli now reports "Compute error" (the earlier correct CPU decode
+   was the standalone zgreedy driver on an older build) - re-verify the ngl 0
+   baseline first.
+B. SPEED: ~1 t/s because the type42 expert GEMMs (the per-layer cost) run the
+   CPU custom op; decode only becomes FLM-class after T3-A (type42->F32 dequant
+   at load -> standard HRX MUL_MAT) + whatever RMS/rope/attn remain HRX-clean.
+   Even CPU-only decode needs the custom ops multithreaded/optimized to be a
+   meaningful interim (llama-cli ngl 0 was ~0 t/s = effectively serialized).
+
+State: branch fix/hrx-ngl-init-order (15 commits), spec rounds 1-8, all qwen
+wins intact. Stale fork zaya bar: 15.2-16.8 t/s.
