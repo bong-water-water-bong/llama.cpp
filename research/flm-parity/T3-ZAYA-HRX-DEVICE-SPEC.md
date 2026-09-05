@@ -70,3 +70,65 @@ the SCALE/conv op-coverage or buffer-override work above.
     export LD_LIBRARY_PATH=$ROCMLIB:build/bin
     ./build/bin/llama-cli -m ~/zaya-q4nx-c43.gguf -ngl 99 -p "The capital of France is" -n 4 -st
     # today: abort on SCALE-on-HRX0 (see above). ngl 0: CPU decode correct (slow).
+# T3-A implementation notes (2026-09-05, round 2) — loader hook analysis
+
+Follows the mapping proof in this file's first half. Concrete integration
+points found by reading the refreshed-fork loader:
+
+## Why a simple type conversion is NOT enough
+- The tile framing lives in the ggml SHAPE: type42 tensors are created as
+  [ne0=8192, ne1=n_tiles(, ne2=n_expert)] where ne0=8192 is "one tile's element
+  count", not the logical K. llama.cpp's type-conversion machinery (f16->f32
+  etc.) preserves ne, so it cannot produce a valid logical [K, R] mm operand.
+- The dequant must SCATTER tiles into logical positions (tile t=tr*n_tc+tc ->
+  logical rows [tr*32,+32) x cols [tc*256,+256)), it is not a reshape.
+
+## Hook points (llama-model-loader.cpp)
+1. `llama_model_loader::create_tensor(...)` (~line 1054) receives the EXPECTED
+   logical dims `ne` (e.g. zaya.cpp calls create_tensor(tn(...), {n_embd,
+   n_embd_q}, 0)). At the point where the tensor ggml node is made from the
+   file meta (`ggml_new_tensor` with cur->ne / cur->type), instead:
+   - allocate GGML_TYPE_F32 with logical ne (ne = the expected list),
+   - mark the tensor "needs q4nx scatter" (store the tile dims from cur),
+   - register a custom data-fill in `load_data`/`load_data_for` that reads each
+     5120-B tile block and scatters via dequantize_row_q4nx into the logical
+     F32 layout. Experts (ne2>0): per-expert tiles are contiguous
+     (expert e owns tiles [e*tpe, (e+1)*tpe)); logical per-expert dims follow
+     from the expected ne (e.g. {n_embd, n_ff_x*2, n_expert}).
+2. The graph then needs NO custom ops: ggml_mul_mat dispatches on a->type, and
+   F32 weights take the standard MUL_MAT / MUL_MAT_ID path -> HRX0.
+
+## After dequant: remaining HRX op-coverage for the zaya graph
+Observed abort with -ngl 99 (before any dequant work):
+  ggml-backend.cpp:898 pre-allocated tensor (cache_s_l0 ...) in buffer HRX0
+  that cannot run the operation (SCALE)
+- ggml-hrx supports ADD/MUL/... via supported_binary_f32_tensor (F32 contiguous
+  + import_binary_kind + binary_kind_supported) and unary (SILU etc.) via
+  supported_unary_f32_tensor; plus qwen pattern helpers + eager list (NONE
+  ARGSORT CLAMP FLASH_ATTN_EXT GET_ROWS GLU MUL_MAT MUL_MAT_ID PERMUTE RESHAPE
+  RMS_NORM ROPE SET_ROWS SOFT_MAX SUM_ROWS VIEW).
+- Missing for zaya: SCALE (recurrent-state scaling on pinned cache_s_l* tensors
+  -> the abort). Possibly also ggml_ssm_conv/conv_1d/grouped-conv (verify by
+  running after SCALE is handled). Fixes:
+  (a) add SCALE (+ conv ops if needed) to the HRX capability list with small
+      loom kernels, or
+  (b) pin the zaya recurrent/hybrid memory (llama_memory_hybrid recr part) to
+      CPU buffers so only GEMM/RMS/ROPE/FLASH_ATTN/ARGSORT land on HRX0.
+  Option (b) is smaller and matches how CPU-only ops are normally handled;
+  the blocker is that llama's memory hybrid places recr state on the layer
+  backend. Investigate the recurrent-memory buft selection (llama-kv-cache /
+  llama-memory-hybrid) for a per-backend CPU pin, mirroring upstream patterns.
+
+## Suggested execution order (next session)
+1. Loader dequant for the DENSE 2D tensors only (wq/wk/wo/cca_val/ffn_gate/...,
+   not the 3D experts); validate on CPU (ngl 0) that decode still reproduces the
+   oracle tokens 9079/236761/107/2717/108/1882 (mapping correctness), then
+   extend to experts.
+2. Fix the SCALE/recurrent pinning so -ngl 99 no longer aborts; check which ops
+   then fall to CPU splits; iterate until decode runs with weights on HRX0.
+3. Numeric gate on device + tok/s >= 16.8 (stale-fork bar).
+4. Then zaya multi-seq (task 5) via llama-server slots.
+
+## Env (runs)
+    export ROCMLIB=/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/lib
+    export LD_LIBRARY_PATH=$ROCMLIB:$PWD/build/bin
