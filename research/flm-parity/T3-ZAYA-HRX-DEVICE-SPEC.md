@@ -364,3 +364,17 @@ ops to CPU), GGML_HRX_DISABLE (0 devices), GGML_ZAYA_DEQUANT_F16 (F16 dequant).
 RECOMMENDATION: this needs the ggml-hrx/round-28 owner (scheduler placement +
 boundary data-flow audit with a debugger), not more op-level toggling. All
 qwen3 wins + the CPU oracle path are intact and committed.
+Round 15 (2026-09-05): two more fixes + issues filed
+- llama.cpp llama_prepare_model_devices: n_gpu_layers==0 now clears GPU/IGPU
+  devices -> pure-CPU runs (qwen3 ngl0 "command buffer not recording" error and
+  the zaya HRX-live CPU corruption FIXED; zaya -ngl 0 now coherent ~25 t/s).
+- llama-model-loader create_tensor: Q4NX buft probed from the CONVERTED F16/F32
+  logical meta (was probing the Q4NX tile meta -> host-only buffer -> weights
+  stayed host at ngl>0 and ran through the broken host path). Weights now land
+  on the HRX0 device buffer at ngl99.
+- zaya -ngl 99 with device weights still corrupt (mixed-split bounces of the
+  CPU-forced zaya ops through the HRX host path) - tracked as issue #2116.
+- Issues filed on 1bit-MONSTER: #2115 (HRX host path corrupts CPU-mixed graphs),
+  #2116 (zaya ngl99 mixed-split corrupt, task-4 blocker), #2117 (ggml-hrx
+  over-claims ops -> hard errors no CPU fallback).
+- Commits: 7ac6a8e (ngl0 gate + buft probe). Branch fix/hrx-ngl-init-order.
