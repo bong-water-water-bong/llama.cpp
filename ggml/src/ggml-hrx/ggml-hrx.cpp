@@ -582,7 +582,9 @@ static bool eager_capability_declared(enum ggml_op op) {
         // TODO: split this into placement capability and exact graph execution capability once graph claiming owns the
         // full decision.
         case GGML_OP_NONE:
-        case GGML_OP_ARGSORT:
+        // ARGSORT is not eager-claimed: the loom kernel only covers the qwen
+        // top-k MoE-router argsort (inside the fused router dispatches). Other
+        // sorts (e.g. the zaya 16-expert full argsort) split to CPU.
         case GGML_OP_CLAMP:
         case GGML_OP_FLASH_ATTN_EXT:
         // GET_ROWS is NOT eager-claimed: the loom kernels only cover the qwen
@@ -601,7 +603,11 @@ static bool eager_capability_declared(enum ggml_op op) {
         // in the kernel corpus (supported_rope_tensor). Partial-head/custom
         // rotaries (zaya CCA) split to CPU. (1bit-MONSTER zaya port, 2026-09-05)
         case GGML_OP_SET_ROWS:
-        case GGML_OP_SOFT_MAX:
+        // SOFT_MAX is not eager-claimed: the only standalone softmax dispatch
+        // is the qwen top8-MoE-router pattern (llm.moe_router.top8_f32). Other
+        // shapes (e.g. the zaya 17-slot router softmax) have no loom kernel and
+        // must split to CPU. Dense qwen3 (served models) has no standalone
+        // SOFT_MAX (attention softmax is inside FLASH_ATTN_EXT).
         case GGML_OP_SUM_ROWS:
         case GGML_OP_VIEW:
             return true;
@@ -802,6 +808,11 @@ static bool device_supports_op(ggml_backend_dev_t device, const ggml_tensor * op
     if (op == nullptr) {
         return false;
     }
+    // Empty tensors (0 elements, e.g. 0-token ubatches during slot rollback)
+    // have no kernel path; split to CPU where empty ops no-op cleanly.
+    if (ggml_nelements(op) == 0 || (op->src[0] != nullptr && ggml_nelements(op->src[0]) == 0)) {
+        return false;
+    }
     const bool supported_binary = supported_binary_f32_tensor(op);
     if (supported_binary) {
         return true;
@@ -821,6 +832,13 @@ static bool device_supports_op(ggml_backend_dev_t device, const ggml_tensor * op
     }
     if (op->op == GGML_OP_ROPE) {
         return supported_rope_tensor(op);
+    }
+    if (op->op == GGML_OP_MUL_MAT) {
+        // The mm kernels cap the dense output size at 262144 rows. Only the
+        // huge-vocab lm_head exceeds it (zaya vocab 262272); route it to CPU.
+        if (op->src[0] != nullptr && op->src[0]->ne[1] > 262144) {
+            return false;
+        }
     }
     return eager_capability_declared(op->op);
 }

@@ -148,6 +148,15 @@ GraphImportResult import_ggml_graph(const ggml_cgraph & graph) {
         const ValueId   output      = values.get_or_add_tensor_value(node, output_kind);
         GraphNode &     graph_node  = result.graph.add_node(node->op, output, std::move(inputs));
         graph_node.params           = import_op_params(*node);
+        // Pure relayout ops never produce data: when the ggml view_src chain
+        // does not directly name the in-graph input (cont->reshape->view
+        // chains, e.g. zaya flash-attn Vcur), alias the output to its single
+        // input when it is a contiguous same-element relayout. Otherwise the
+        // dispatch scheduler cannot elide the op and no VIEW/RESHAPE dispatch
+        // exists -> "unsupported HRX node". (1bit-MONSTER zaya port)
+        if (graph_node.inputs.size() == 1 && is_layout_alias_op(node->op)) {
+            values.force_alias_relayout(output, graph_node.inputs[0], node->view_offs);
+        }
     }
 
     result.status.append(result.graph.build_index());

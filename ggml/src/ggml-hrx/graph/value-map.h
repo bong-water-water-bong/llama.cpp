@@ -98,12 +98,20 @@ class ValueMap {
     ValueId get_or_add_tensor_value(const ggml_tensor * tensor, ValueKind kind);
 
     const Value *                     find(ValueId id) const;
+    Value *                           find_mutable(ValueId id);
     const Value *                     find_tensor(const ggml_tensor * tensor) const;
     const ValueStorage *              find_storage(ValueStorageId id) const;
     bool                              bind_buffer(ValueId id, ValueBufferBinding binding);
     std::optional<ValueBufferBinding> resolve_buffer_binding(ValueId id) const;
     std::vector<ValueId>              external_value_ids() const;
     Status                            alias_storage(ValueId target, ValueId source);
+    // Relayout alias without the layout-equality check used by alias_storage:
+    // for a pure relayout (VIEW/RESHAPE of the whole input, same element count,
+    // contiguous both sides) the target shares the source storage even though
+    // ne/nb differ. Used when the ggml view_src chain is not directly the
+    // in-graph input (cont->reshape->view chains). layout ops never produce
+    // data, so giving them their own storage is never correct.
+    Status                            force_alias_relayout(ValueId target, ValueId source, size_t offset);
     ValueId                           storage_root(ValueId id) const;
     bool                              same_storage(ValueId lhs, ValueId rhs) const;
 

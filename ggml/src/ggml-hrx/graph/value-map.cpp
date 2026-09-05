@@ -73,6 +73,13 @@ ValueId ValueMap::get_or_add_tensor_value(const ggml_tensor * tensor, ValueKind 
     return values_.back().id;
 }
 
+Value * ValueMap::find_mutable(ValueId id) {
+    if (id.value < 0 || static_cast<size_t>(id.value) >= values_.size()) {
+        return nullptr;
+    }
+    return &values_[static_cast<size_t>(id.value)];
+}
+
 const Value * ValueMap::find(ValueId id) const {
     if (id.value < 0 || static_cast<size_t>(id.value) >= values_.size()) {
         return nullptr;
@@ -182,6 +189,35 @@ Status ValueMap::alias_storage(ValueId target, ValueId source) {
     target_value.alias_source       = source;
     target_value.storage_offset     = source_value.storage_offset;
     target_value.storage_byte_count = source_value.storage_byte_count;
+    return status;
+}
+
+Status ValueMap::force_alias_relayout(ValueId target, ValueId source, size_t offset) {
+    Status status;
+    Value *       target_value = find_mutable(target);
+    const Value * source_value = find(source);
+    if (target_value == nullptr || source_value == nullptr || target == source) {
+        status.log("force_alias_relayout: invalid target/source");
+        return status;
+    }
+    if (target_value->alias_source.value >= 0) {
+        return status;  // already aliased
+    }
+    if (target_value->kind != ValueKind::Transient) {
+        status.log("force_alias_relayout: target %d is not transient", target.value);
+        return status;
+    }
+    if (target_value->type != source_value->type || target_value->element_count != source_value->element_count ||
+        !target_value->contiguous || !source_value->contiguous) {
+        status.log("force_alias_relayout: target %d is not a contiguous same-element relayout of %d",
+                   target.value, source.value);
+        return status;
+    }
+    target_value->storage            = source_value->storage;
+    target_value->storage_root       = source_value->storage_root;
+    target_value->alias_source       = source;
+    target_value->storage_offset     = source_value->storage_offset + offset;
+    target_value->storage_byte_count = source_value->storage_byte_count;
     return status;
 }
 
