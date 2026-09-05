@@ -319,3 +319,18 @@ Rounds 10-12 (2026-09-05): T3-A IMPLEMENTED + CPU-VALIDATED (loader dequant)
 - Commits: 62db4e9 (T3-A + round-11 claims), assert fix. Branch
   fix/hrx-ngl-init-order. NOTE /tmp is tmpfs - wiped on reboot (zgreedy4 +
   harness must be rebuilt from research/ sources after any reboot).
+Round 13 (2026-09-05): ZAYA GPU EXECUTION ACHIEVED on the refreshed fork
+- Extended empty-guard (all srcs) + dropped zero-length external bindings in
+  command-program-bindings (0-width recr slices are no-ops).
+- zaya-q4nx-c43 -ngl 99 GGML_ZAYA_DEQUANT_F16=1 now EXECUTES end-to-end on
+  HRX0: Prompt ~25 t/s, Generation ~7 t/s (F16 weights on device; type42 no
+  longer custom-op).
+- Correctness NOT yet oracle ("restrictionrapra..." vs "Paris..."). CPU+F16 =
+  oracle 9079 -> F16 rounding exonerated; divergence is HRX-side in the mixed
+  split (expert F16 MUL_MAT/MUL_MAT_ID + claimed f32 ops vs CPU numerics, or a
+  CPU<->HRX boundary data-flow bug).
+- NEXT (dedicated session): per-op bisection with ZAYA_1LAYER + dumps vs the
+  GGML_HRX_DISABLE=1 CPU oracle; likely fixes: HRX mm accum-order validation
+  (compare one F16 expert mm vs CPU), boundary-copy audit, or forcing the
+  recr-adjacent subgraph fully CPU while keeping the expert mms on HRX.
+  Then: perf (reduce CPU/GPU round trips; target >=16.8) + multi-seq (task 5).
