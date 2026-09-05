@@ -205,3 +205,27 @@ path. Next debug: minimal zaya graph slice with recr state -> HRX op to find the
 first node whose input metadata drifts between prefill and decode; likely fix in
 ggml-hrx graph-program-cache shape keying (include input ne/type) or by keeping
 the recr-origin tensors off the HRX subgraph boundary.
+Round 6 (2026-09-05): three safe fixes landed (commit 6de1dc7)
+1. tensor_metadata_matches: zero-offset same-layout views now match cached
+   non-view values (real bug - llama graph rebuilds alternate plain/reshape
+   forms of the same logical input; HRX DDR_PATCH rebinds per dispatch).
+2. GET_ROWS eager-claim removed (qwen-pattern only) - zaya 262272-vocab embed
+   lookup splits to CPU.
+3. ROPE claimed only for full-head NORMAL/NEOX (supported_rope_tensor) - zaya
+   partial-head CCA rotary (n_rot=64, head=128) splits to CPU.
+All qwen-regression-checked (0.6B pp256 ~10900, tg64 ~240). zaya -ngl 99 now
+fails at: VIEW [128,2,2]->[256,2] (contiguous reshape into HRX KV SET_ROWS;
+cross-boundary view of a CPU-produced value not elidable in the HRX subgraph).
+Attempted layout-op un-claim (VIEW/RESHAPE/PERMUTE) REGRESSED qwen - reverted.
+
+Port map remaining (each = scheduler/kernel gap on the zaya graph):
+a. cross-boundary VIEW into HRX SET_ROWS (investigate dispatch-scheduler
+   elision for subgraph-external view inputs; or make the CPU-rope output feed
+   a copy before the view via graph shape, or extend ggml rope kernel to
+   partial-head).
+b. conv/SSM ops (ggml_ssm_conv / conv_1d / grouped conv) on the CCA path.
+c. MoE expert path details (MUL_MAT_ID with the type42 custom CPU op today;
+   needs T3-A dequant for HRX experts).
+d. T3-A type42->F32 loader dequant (llama-model-loader create_tensor +
+   load_data scatter) - then standard HRX MUL_MAT on bf16/f32 weights.
+e. numeric gate (oracle 9079...) + >=15-17 t/s single-seq + multi-seq (task 5).
