@@ -1509,3 +1509,16 @@ Round 44 (2026-09-06): correction - ONLY token-0 clean post-fix (row-aligned ana
 - Handed to d5694d (m_mtptbcnr correction).
 - Evidence: /tmp/hrx_ffn_moe_gate-0.bin (post-fix), /tmp/nodedump/r04_000 (oracle),
   /tmp/rowmatch.py.
+
+Round 45 (2026-09-06): lead determination = LEAD 1 (kernel per-partition indexing); view-materialization (lead 2) dead
+- pd2 scan (eb4f0b): NO copy/fill commands anywhere; every 49152 write = an ordinary
+  activation output. The gate/up readbacks = offset-preserving d2h reading the base DIRECTLY.
+- => the gate/up dump data = the base's actual rows; the row-aligned analysis (round 44:
+  only t0's gate+up clean sse 0.1; rows 1-10 fragmented) means the BASE itself is misplaced
+  for tokens 1-5 - not a read/copy artifact.
+- => d5694d's kernel per-partition indexing = the live lead; his proposed kernel
+  instrumentation (emit token/dst-row/assignment/expert per write into a debug region) = the
+  next step to pin the exact row each token hits vs token*route_count+route.
+- Tree: committed docs + the 3 uncommitted loom kernel fixes (mul_mat_id plain/postops/
+  next_rmsnorm from cc9da925b+f06731ffe) only.
+- Handed to d5694d (m_mtptjfhf).
