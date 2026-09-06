@@ -1781,3 +1781,17 @@ Round 67 (2026-09-06): in-kernel %values-head = authoritative - mm COMPUTES WRON
   vs the within-plane scramble.
 - Fleet: d5694d (the instrument + the analysis complete), a137d5 (the classification matrix),
   428ab3 (dispatch standby), fb904d (watcher).
+Round 68 (2026-09-06): entire chain exonerated through the residual - divergence = result_output (OUT) mm ALONE
+- CPU oracles (d5694d, ~/zaya-decode/ffn_oracle/ + out_oracle/, keep-alive synced):
+  - weighted/FFN out tok0 ch0-3 = [0.0615, -0.0189, -0.1002, -0.5155]
+  - layer_out (residual) tok0 ch0-3 = [0.0511, -0.0698, -0.0672, -0.6151]
+  - tok0 logits argmax = 9079 @ pre-softmax 17.4690, vocab = 262272
+- HRX captures (my run with GGML_HRX_PROGRAM_DUMP="layer_out,result_output"):
+  - weighted-0 tok0 = [0.0626, -0.0180, -0.0978, -0.5175] (mad ~0.002 = correct)
+  - layer_out tok0 = [0.0529, -0.0688, -0.0633, -0.6176] (mad ~0.002 = correct)
+  => the FULL chain (gate_up -> silu -> mul -> down -> weighted -> residual) = f16-exact CORRECT.
+- The divergence = the result_output mm (the [262272, 2048] lm-head out) ALONE.
+- The canary run HUNG at the result_output capture (frozen 14+ min, killed) - the out mm's
+  dispatch = deadlock OR the capture's 1MB fwrite = the hang (428ab3's lane).
+- Fleet: 428ab3 (the out mm's binding/split - the 262272 vocab = the zaya-specific), d5694d
+  (the logits oracle + the correlation on the capture), a137d5/fb904d (standby/watch).
