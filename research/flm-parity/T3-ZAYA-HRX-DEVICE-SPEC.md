@@ -1629,3 +1629,16 @@ Round 55 (2026-09-06): CCA state diverges from block ~5 at n=1 (mad 0.015@0 -> 1
   (single-token flip-check) or block-5 ffn/conv outputs.
 - Captures: /tmp/ndh_* (HRX) + /tmp/ndc_* (CPU) on strixhalo.
 - Fleet: eb4f0b synthesizing; d5694d kernel instrument.
+
+Round 56 (2026-09-06): (b) builder->mm race STRUCTURALLY RULED OUT; (a) per-partition compute fetch = live
+- eb4f0b sharpened: rows placed right but COMPUTED wrong (f(wrong expert weight or wrong
+  activation) for partitions beyond the first); candidates (a) per-partition fetch drift or
+  (b) builder->mm race.
+- (b) RULED OUT structurally: direct path = same-stream FIFO dispatch (hrx_stream_dispatch);
+  recorded path = linear dependency chain (GraphDependencyChain: each node depends on the
+  last -> mm serialized after the builders). No race path exists.
+- (a) = live: the per-partition compute fetch (expert weight slice via expert_byte_base or
+  the activation row) drifting for partition_ordinal > 0. d5694d's instrument = the
+  confirmation (correct table tuples + wrong rows).
+- Fleet aligned: eb4f0b (code conclusions), d5694d (kernel instrument + (a) review).
+- My branch ready for the instrument commit.
