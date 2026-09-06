@@ -1194,3 +1194,24 @@ Round 24 (2026-09-06): zaya stale handle pinned to the RECORDED CB baked refs (a
   growth. Battery armed: zaya ngl99 expect oracle 9079.
 - Evidence: /tmp/trm.err (all live sites agree), /tmp/tg3.err (record-vs-live same-process
   divergence), /tmp/zgc.err (4689 tiny view calls), /tmp/zrt2.err, /tmp/zwr.err.
+
+Round 25 (2026-09-06): stale-record theory KILLED - multi-token gate write fails with CORRECT live bindings (kernel/dispatch level)
+- GGML_HRX_FORCE_DIRECT (env added to graph-executor.cpp by b30173): forces use_graph_prepared=false
+  -> the DIRECT path (no recorded CB) with per-execution bindings.
+- zaya ngl99 + FORCE_DIRECT + TRACE_GATE + READTRACE (/tmp/fdg.err): trA (per-exec ext binding)
+  == trR (resolver) == readback ctxbuf == 0x556cf874ef90 @2621440, gen=5 id=5 - ALL THREE AGREE on
+  the live correct buffer. Yet the 5-token gate slot reads EXACT ZERO. Decode's 1-token gate
+  (8192B @20480, same buffer) = real.
+- CONCLUSION: round-24's "stale recorded-CB bake" is insufficient/irrelevant - even the direct
+  path with provably-correct live bindings does not land the multi-token gate/up write. The
+  failure is kernel/dispatch-level for the n=5 gate shape (H2/H3 class): either the zaya router
+  MUL_MAT kernel's multi-token variant doesn't execute/store, or the prefill gate's producer
+  isn't dispatched on-device (CPU-placed producer vs device-slot consumer).
+- Note: qwen's 5-token node_972 mm (wmma) writes correctly post-fix (canary 12095), so NOT all
+  multi-token mms fail - zaya's gate kernel path is specific.
+- NEXT PROBES: (1) record/dispatch workgroup count for the gate dispatch prefill vs decode;
+  (2) whether the prefill gate slice dispatches a device kernel for gate at all; (3) zaya
+  arena dump correlation (does gate data exist anywhere on device - d5694d's GGML_HRX_ARENA_DUMP
+  in his worktree). Handed to eb4f0b + d5694d.
+- Evidence: /tmp/fdg.err (all-agree + zero), /tmp/zd2.log (FORCE_DIRECT 53335), /tmp/trm.err,
+  /tmp/tg3.err.
