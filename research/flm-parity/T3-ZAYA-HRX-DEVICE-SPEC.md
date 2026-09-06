@@ -1050,3 +1050,43 @@ Round 17i (2026-09-06): node_972 target = STABLE gen-4 arena (stale-handle theor
 - RECOMMENDATION: this needs a dedicated on-device session with iree graph
   launch/execution tracing (which kernel nodes actually execute at launch) by
   the platform device owner - beyond what remote instrumentation can reach.
+
+Round 18 (2026-09-06): fleet fix (A) - per-execution GraphValue re-resolution (ff05bcb6f) tested: 456
+- eb4f0b commit ff05bcb6f: reresolve_graphvalue_device_refs refreshes prepared kernel
+  bindings (origin==GraphValue) from current per-execution device bindings in BOTH paths
+  (recorded + direct), plus bound_graphvalue_refs snapshot + re-record on change ([resync-ext]).
+- Clean-tree battery: canary tok0=456, [resync-ext]=0, working qwen 12095 (no regression).
+- CONCLUSION: resync-ext=0 means the post-reresolve ref set EQUALS the recorded set on every
+  execution - the record path does NOT bake from prepared.ref; a second graph-side
+  value->buffer resolution supplies the record-time b2 handle. Ref staleness at the executor
+  level is dead; the graph-side table is the (still-unreached) source.
+- Evidence: /tmp/ff.err on strixhalo.
+
+Round 19 (2026-09-06): workgroup forensics - launch config IDENTICAL across working/failing (exonerated)
+- Record-time workgroup capture for every 20480-len (5-token) mm output: node_972 (val=1336)
+  wg=16,1,1 - byte-identical to all WORKING 5-token mms (val=967/964/953/... all wg=16,1,1).
+  Decode's node_972: wg=512,1,1 (different tiling for n=1, also normal).
+- CONCLUSION: node_972's kernel is indistinguishable at record/launch from kernels that work.
+  Launch configuration fully exonerated. Instrument reverted post-capture.
+- Evidence: /tmp/wg3.err (dedup list: all 20480 outputs wg=16,1,1).
+
+Round 20 (2026-09-06): fleet fix (b) - resize-stable buffers (2896aaa4d) tested: 456; resize NEVER fires in failing path
+- d5694d commit 2896aaa4d (branch fix/hrx-compute-buffer-resize): buffer_free parks non-host
+  contexts (retired_compute pool), buffer_alloc adopts a parked context (immortal context,
+  fresh hrx alloc, generation bump); GGML_HRX_LIFECYCLE=1 logs FRESH/REUSE/park.
+- Tested in his worktree with GGML_HRX_LIFECYCLE=1 on THE failing canary command: tok0=456.
+- Lifecycle log (definitive): 5 init allocs (gen1 390MB weights / gen2 607KB host / gen3 29MB
+  KV / gen4 78MB compute arena / gen5 2MB host), 3 teardown-only parks (gen1/3/4), ZERO
+  REUSE adoptions, ZERO mid-run free+recreate.
+- CONCLUSION: the compute arena is a single stable allocation for the entire failing run; the
+  resize mechanism option-(b) addresses does not occur in this path - hence 456. Closes the
+  last fleet mechanism with hard evidence (lifecycle log /tmp/life2.err on strixhalo).
+
+FINAL STATE after rounds 16a-20: all executor-side mechanisms closed with byte-level evidence
+- Eliminated: stale handles/refs, buffer resize/lifecycle, cache/prepare/replay, launch configs
+  (identical), workgroups (identical), bindings, staging, hash keys, re-execution, wave64-vs-wmma.
+- ISOLATED: prefill program terminal kernel (node_972 mm = last command, cmd 388/389) writes
+  valid stable gen-4 arena @1572864; readback returns exact zeros. Decode terminal writes land.
+  Remaining hypotheses require on-device iree graph EXECUTION tracing (does the last node of the
+  launched exec actually execute / does its write commit): per-node execution, completion
+  counters, or memory snapshotting after the exec - platform device owner territory.
