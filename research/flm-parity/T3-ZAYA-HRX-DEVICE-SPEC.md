@@ -988,3 +988,27 @@ Round 16z (2026-09-06): post-fix forced-op mapping - all mixed configs real-but-
   values).
 - State: a0af0f985 landed; working qwen 12095; zaya full 143243 (real tokens).
   Full trail rounds 16a-16z on fix/hrx-ngl-init-order.
+
+Round 17a (2026-09-06): wmma hypothesis OVERTURNED - 1-token-batch canary still 456
+- Experiment (research/zgreedy_b1.cpp: prompt decoded 1 token per batch,
+  n_batch=n_ubatch=1, so EVERY step is decode-shaped wave64, no multi-token
+  wmma prefill at all): canary tok0=456 (identical to the multi-token-prefill
+  run). => the corruption is NOT kernel-class (wmma vs wave64) and NOT the
+  multi-token prefill shape. Node_972-type writes are real (not zero) in
+  wave64 steps yet the output is still wrong.
+- REVISED ANALYSIS: KV byte-identical to working proves layers 0-26 compute
+  byte-correctly (KV is written from their outputs). Therefore l_out-26 and
+  layer-27-attention inputs are byte-correct, so node_972 (layer-27 attn out)
+  SHOULD be correct in wave64 steps - yet decode output (456) is wrong. The
+  divergence is therefore at/near: (a) the residual gather (CPU GET_ROWS over
+  node_972/l_out-26 - indices arrive byte-correct per staging verify, but the
+  gathered VALUES could be wrong if the d2h of node_972/l_out-26 to the CPU
+  gather reads wrong rows/offsets), or (b) split#3's computation over the
+  gathered residual. Both are real-valued, not zero.
+- NEXT DISCRIMINATOR: ground-truth comparison of the gathered residual
+  (node_973 = GET_ROWS(node_972, last-token-row)) against the CPU reference:
+  for the 1-token case node_973 should EQUAL node_972. Dump node_972 vs
+  node_973 (and l_out-26 vs node_974) in the same 1-token step on GPU and
+  compare against the CPU-only values.
+- State: classification fix (a0af0f985) landed; working 12095; zaya full
+  143243; canary 456. zgreedy_b1 kept in research/.
