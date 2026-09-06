@@ -1293,3 +1293,19 @@ Round 31 (2026-09-06): alias-only-external rule FIXED + committed (2824946b5) - 
   precision diff. Next: localize the first divergent op by comparing ngl99 device readbacks
   against ngl0 CPU values mid-prefill.
 - Evidence: /tmp/za31.log (563 fluent), committed graph.cpp rule.
+
+Round 32 (2026-09-06): numerical divergence hunt - attention bit-identical, divergence in FFN/expert region
+- zaya 1-token "Paris": ngl0 oracle tok0=9731 (sharp: 9731@30.2 vs 2nd@23.5); ngl99 = 2364
+  (top5 28.9/28.1/27.4/27.3/27.0 - sharp but flat-among-top; 9731 NOT in top-5).
+- ATTENTION BIT-IDENTICAL: Qraw-0/input_norm-0/node_153 readbacks byte-identical between
+  all-HRX and MUL_MAT_ID->CPU runs (-3.086 -1.413 -2.988 6.508 ...). Divergence = FFN/expert
+  region or after.
+- Op-forcing structurally confounded for zaya (MMID->CPU=99889, RMS_NORM->CPU=239702, none =
+  oracle; full compute set aborts in llama_init_from_model). Layer bisection ngl=1..16 fails
+  (sched error -1; only ngl0/ngl99 run). f32twin model identical divergence (not Q4NX-dequant).
+- 5-token ngl99 logits flat (~10s) vs ngl0 sharp (14-17) - degraded context at batch.
+- Needed tool: CPU-side oracle values at the same readback points (CPU post-compute named-
+  tensor dump at ngl0, or accept structural change with single-op forcing and compare the
+  op's own outputs). Handed to eb4f0b (m_mtpr1qjd).
+- Evidence: /tmp/rt1.err (1-token all-HRX chain), /tmp/mmid.err (MMID-CPU, attention identical),
+  /tmp/ngl1.log (sched failure).
