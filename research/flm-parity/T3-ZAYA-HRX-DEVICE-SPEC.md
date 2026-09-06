@@ -883,3 +883,24 @@ Round 16u (2026-09-06): deep KV byte-identical too; hypothesis = wmma-mm to spli
 - State: exact-zero bug fixed (a0af0f985); prefill computes byte-correct KV;
   ONE lost write (node_972 in the wmma prefill program) separates the canary
   from full correctness. Full trail: spec rounds 16a-16u.
+
+Round 16v (2026-09-06): wave64-for-prefill BROKEN (all-zero); wmma stays; node_972 wmma-external write loss isolated
+- Experiment (reverted; tree clean at 489b88bf4): forced the decode/wave64
+  matcher above wmma priority AND relaxed common_is_supported_decode_token_count
+  to accept prefill counts, so prefill mms would run wave64 kernels. Result:
+  canary tok0=0 (ALL zeros again) - wave64 kernels are genuinely decode-only
+  (token_count==1) and produce nothing for multi-token batches. => wmma is
+  required for prefill; the node_972 external write loss is inside the wmma
+  path, not fixable by kernel-class switching.
+- CONFIRMED STATE: prefill (wmma) computes KV byte-correct; ONLY the wmma
+  blk.27-attn_output MUL_MAT's write to its split-external output node_972 is
+  lost. Decode (wave64) writes its split-external node_972 fine. Working
+  single-split has node_972 internal (consumed in-program) -> fine.
+- NEXT (executor/kernel owner): compare how the wmma MM dispatch binds its
+  OUTPUT value (node_972, binding idx 533 = last) vs how SET_ROWS kernels bind
+  their KV outputs (which land correctly) in the same prefill program. If the
+  MM output binding slot resolution differs at the dispatch level (off-by-one /
+  alias at the tail of a 534-binding table), that is the bug. Alternatively
+  test: make node_972 ride the host-staged path (copy to host at the split
+  boundary) so the CPU split#2 reads a consistent copy regardless of the wmma
+  write.
