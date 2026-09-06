@@ -1605,3 +1605,15 @@ Round 53 (2026-09-06): fetch/store/routing source EXONERATED - runtime wave-sche
   crossable signals captured: input_norm-0 (slot-0 bit-identical, slot-1 mid-row divergence),
   input_norm-1 (slots 1-5 wrong), node_153 (all-tokens fine).
 - 122-file HRX-side capture on strixhalo. Awaiting d5694d's instrument results.
+
+Round 54 (2026-09-06): consolidation - prefill ids MATCH (solid); several comparisons were file-misaligned (confounded)
+- SOLID: (1) PREFILL ids (16x6 argsort r40 HRX vs r04 CPU) = [3,5,12,7,2,4] all 6 tokens
+  MATCH; (2) input_norm-0 slot-0 bit-identical; (3) gate_up t0 clean + t1-5 disjoint with
+  SAME experts => mm input (post_attn_norm-0, in-program/unmeasurable via readbacks) or the
+  mm compute/fetch.
+- CONFOUNDED: the "38/40 mismatch" = decode-graph argsort files compared across misaligned
+  run sequences (each HRX slice = a graph_compute -> run counters diverge); node_153 compare
+  = slightly misaligned layout. Both flagged for careful re-measurement.
+- Next: post_attn_norm-0 capture needs an executor-side in-program tensor dump (new mechanism)
+  or d5694d's kernel instrument. Decode ids need an aligned capture.
+- Fleet: eb4f0b (localization), d5694d (kernel instrument).
