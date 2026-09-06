@@ -224,31 +224,63 @@ static void buffer_get(ggml_backend_buffer_t buffer,
     auto *       context       = buffer_context(buffer);
     const size_t source_offset = tensor_offset(context, tensor) + offset;
     GGML_ASSERT(source_offset <= buffer->size && size <= buffer->size - source_offset);
-    if (context->base != reinterpret_cast<uint8_t *>(GGML_HRX_FAKE_PTR_BASE)) {
-        std::memcpy(data, context->base + source_offset, size);
-        return;
-    }
-    if (!HRX_CHECK(hrx_synchronous_d2h(context->device->device, context->buffer, source_offset, data, size))) {
-        GGML_LOG_ERROR("%s: HRX buffer download failed\n", __func__);
+    const bool strided = tensor->view_src != nullptr && !ggml_is_contiguous(tensor);
+    if (!strided) {
+        if (context->base != reinterpret_cast<uint8_t *>(GGML_HRX_FAKE_PTR_BASE)) {
+            std::memcpy(data, context->base + source_offset, size);
+            return;
+        }
+        if (!HRX_CHECK(hrx_synchronous_d2h(context->device->device, context->buffer, source_offset, data, size))) {
+            GGML_LOG_ERROR("%s: HRX buffer download failed\n", __func__);
+        }
+    } else {
+        // Strided view readback: serve the view's MEMORY EXTENT (rows at their
+        // nb positions within the parent) with a single span, matching the
+        // ggml buffer_get convention used by every other backend (CPU/CUDA raw
+        // memcpy of base+offset). The previous compact-logical gather wrote
+        // rows at t*ne0 positions while consumers read at the strided nb
+        // (t*nb[2]) -> token doubling (zaya gate/up views: swiglu[t] = token
+        // 2t's data, t3-5 = stale tail) = round-68 finding. Resolve through
+        // the view_src chain so reads hit the PARENT's real storage (the
+        // gallocr materialization may have given the view its own slot with
+        // span-copied data; the parent holds the token-major truth).
+        const ggml_tensor * src = tensor;
+        size_t accum_off = 0;
+        while (src != nullptr && src->view_src != nullptr) {
+            accum_off += src->view_offs;
+            src = src->view_src;
+        }
+        // Read from the PARENTs buffer (the view may have its own materialized slot).
+        ggml_backend_buffer_t src_buffer = src != nullptr ? src->buffer : buffer;
+        auto * src_ctx = buffer_context(src_buffer);
+        const size_t base_off = tensor_offset(src_ctx, src) + accum_off;
+        if (std::getenv("GGML_HRX_TRACE_STRIDED")) {
+            fprintf(stderr, "[strided-off] name=%s base_off=%zu src=%s src_tensor_off=%zu data=%p\n",
+                    ggml_get_name(tensor) ? ggml_get_name(tensor) : "?", base_off,
+                    src ? (ggml_get_name(src) ? ggml_get_name(src) : "?") : "-",
+                    src ? tensor_offset(context, src) : 0, (void*) tensor->data);
+        }
+        if (std::getenv("GGML_HRX_TRACE_STRIDED")) {
+            const char * tn = ggml_get_name(tensor);
+            fprintf(stderr, "[strided-get] name=%s ne=%lld,%lld,%lld,%lld nb=%zu,%zu,%zu,%zu size=%zu offset=%zu view_offs=%zu\n",
+                    tn ? tn : "?", (long long) tensor->ne[0], (long long) tensor->ne[1], (long long) tensor->ne[2], (long long) tensor->ne[3],
+                    (size_t) tensor->nb[0], (size_t) tensor->nb[1], (size_t) tensor->nb[2], (size_t) tensor->nb[3], size, offset,
+                    (size_t) tensor->view_offs);
+        }
+        if (src_ctx->base != reinterpret_cast<uint8_t *>(GGML_HRX_FAKE_PTR_BASE)) {
+            std::memcpy(data, src_ctx->base + base_off + offset, size);
+        } else if (!HRX_CHECK(hrx_synchronous_d2h(src_ctx->device->device, src_ctx->buffer, base_off + offset, data, size))) {
+            GGML_LOG_ERROR("%s: HRX strided buffer download failed\n", __func__);
+        }
+        if (std::getenv("GGML_HRX_TRACE_STRIDED")) {
+            const float * fp = (const float *) data;
+            fprintf(stderr, "[strided-vals] %s: [%.4f %.4f %.4f %.4f] [%.4f %.4f %.4f %.4f]\n",
+                    ggml_get_name(tensor) ? ggml_get_name(tensor) : "?", fp[0], fp[1], fp[2], fp[3],
+                    fp[2048], fp[2049], fp[2050], fp[2051]);
+        }
     }
     if (std::getenv("GGML_HRX_DUMPVIEW")) {
         const char * hnm = ggml_get_name(tensor);
-        if (hnm != nullptr && size >= 16384 && (strstr(hnm, "post_attn_norm-") == hnm ||
-            strstr(hnm, "input_norm-") == hnm || strstr(hnm, "router_logits-") == hnm ||
-            strstr(hnm, "node_153") == hnm || strstr(hnm, "node_") == hnm ||
-            strstr(hnm, "cache_s") != nullptr || strstr(hnm, "cca_") != nullptr || strstr(hnm, "Qraw-") == hnm || strstr(hnm, "Kraw-") == hnm)) {
-            // also dump these by exact name (keep-first per name)
-            char path[160];
-            snprintf(path, sizeof path, "/tmp/hrx_%s.bin", hnm);
-            FILE * fx2 = fopen(path, "rb");
-            if (fx2 == nullptr) {
-                FILE * f2 = fopen(path, "wb");
-                if (f2 != nullptr) { fwrite(data, 1, size, f2); fclose(f2); }
-                fprintf(stderr, "[dumpfile] %s (%zu B)\n", hnm, size);
-            } else {
-                fclose(fx2);
-            }
-        }
         if (hnm != nullptr && size >= 90000 && (strstr(hnm, "ffn_moe_gate-0") == hnm || strstr(hnm, "ffn_moe_up-0") == hnm)) {
             const char * tag = strstr(hnm, "ffn_moe_gate-") != nullptr ? "gate" : "up";
             char path[128];
@@ -278,6 +310,34 @@ static bool buffer_copy(ggml_backend_buffer_t buffer, const ggml_tensor * source
     const size_t source_offset      = tensor_offset(source_context, source);
     const size_t destination_offset = tensor_offset(destination_context, destination);
     const size_t size               = ggml_nbytes(source);
+    const bool strided = (source->view_src != nullptr && !ggml_is_contiguous(source)) ||
+                         (destination->view_src != nullptr && !ggml_is_contiguous(destination));
+    if (strided) {
+        // Stride-aware copy: walk the source's LOGICAL rows (row-major by ne) and
+        // write them contiguously into the destination's rows honoring both nb sets.
+        // The single-span memcpy mixes neighboring rows of the parent for strided
+        // views (zaya gate/up materialization was feeding the CPU swiglu interleaved
+        // data).
+        const size_t esz    = ggml_element_size(source);
+        const size_t n0     = source->ne[0];
+        const size_t n1     = source->ne[1];
+        const size_t n2     = source->ne[2];
+        const size_t n3     = source->ne[3];
+        const size_t rbytes = n0 * esz;
+        for (size_t i3 = 0; i3 < n3; ++i3) {
+            for (size_t i2 = 0; i2 < n2; ++i2) {
+                for (size_t i1 = 0; i1 < n1; ++i1) {
+                    const size_t src_row = source_offset + i1 * source->nb[1] + i2 * source->nb[2] + i3 * source->nb[3];
+                    const size_t dst_row = destination_offset + i1 * destination->nb[1] + i2 * destination->nb[2] + i3 * destination->nb[3];
+                    CopyBufferArgs args{ source_context->buffer, src_row, destination_context->buffer, dst_row, rbytes };
+                    if (!buffer_submit_and_wait(destination_context->device, submit_copy_buffer, &args)) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
     if (source_offset > source_buffer->size || size > source_buffer->size - source_offset ||
         destination_offset > buffer->size || size > buffer->size - destination_offset) {
         return false;
