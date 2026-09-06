@@ -1309,3 +1309,20 @@ Round 32 (2026-09-06): numerical divergence hunt - attention bit-identical, dive
   op's own outputs). Handed to eb4f0b (m_mtpr1qjd).
 - Evidence: /tmp/rt1.err (1-token all-HRX chain), /tmp/mmid.err (MMID-CPU, attention identical),
   /tmp/ngl1.log (sched failure).
+
+Round 33 (2026-09-06): gate/up = strided views of gate_up; write 49152 vs readback 90112 (capacity-tail geometry)
+- Same-run readtrace with ne/nb (/tmp/rts4.err, zaya f32twin 5-token prefill):
+  * ffn_moe_gate-0/up-0: ne=2048,1,6,1 nb=4,16384,16384,98304 nbytes=90112 view=1 vsrc=ffn_moe_gate_up-0,
+    readback size=90112 @2621440
+  * input_norm-0: ne=2048,6,1,1 nb=4,8192,49152,49152 nbytes=49152 (6 slots, sane)
+  * Post-fix dispatch writes for the gate/up class: len=49152 (160 origin=0 GraphValue externalized
+    + 362 origin=1 transient)
+- GEOMETRY: gate/up = strided VIEWs of gate_up: dim-2 (6 logical slots) with nb[2]=16384 (4096 =
+  the parent gate_up width x4B), but ggml_nbytes = 90112 = 22528 elements (2048x11) while the ne
+  product = 2048x1x6 = 12288 (49152B). Write = 49152 (6 slots x 2048 rows); readback copy = 90112
+  (11-slot extent). The 5 extra slots = eb4f0b's capacity-tail candidates (uninitialized if the
+  copy/consumers span them).
+- OPEN: whether the CPU swiglu consumes the full 90112 (contamination) or is strided/slot-aware
+  (benign over-copy) - eb4f0b's view/copy machinery read (m_mtpr9dp8). Fix candidates: zero-fill
+  the tail, size the base to the actual slot count, or make the copy extent = the logical write.
+- Evidence: /tmp/rts4.err (ne/nb geometry), /tmp/gb.err (49152 writes).
