@@ -745,3 +745,32 @@ Round 16o (2026-09-06): bufbase eliminates memcpy-branch suspect; device layer c
   fake-base device-buffer bindings; all code above the iree dispatch is
   eliminated after 24 rounds (16a-16o). Next: (a) confirm all HRX programs in
   one pass share ONE stream; (b) amdgpu/iree-level dispatch tracing.
+
+Round 16p (2026-09-06): BREAKTHROUGH - HRX programs are MISSING their CPU-produced activation inputs from the binding lists
+- Full per-execute binding dump (GGML_HRX_BIND_KIND=1 GGML_HRX_BIND_ALL=1,
+  collaborator instrument, /tmp/bindall.log) of the canary shows:
+  * Split#3 (output head, ~7 ext): binds ONLY blk.27 ffn weights + token_embd.weight
+    (weight=1, weights buffer) + result_output (val=18, device arena gen=4
+    off=524288). NO node_973/node_974 - the CPU GET_ROWS outputs that split#3's
+    first node (ADD ffn_inp-27) consumes. NOT bound, NOT staged.
+  * Split#1: no embd input binding anywhere (the CPU GET_ROWS output its RMS
+    node#1 consumes).
+  * The ONLY host-staged inputs per token are the small leaves/mask (val=10/23/
+    27/36, HRX0_HOST arena gen=5).
+- MECHANISM: kernels read unbound/zero slots -> exact-zero embd -> RMS(0)=0 ->
+  all linear/attention ops on zero -> zero KV + zero node_972 + zero
+  result_output. Explains ALL 25 rounds of symptoms: full-speed kernels (run on
+  zero inputs), staging verified correct (leaves are the only staged tensors),
+  only mixed graphs affected (single-split programs have no CPU-produced
+  activation inputs to lose), dtype/mode independence, clean drivers.
+- ROOT-CAUSE QUESTION (in ggml-hrx code, NOT the driver): why do CPU-op-produced
+  ACTIVATIONS (embd, node_973/974) fail to become program externals while
+  leaves/mask succeed? Distinguish: (a) absent from binding_match.external_
+  bindings (import/match drops CPU-op outputs that feed the split) vs
+  (b) present but resolve_buffer_binding fails (dropped via the "null binding"
+  path in CommandProgramBindings::from_bindings) vs (c) the sched input_cpy
+  for them lands in a buffer the executor cannot bind.
+- Collaborators: eb4f0b tracing import/match path; a137d5 distinguishing (a)
+  vs (b); d5694d stood down (driver clean confirmed). If (a): fix in the
+  graph import/external-list construction. If (b): fix in resolve_buffer_binding
+  host-buffer branch.
