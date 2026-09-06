@@ -714,16 +714,26 @@ void GraphProgram::dump_program_values(const CommandProgramExecutionContext & co
     auto scan_commands = [&](const std::vector<PreparedCommand> & commands) {
         for (const PreparedCommand & cmd : commands) {
             if (cmd.kind != CommandKind::Kernel) continue;
+            size_t bi = 0;
             for (const PreparedCommandBinding & pb : cmd.kernel.bindings) {
-                if (pb.ref.buffer == nullptr) continue;
+                if (pb.ref.buffer == nullptr) { ++bi; continue; }
                 if (seen_values.count(pb.binding.value.value)) continue;
                 const Value * value = graph_->values().find(pb.binding.value);
-                if (value == nullptr || value->tensor == nullptr) continue;
-                const char * nm = ggml_get_name(value->tensor);
-                if (nm == nullptr) continue;
+                if (value == nullptr) continue;
+                std::string nm;
+                if (value->tensor != nullptr) {
+                    const char * gnm = ggml_get_name(value->tensor);
+                    if (gnm != nullptr) nm = gnm;
+                }
+                if (nm.empty()) {
+                    // transients / generated resources: tag by the binding INDEX so role
+                    // filters can target them (mm dispatch order: 0=input, 1=expert_table,
+                    // 2=partition_table, 3=weight, 4=output, 5+=optional).
+                    nm = "bind_" + std::to_string(bi);
+                }
                 bool want = false;
                 for (const std::string & f : filters) {
-                    if (strstr(nm, f.c_str()) != nullptr) { want = true; break; }
+                    if (strstr(nm.c_str(), f.c_str()) != nullptr) { want = true; break; }
                 }
                 if (!want) continue;
                 seen_values.insert(pb.binding.value.value);

@@ -231,6 +231,38 @@ static void buffer_get(ggml_backend_buffer_t buffer,
     if (!HRX_CHECK(hrx_synchronous_d2h(context->device->device, context->buffer, source_offset, data, size))) {
         GGML_LOG_ERROR("%s: HRX buffer download failed\n", __func__);
     }
+    if (std::getenv("GGML_HRX_DUMPVIEW")) {
+        const char * hnm = ggml_get_name(tensor);
+        if (hnm != nullptr && size >= 16384 && (strstr(hnm, "post_attn_norm-") == hnm ||
+            strstr(hnm, "input_norm-") == hnm || strstr(hnm, "router_logits-") == hnm ||
+            strstr(hnm, "node_153") == hnm || strstr(hnm, "node_") == hnm ||
+            strstr(hnm, "cache_s") != nullptr || strstr(hnm, "cca_") != nullptr || strstr(hnm, "Qraw-") == hnm || strstr(hnm, "Kraw-") == hnm)) {
+            // also dump these by exact name (keep-first per name)
+            char path[160];
+            snprintf(path, sizeof path, "/tmp/hrx_%s.bin", hnm);
+            FILE * fx2 = fopen(path, "rb");
+            if (fx2 == nullptr) {
+                FILE * f2 = fopen(path, "wb");
+                if (f2 != nullptr) { fwrite(data, 1, size, f2); fclose(f2); }
+                fprintf(stderr, "[dumpfile] %s (%zu B)\n", hnm, size);
+            } else {
+                fclose(fx2);
+            }
+        }
+        if (hnm != nullptr && size >= 90000 && (strstr(hnm, "ffn_moe_gate-0") == hnm || strstr(hnm, "ffn_moe_up-0") == hnm)) {
+            const char * tag = strstr(hnm, "ffn_moe_gate-") != nullptr ? "gate" : "up";
+            char path[128];
+            snprintf(path, sizeof path, "/tmp/hrx_%s0.bin", tag);
+            FILE * fx = fopen(path, "rb");
+            if (fx == nullptr) {
+                FILE * f = fopen(path, "wb");
+                if (f != nullptr) { fwrite(data, 1, size, f); fclose(f); }
+                fprintf(stderr, "[dumpfile] %s (%zu B)\n", hnm, size);
+            } else {
+                fclose(fx);
+            }
+        }
+    }
 }
 
 static bool buffer_copy(ggml_backend_buffer_t buffer, const ggml_tensor * source, ggml_tensor * destination) {
