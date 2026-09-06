@@ -1495,3 +1495,17 @@ Round 43 (2026-09-06): base CONTAINS all token data but SCATTERED at partition o
   doesn't have it.
 - Evidence: /tmp/hrx_ffn_moe_gate-0.bin + up-0.bin (post-fix), /tmp/nodedump/r04_000 (CPU
   oracle), /tmp/base_cmp.py.
+
+Round 44 (2026-09-06): correction - ONLY token-0 clean post-fix (row-aligned analysis); 12/12 single-element finds = false positives
+- Row-aligned matching (/tmp/rowmatch.py): dump rows 0-1 = cpu rows 0-1 (t0 gate+up, sse 0.1 =
+  CLEAN); rows 2-10 match cpu rows poorly (sse 7-16 = fragmented). The earlier 12/12
+  single-element "exact finds" (round 43) = FALSE POSITIVES.
+- => post-fix base = token-0 correct + tokens 1-5 fragmented/absent. The executed kernel does
+  NOT write token-sequential rows.
+- d5694d's methodology catch: his local canary = qwen3-0.6B DENSE (never runs mul_mat_id);
+  his 456 = a base artifact; his fix has only been tested on my zaya runs. Verify the dispatch
+  binds the patched kernel variant (plain publish_vector4) for zaya's gate_up or another
+  mul_mat_id instance is selected.
+- Handed to d5694d (m_mtptbcnr correction).
+- Evidence: /tmp/hrx_ffn_moe_gate-0.bin (post-fix), /tmp/nodedump/r04_000 (oracle),
+  /tmp/rowmatch.py.
