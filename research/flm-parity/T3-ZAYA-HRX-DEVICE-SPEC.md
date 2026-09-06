@@ -855,3 +855,31 @@ Round 16t (2026-09-06): node_972 zero is PREFILL-PROGRAM-specific (wmma kernels)
   pragmatic fix candidate: keep node_972-class split outputs on the wave64
   path (route prefill node_972 through CPU or a decode-style kernel), or write
   node_972 via an explicit copy op after the wmma program.
+
+Round 16u (2026-09-06): deep KV byte-identical too; hypothesis = wmma-mm to split-external output does not land
+- Measurement (GGML_HRX_KVDEEP, reverted; tree clean at a93fc4f45): deep KV
+  (cache_k/v l25-l27) BYTE-IDENTICAL canary vs working => node_972's lost write
+  corrupted NOTHING in any KV region (kills the wrong-slot theory for KV
+  targets; the 534-external binding table's tail slots are all verified
+  pristine).
+- SHARPEST HYPOTHESIS: in the canary prefill, node_972's producer is the ONLY
+  wmma MUL_MAT whose OUTPUT is a split-external (crosses to CPU split#2).
+  Working config: the same tensor is internal (consumed by the FFN in-program)
+  and writes fine. Decode config: node_972 is a split-external written by a
+  wave64 MUL_MAT and writes fine. => wmma MUL_MAT writes to split-external
+  outputs are lost (or land at a wrong arena offset), while wmma writes to KV
+  (SET_ROWS/flash ops) and internal transients land, and wave64 writes to
+  split-externals land.
+- Possible kernel-level cause: the wmma mm kernel derives its output pointer
+  relative to the transient-arena layout (base + in-program offset) instead of
+  the external binding, so a split-external output at a different arena offset
+  gets written elsewhere (zero/unused region).
+- FIX CANDIDATES (in order of effort): (1) dispatch-level: route split-external-
+  output MUL_MATs to the wave64 (decode) kernel even in prefill batches;
+  (2) executor-level: after the wmma program, insert an explicit device->device
+  copy from the internal output to the split-external buffer (or write
+  node_972-class outputs via the host-staged path like leaves); (3) kernel:
+  audit the wmma mm output pointer derivation in the loom kernel corpus.
+- State: exact-zero bug fixed (a0af0f985); prefill computes byte-correct KV;
+  ONE lost write (node_972 in the wmma prefill program) separates the canary
+  from full correctness. Full trail: spec rounds 16a-16u.
