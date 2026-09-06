@@ -1026,3 +1026,27 @@ Round 17b (2026-09-06): reserve-ghost dead post-fix; hook compile fix
   not kernel class (1-token-batch all-wave64 still 456 at step 1), not
   bindings (verified), not inputs (KV byte-correct). The vanish is specific to
   the first-step execution of the split program writing its terminal external.
+
+Round 17i (2026-09-06): node_972 target = STABLE gen-4 arena (stale-handle theory DEAD); vanish is at kernel-execution/readback layer
+- Lifecycle trace (GGML_HRX_LIFECYCLE on ggml-hrx buffer_alloc/free): exactly FIVE
+  buffer allocs at init (gen1 weights 390MB, gen2 output 607KB, gen3 KV 28MB,
+  gen4 compute 78MB @0x55ac6b8e9a00, gen5 host 2MB); NO mid-run recreation.
+- node_972's recorded+resolved binding = gen-4 arena 0x55ac6b8e9a00 @1572864
+  (EXACTLY the stable alloc handle). The 536 transient-bound mm outputs go to a
+  DIFFERENT buffer (0x55ac6d8212e0 = the executor transient arena). So node_972
+  writes VALID, stable, once-allocated memory and reads (same handle+offset)
+  return zeros. NOT a stale handle, NOT buffer-lifecycle (the ggml buffer is
+  never recreated). The executor, caches, bindings, and arena lifecycle are all
+  exonerated with byte-level evidence across rounds 16a-17i.
+- REMAINING (unresolved after ~35 rounds + full fleet): the vanish sits in the
+  kernel-execution/readback layer for the specific case (wmma multi-token mm
+  output in the FIRST batch, target gen-4 arena): either the kernel node does
+  not execute (recorded but dropped at launch), the write lands and is
+  clobbered before readback, or the readback path diverges. Decode (wave64,
+  n_past>0) lands; prefill multi-token (wmma) terminal output does not.
+- All probes/instruments reverted; tree clean at c14db7a5b + eb4f0b in-flight
+  executor iteration. Evidence: /tmp captures (cap.err, rr2.err, rl.err, lc.err)
+  + committed spec rounds 16a-17h + this round.
+- RECOMMENDATION: this needs a dedicated on-device session with iree graph
+  launch/execution tracing (which kernel nodes actually execute at launch) by
+  the platform device owner - beyond what remote instrumentation can reach.
