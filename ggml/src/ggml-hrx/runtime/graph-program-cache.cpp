@@ -719,9 +719,8 @@ void GraphProgram::dump_program_values(const CommandProgramExecutionContext & co
                 if (pb.ref.buffer == nullptr) { ++bi; continue; }
                 if (seen_values.count(pb.binding.value.value)) continue;
                 const Value * value = graph_->values().find(pb.binding.value);
-                if (value == nullptr) continue;
                 std::string nm;
-                if (value->tensor != nullptr) {
+                if (value != nullptr && value->tensor != nullptr) {
                     const char * gnm = ggml_get_name(value->tensor);
                     if (gnm != nullptr) nm = gnm;
                 }
@@ -735,6 +734,7 @@ void GraphProgram::dump_program_values(const CommandProgramExecutionContext & co
                 for (const std::string & f : filters) {
                     if (strstr(nm.c_str(), f.c_str()) != nullptr) { want = true; break; }
                 }
+                ++bi;
                 if (!want) continue;
                 seen_values.insert(pb.binding.value.value);
                 dumps.push_back({ nm, pb.ref.buffer, pb.ref.offset, pb.ref.length });
