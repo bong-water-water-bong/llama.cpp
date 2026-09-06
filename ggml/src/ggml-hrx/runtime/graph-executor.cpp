@@ -86,8 +86,11 @@ CommandProgramBindings GraphExecutor::bind_external_value_buffers(const GraphPro
                     (void*) (tb ? ggml_backend_buffer_get_base(tb) : nullptr));
             fflush(stderr);
         }
-        if (getenv("GGML_HRX_TRACE_1336") &&
-            (external.value.value == 1336 || (binding.length == 20480 && binding.offset == 1572864))) {
+        const char * nmA = external.tensor ? ggml_get_name(external.tensor) : nullptr;
+        if ((getenv("GGML_HRX_TRACE_1336") &&
+             (external.value.value == 1336 || (binding.length == 20480 && binding.offset == 1572864))) ||
+            (getenv("GGML_HRX_TRACE_GATE") && nmA != nullptr &&
+             (strstr(nmA, "ffn_moe_gate") != nullptr || strstr(nmA, "ffn_moe_up") != nullptr))) {
             fprintf(stderr,
                     "[trA] ext value=%d buf=%p(iree) host=%p off=%zu len=%zu gen=%llu id=%llu tensor=%s wrapper=%p\n",
                     external.value.value, (void*)binding.buffer, (void*)binding.host_data, binding.offset,
@@ -102,6 +105,22 @@ CommandProgramBindings GraphExecutor::bind_external_value_buffers(const GraphPro
 
 GraphExecutionResult GraphExecutor::execute(const ggml_cgraph & graph) const {
     GraphExecutionResult result;
+    if (std::getenv("GGML_HRX_GRAPHCOUNT")) {
+        static int exec_calls = 0;
+        size_t non_hrx = 0, add_like = 0;
+        std::string ops;
+        for (int i = 0; i < graph.n_nodes; ++i) {
+            const ggml_tensor * n = graph.nodes[i];
+            if (i < 3 || i >= graph.n_nodes - 3) { ops += ggml_op_name(n->op); ops += ' '; }
+            if (n->op == GGML_OP_ADD || n->op == GGML_OP_GET_ROWS ||
+                n->op == GGML_OP_MUL_MAT || n->op == GGML_OP_RMS_NORM) {
+                if (n->op != GGML_OP_MUL_MAT && n->op != GGML_OP_RMS_NORM) { add_like++; non_hrx++; }
+            }
+        }
+        fprintf(stderr, "[gc] call#%d n_nodes=%d n_leafs=%d add_like=%d first/last_ops: %s\n",
+                exec_calls++, graph.n_nodes, graph.n_leafs, (int)add_like, ops.c_str());
+        fflush(stderr);
+    }
     if (graph.n_nodes == 0) {
         result.code = GGML_STATUS_SUCCESS;
         return result;
@@ -133,6 +152,36 @@ GraphExecutionResult GraphExecutor::execute(const ggml_cgraph & graph) const {
         }
     }
 
+    if (getenv("GGML_HRX_TRACE_GATE")) {
+        // Match-vs-live tensor staleness: does the binding_match's captured
+        // ggml tensor for gate/up resolve to the SAME device buffer as the
+        // same-named tensor in THIS graph? Cross-buffer write (zaya prefill:
+        // record binds 0x...4250 arena, readback reads 0x...ffa0 arena).
+        auto gateish = [](const char * n) {
+            return n != nullptr && (strstr(n, "ffn_moe_gate") != nullptr || strstr(n, "ffn_moe_up") != nullptr);
+        };
+        for (const GraphProgramExternalBinding & ext : binding_match.external_bindings) {
+            const ggml_tensor * cap = ext.tensor;
+            if (!gateish(ggml_get_name(cap))) continue;
+            const ggml_tensor * live = nullptr;
+            for (int gi = 0; gi < graph.n_nodes && live == nullptr; gi++) {
+                const ggml_tensor * n = graph.nodes[gi];
+                const char *         nm = ggml_get_name(n);
+                if (nm != nullptr && ggml_get_name(cap) != nullptr && strcmp(nm, ggml_get_name(cap)) == 0) {
+                    live = n;
+                }
+            }
+            ValueBufferBinding cb, lb;
+            const bool cres = ggml_backend_hrx_resolve_value_buffer(cap, cb);
+            const bool lres = live ? ggml_backend_hrx_resolve_value_buffer(live, lb) : false;
+            fprintf(stderr,
+                    "[trM] %s cap_t=%p cap_res=%d cap_buf=%p cap_host=%p off=%zu len=%zu | live_t=%p live_res=%d live_buf=%p live_host=%p off=%zu\n",
+                    ggml_get_name(cap), (void*)cap, cres ? 1 : 0, (void*)cb.buffer, (void*)cb.host_data,
+                    cb.offset, cb.length, (void*)live, lres ? 1 : 0, lres ? (void*)lb.buffer : nullptr,
+                    lres ? (void*)lb.host_data : nullptr, lres ? lb.offset : 0u);
+        }
+        fflush(stderr);
+    }
     if (getenv("GGML_HRX_DUMP_WRITEBIND")) {
         // Leaf-vs-external discriminator: which graph leaves (cross-split /
         // CPU-produced inputs consumed by this HRX graph) are NOT in the

@@ -82,7 +82,9 @@ bool ggml_backend_hrx_resolve_value_buffer(const ggml_tensor * tensor, ggml::hrx
     binding.generation           = context->generation;
     binding.capacity             = buffer != nullptr ? buffer->size : 0;
     binding.weight = buffer != nullptr && ggml_backend_buffer_get_usage(buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS;
-    if (getenv("GGML_HRX_TRACE_1336") && ggml_nbytes(tensor) == 20480) {
+    if ((getenv("GGML_HRX_TRACE_1336") && ggml_nbytes(tensor) == 20480) ||
+        (getenv("GGML_HRX_TRACE_GATE") && ggml_get_name(tensor) != nullptr &&
+         (strstr(ggml_get_name(tensor), "ffn_moe_gate") != nullptr || strstr(ggml_get_name(tensor), "ffn_moe_up") != nullptr))) {
         static int rcall = 0;
         fprintf(stderr, "[trR] resolve#%d tensor=%s tbuf=%p ctx=%p ctx->buffer=%p ctx->gen=%llu ctx->id=%llu off=%zu -> dev_buf=%p\n",
                 ++rcall, ggml_get_name(tensor), (void*)buffer, (void*)context, (void*)context->buffer,
