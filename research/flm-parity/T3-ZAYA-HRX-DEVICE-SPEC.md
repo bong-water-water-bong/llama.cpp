@@ -1401,3 +1401,20 @@ Round 37 (2026-09-06): capacity-padding leak CONFIRMED (weighted row-0 diverges 
 - Evidence: weighted row-0 mad per block (this round), /tmp/hrx_ffn_moe_weighted-*.bin,
   /tmp/nodedump/r04_* (CPU oracle), /tmp/hrx_result_norm.bin, /tmp/hrx_result_output (absent).
 - Handed to eb4f0b (m_mtpsfivk) for the fix-site call.
+
+Round 38 (2026-09-06): ROOT CAUSE CONVERGED - mul_mat_id dst rows at expert-partition ordinals, not token-sequential
+- d5694d kernel review CLOSED #1 (expert stride CLEAN: format F32=32 tile 1024B = K*4 row_bytes;
+  ggml src1 = [K, N, n_expert] planes matching expert*weight_expert_bytes).
+- #2 IDENTIFIED: kernel write index = bounded_assignment = route_tile_base + local_route
+  (route_tile_base = partition_ordinal<<5, 32-row expert partitions) -> dst rows land at
+  expert-PARTITION-packed ordinals, NOT token-sequential dst rows (CPU oracle orders dst by
+  the ids-derived logical mapping = token-sequential for route_count=1).
+- FITS ALL EVIDENCE: n=1 right (single token -> expert partition 0 -> dst 0); token-0 right /
+  token-1+ wrong (token 1 in expert 15's partition -> dst ~32, never dst 1); rms inflated on
+  multi-token; no clean permutation (shifted other-expert rows); round-37 "progressive leak"
+  = shifted rows read by deeper blocks, same mechanism.
+- FIX DIRECTION: routing bundle (common_mul_mat_id_ensure_moe_routing_bundle) must emit
+  assignments ordered by the CPU dst/logical row (token-sequential when route_count=1), or the
+  kernel writes dst at the token index resolved from the assignment table. d5694d to implement.
+- MILESTONE: qwen externalization fixed + committed (rounds 21-31); zaya = this dst-ordering
+  bug in the MoE routing bundle. Evidence: all rounds 32-37 captures.
