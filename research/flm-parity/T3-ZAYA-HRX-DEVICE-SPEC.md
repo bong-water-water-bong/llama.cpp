@@ -1273,3 +1273,23 @@ Round 29-30 (2026-09-06): gate_up root cause + alias-consumer fix attempt (valid
   eb4f0b's 180224B-vs-98304B arithmetic).
 - Evidence: /tmp/za_fix.log (75615 varied), /tmp/zrt3.err (no zero reads), /tmp/big.err
   (gate_up consumers = views only), /tmp/pm.err. Handed to eb4f0b (m_mtpqb2qt).
+
+Round 31 (2026-09-06): alias-only-external rule FIXED + committed (2824946b5) - zaya fluent, zero regressions
+- RULE: a produced value whose in-slice consumers are ALL layout aliases (VIEW/RESHAPE/
+  PERMUTE/TRANSPOSE), and none of those aliases' outputs (recursively, BFS over alias
+  consumers) is consumed by a real in-slice node, is read solely through slice-exiting
+  aliases (cross-slice readers like the CPU swiglu) -> External (ggml slot written). If an
+  alias-descendant reaches a real in-slice op (Kcur -> permuted views -> flash-attn) the
+  value stays Transient (round-30 qwen regression avoided).
+- NO supports_op export needed: the HRX slice contains only HRX-supported real ops (the
+  dispatch-scheduler hard-fails on unmatched nodes), so eb4f0b's unsupported-consumer rule
+  is moot in-slice; alias-outputs-leave-the-slice is the discriminator.
+- BATTERY (all green): zaya ngl99 tok0=563 " is used to hide the problem. The" (FLUENT
+  coherent English vs 53335-collapse/75615-garbage); canary 12095; working qwen 12095;
+  zaya ngl0 9079; zero zero-reads in the readtrace.
+- REMAINING: numerical divergence (563 vs oracle 9079 - coherent text = structure correct).
+  Suspects: eb4f0b's capacity-tail (dispatch writes token rows 0-5 of an 11-row base;
+  rows 6-10 uninitialized - matters only if a consumer spans capacity) or a subtle kernel
+  precision diff. Next: localize the first divergent op by comparing ngl99 device readbacks
+  against ngl0 CPU values mid-prefill.
+- Evidence: /tmp/za31.log (563 fluent), committed graph.cpp rule.
