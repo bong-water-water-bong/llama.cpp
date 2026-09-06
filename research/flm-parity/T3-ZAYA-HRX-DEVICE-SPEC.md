@@ -803,3 +803,31 @@ Round 16r (2026-09-06): ROOT-CAUSE FIX LANDED (classification) - exact zeros GON
 - Instruments in tree (env-gated, uncommitted): GGML_HRX_VALCHECK (per-external
   content dump), GGML_HRX_VERIFY_STAGING (post-upload d2h verify). Fix
   candidate committed separately.
+
+Round 16s (2026-09-06): KV byte-identical canary-vs-working; prefill write-loss is node_972-specific and razor-thin
+- Measurement (GGML_HRX_KVCOMP, reverted after use; tree clean at a0af0f985):
+  CANARY vs WORKING KV across cache_k_l0/k_l1/v_l0/v_l1 is BYTE-IDENTICAL
+  (0.4438/0.2634/-0.1373..., 2.07/-0.04776/2.225..., etc.). => (1) the canary
+  prefill computes embd->all-layers->attention->KV byte-correctly; (2) node_972
+  did NOT write into the KV buffer at the 3x524288=1572864 offset region
+  (a137d5 cross-buffer handle theory: layer-1 V lives at 1572864 in the KV
+  buffer and is byte-identical => no cross-buffer write happened).
+- RESIDUAL (razor-thin): the canary PREFILL program's FINAL external write
+  target node_972 (binding idx 533 = last; blk.27 attn_output mm output,
+  20480B, gen-4 arena off=1572864) reads exact zero post-sync, while: (a) every
+  other external write in the same prefill program (224 KV rows) lands
+  byte-correctly; (b) the decode program's node_972 (idx in a 5-binding list)
+  lands correctly; (c) the working single-split program's final binding
+  (result_output idx 541) lands correctly. So: not count/position/last-binding
+  per se; not cross-buffer; not cache/replay/prepare (16j/16k); not staging
+  (byte-MATCH); not embd (KV proves it). Distinguishing feature of the failing
+  write: node_972 is a WRITE-ONLY external of split#1 consumed by the NEXT
+  split (CPU#2) - the only such cross-program write target in the prefill pass.
+- NEXT (executor owner): trace how WRITE-ONLY externals consumed by a later
+  split are bound in the fresh per-execute path (bind_external_value_buffers
+  + resolve) for the PREFILL program specifically; compare against the decode
+  program where the same tensor class works. eb4f0b hooks dont fire on this
+  path (hrx_graph_exec_launch is not used - fresh per-execute dispatch
+  confirmed). If no quick fix: force node_972-class tensors to ride the
+  host-staged path (copy to host buffer at split boundary, like leaves) so the
+  CPU split reads a guaranteed-consistent copy.
