@@ -431,3 +431,32 @@ Round 16b (2026-09-06): layer-0 origin confirmed; all per-op forcing fails; exec
 - NEXT (needs undisturbed device + instrumentation): dump layer-0 subgraph boundary
   values (first HRX subgraph input vs CPU source) to localize the first corrupt
   byte; check dmesg during run; verify program-cache identity/generation handling.
+
+Round 16c (2026-09-06): split trace + shared-arena coherence finding (best root-cause candidate yet)
+- GGML_SCHED_DEBUG=1 trace of layer-0 decode (32 splits) shows the graph alternates
+  CPU/HRX0 nearly every split. EVERY HRX split reports "0 inputs" - HRX subgraphs
+  receive no explicit cross-backend input copies. Cross-backend data flows through
+  the shared HRX0_HOST compute arena (259 MB) that CPU and NPU both access
+  directly, relying on CPU<->NPU coherence of that arena.
+- ggml-hrx.cpp buffer_alloc (host buft): host_visible -> memory_type =
+  HOST_LOCAL|DEVICE_VISIBLE, HOST_COHERENT ONLY when use_direct_host_bindings
+  (GGML_HRX_USE_UNIFIED_MEMORY). Code comment: "DEVICE_VISIBLE permits handle-
+  based stream copies without implying direct device access." Yet the executor
+  direct-binds host-buft buffers into command programs (no materialization; they
+  have buffer handles). => Default host buft is NOT device-coherent while the
+  executor relies on direct device access to it. FITS the corruption: wrong-but-
+  deterministic at every CPU<->HRX boundary; dtype/memory-mode independent;
+  clean at ngl0 (nothing on device).
+- WHY cell G (USE_UNIFIED_MEMORY=1, HOST_COHERENT) did NOT fix: flag likely not
+  honored for this NPU/driver memory (or read at device init only, before buft
+  creation). Needs verification with alloc success + a coherence micro-test.
+- FIX CANDIDATES (next session, in order):
+  (a) Do not direct-bind non-coherent host-buft buffers: in materialize_host_bindings
+      treat host-buft bindings like host_data (staging upload/download) unless
+      the buffer is truly HOST_COHERENT. command-program-executor.cpp.
+  (b) Force HOST_COHERENT on host buft by default and verify allocs succeed +
+      corruption goes away (then keep or gate it).
+  (c) Micro-test coherence: CPU-write a host-buft tensor, run a trivial device
+      kernel reading it, compare; ditto device->CPU. Establishes the mechanism.
+- zaya-m1 lane still takes the NPU in bursts; cells run in gaps (see round16.sh).
+  Commits: 4705403..HEAD.
