@@ -1012,3 +1012,17 @@ Round 17a (2026-09-06): wmma hypothesis OVERTURNED - 1-token-batch canary still 
   compare against the CPU-only values.
 - State: classification fix (a0af0f985) landed; working 12095; zaya full
   143243; canary 456. zgreedy_b1 kept in research/.
+Round 17b (2026-09-06): reserve-ghost dead post-fix; hook compile fix
+- The committed GGML_HRX_DUMP_SPLITEXTVAL hook (191bd7f2b, [hrxbind2]) did not
+  compile (HRX_CHECK macro is local to ggml-hrx.cpp; PRIu64 missing include) -
+  fixed with direct hrx_stream_synchronize / hrx_synchronous_d2h + status
+  checks + hrx-interop-utils.h + cinttypes includes so the tree builds.
+- Experiment (reverted): GGML_HRX_NO_PROGRAM_CACHE bypass re-tested POST-FIX
+  (round 16q ran it pre-fix, meaningless). Result: canary still tok0=456 -
+  fresh import+build every execution does not fix the first-step node_972
+  write. Reserve-ghost theory dead.
+- PATTERN CONFIRMED: node_972 = EXACT ZERO only on the FIRST step of a
+  sequence (n_past=0); n_past>0 steps write it real. Cause is not caching,
+  not kernel class (1-token-batch all-wave64 still 456 at step 1), not
+  bindings (verified), not inputs (KV byte-correct). The vanish is specific to
+  the first-step execution of the split program writing its terminal external.
