@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
+#include <string>
 #include <vector>
 
 namespace ggml::hrx {
@@ -365,6 +367,28 @@ TransientPlan TransientAllocator::allocate(const Graph &                graph,
     std::vector<TransientAllocationRequest> reserved_requests;
     std::vector<TransientAllocationRequest> packable_requests;
     std::vector<TransientAllocationRequest> completion_counter_binding_requests;
+
+    // [executor lane] GGML_HRX_PRESERVE_ROUTING_TABLES=1: keep the moe routing
+    // table transients (expert_table / partition_table / row_debug,
+    // "common.moe_routing.*") out of the packable pool. They are bound only by
+    // MAIN commands, so by default their arena slots are packable and get
+    // reused once the mm has consumed them - a post-program in-program dump
+    // (GGML_HRX_PROGRAM_DUMP) then reads whatever later command last wrote to
+    // that slot instead of the table the kernel actually read. Reserving them
+    // (tail-allocated, never reused) lets captures see the real contents.
+    // Env-gated; zero default impact on layout or numerics.
+    const bool preserve_moe_routing = []() {
+        const char * value = std::getenv("GGML_HRX_PRESERVE_ROUTING_TABLES");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    if (preserve_moe_routing) {
+        for (const CommandPlanTransient & transient : command_plan.transients) {
+            if (transient.name.find("moe_routing") != std::string::npos &&
+                !contains_value(reserved_values, transient.value)) {
+                reserved_values.push_back(transient.value);
+            }
+        }
+    }
 
     for (const Command & command : initialization_commands) {
         for (const CommandBinding & binding : command.bindings) {

@@ -48,7 +48,8 @@ class GraphProgram {
                  std::string                     target,
                  std::unique_ptr<Graph>          graph,
                  std::unique_ptr<CommandProgram> commands,
-                 std::string                     command_shape);
+                 std::string                     command_shape,
+                 std::unordered_map<int32_t, std::string> generated_value_names);
 
     uint64_t uid() const { return uid_; }
 
@@ -83,8 +84,11 @@ class GraphProgram {
     // transient-arena regions), keyed by program uid + per-uid execution
     // ordinal so cross-run comparisons align on (uid, ordinal) instead of the
     // scheduler's divergent run counters. Writes
-    // /tmp/prg_dump/<uid>_<ordinal>_<name>.bin. (eb4f0b, round 57: readbacks
-    // cannot reach in-program values; this is the executor-side mechanism.)
+    // /tmp/prg_dump/<uid>_<ordinal>_<name>.bin. Transient/generated-resource
+    // bindings are named from generated_value_names_ (common.moe_routing.*);
+    // the positional bind_<index> tag remains a filter alias. (eb4f0b, round
+    // 57: readbacks cannot reach in-program values; this is the
+    // executor-side mechanism.)
     void dump_program_values(const CommandProgramExecutionContext & context) const;
 
   private:
@@ -98,6 +102,12 @@ class GraphProgram {
     std::unique_ptr<Graph>          graph_;
     std::unique_ptr<CommandProgram> commands_;
     std::string                     command_shape_;
+    // ValueId -> generated-resource name for plan transients that have no ggml
+    // tensor and no graph Value entry (moe routing expert_table / partition_table
+    // / row_debug, e.g. "common.moe_routing.*"). Threaded from the scheduler plan
+    // at program build; used by the env-gated in-program dump to name values that
+    // otherwise only have positional bind_<index> tags.
+    std::unordered_map<int32_t, std::string> generated_value_names_;
 
     std::vector<GraphProgramExternalSlot> external_slots_;
     std::unordered_map<int32_t, size_t>   external_slot_by_value_;
