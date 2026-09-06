@@ -857,6 +857,13 @@ static Status record_prepared_kernel_command(hrx_graph_t                  graph,
                        command_context.c_str());
             continue;
         }
+        if (std::getenv("GGML_HRX_DUMP_WRITEBIND") &&
+            (binding.ref.length == 20480 || binding.ref.length == 4096)) {
+            fprintf(stderr, "[recref2] val=%d origin=%d buf=%p off=%zu len=%zu access=%d\n",
+                    (int)binding.binding.value.value, (int)binding.binding.origin,
+                    (void*)binding.ref.buffer, binding.ref.offset, binding.ref.length,
+                    (int)binding.binding.access);
+        }
         refs.push_back({ binding.ref.buffer, binding.ref.offset, binding.ref.length });
     }
     if (!status.success()) {
@@ -1038,6 +1045,9 @@ bool bind_prepared_command_program_transients(const CommandProgram &            
     return true;
 }
 
+static void reresolve_graphvalue_device_refs(const CommandProgramBindings & bindings,
+                                               PreparedCommandProgram &         prepared);
+
 bool bind_and_execute_prepared_command_program(const CommandProgramExecutionContext & context,
                                                const CommandProgram &                 commands,
                                                const CommandProgramBindings &         bindings,
@@ -1090,7 +1100,71 @@ bool bind_and_execute_prepared_command_program(const CommandProgramExecutionCont
         GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(status));
         return false;
     }
+    reresolve_graphvalue_device_refs(bindings, prepared);
     return execute_prepared_command_program(context, prepared);
+}
+
+static void reresolve_graphvalue_device_refs(const CommandProgramBindings & bindings,
+                                               PreparedCommandProgram &         prepared) {
+    // Per-execution re-resolution of GraphValue-origin device kernel refs:
+    // record/bind bakes them at prepare; if the compute-arena instance changed
+    // (growth replaces the iree buffer), the baked handle is stale and writes
+    // vanish (rounds 17c-17f). Refresh every GraphValue ref whose value has a
+    // current device binding in `bindings` (host/transient refs untouched).
+    auto resolve_command = [&](std::vector<PreparedCommand> & commands) {
+        for (PreparedCommand & cmd : commands) {
+            if (cmd.kind != CommandKind::Kernel) continue;
+            for (PreparedCommandBinding & pb : cmd.kernel.bindings) {
+                if (pb.binding.origin != CommandBindingOrigin::GraphValue) continue;
+                for (const CommandProgramBinding & cb : bindings.bindings()) {
+                    if (cb.value.value != pb.binding.value.value) continue;
+                    if (cb.buffer == nullptr || cb.host_data != nullptr) continue;
+                    if (pb.binding.value.value == 1336) {
+                        fprintf(stderr, "[reresolve1336] ref %p -> cb %p (off %zu)\n",
+                                (void*)pb.ref.buffer, (void*)cb.buffer, cb.offset);
+                    }
+                    pb.ref.buffer = cb.buffer;
+                    pb.ref.offset = cb.offset;
+                    pb.ref.length = cb.length;
+                    break;
+                }
+            }
+        }
+    };
+    resolve_command(prepared.commands);
+    resolve_command(prepared.initialization_commands);
+}
+
+static std::vector<RecordedCommandGraph::GraphValueRefSnap> graphvalue_ref_snapshot(
+    const PreparedCommandProgram & prepared) {
+    std::vector<RecordedCommandGraph::GraphValueRefSnap> out;
+    auto add_command = [&](const std::vector<PreparedCommand> & commands) {
+        for (const PreparedCommand & cmd : commands) {
+            if (cmd.kind != CommandKind::Kernel) continue;
+            for (const PreparedCommandBinding & pb : cmd.kernel.bindings) {
+                if (pb.binding.origin != CommandBindingOrigin::GraphValue) continue;
+                bool seen = false;
+                for (const auto & r : out) if (r.value == pb.binding.value.value) seen = true;
+                if (!seen) out.push_back({ pb.binding.value.value, pb.ref.buffer, pb.ref.offset, pb.ref.length });
+            }
+        }
+    };
+    add_command(prepared.commands);
+    add_command(prepared.initialization_commands);
+    return out;
+}
+
+static bool graphvalue_refs_equal(const std::vector<RecordedCommandGraph::GraphValueRefSnap> & a,
+                                  const std::vector<RecordedCommandGraph::GraphValueRefSnap> & b) {
+    if (a.size() != b.size()) return false;
+    for (const auto & r : a) {
+        bool ok = false;
+        for (const auto & q : b) {
+            if (q.value == r.value) { ok = q.buffer == r.buffer && q.offset == r.offset && q.length == r.length; break; }
+        }
+        if (!ok) return false;
+    }
+    return true;
 }
 
 RecordedCommandGraphExecutionResult bind_and_launch_recorded_command_graph(
@@ -1152,12 +1226,30 @@ RecordedCommandGraphExecutionResult bind_and_launch_recorded_command_graph(
         }
     }
 
+    reresolve_graphvalue_device_refs(bindings, prepared);
     const bool had_recorded = recorded.valid();
+    const bool external_refs_changed =
+        had_recorded && !graphvalue_refs_equal(graphvalue_ref_snapshot(prepared), recorded.bound_graphvalue_refs);
+    if (external_refs_changed) {
+        fprintf(stderr, "[resync-ext] GraphValue device refs changed since record; re-recording\n");
+    }
     result.transient_allocation_changed =
-        had_recorded && recorded.bound_transient_arena_allocation_id != prepared.bound_transient_arena_allocation_id;
+        (had_recorded && recorded.bound_transient_arena_allocation_id != prepared.bound_transient_arena_allocation_id) ||
+        external_refs_changed;
     if (!had_recorded || result.transient_allocation_changed) {
         result.event =
             result.transient_allocation_changed ? HrxGraphReplayEvent::RebuildTransient : HrxGraphReplayEvent::MissBuild;
+        if (std::getenv("GGML_HRX_DUMP_WRITEBIND")) {
+            for (const PreparedCommand & cmd : prepared.commands) {
+                if (cmd.kind != CommandKind::Kernel) continue;
+                for (const PreparedCommandBinding & pb : cmd.kernel.bindings) {
+                    if (pb.binding.value.value == 1336) {
+                        fprintf(stderr, "[prerecord1336] origin=%d ref=%p off=%zu len=%zu\n",
+                                (int)pb.binding.origin, (void*)pb.ref.buffer, pb.ref.offset, pb.ref.length);
+                    }
+                }
+            }
+        }
         const uint64_t build_start_ns = hrx_graph_replay_now_ns();
         RecordedCommandGraph rebuilt = record_prepared_command_graph(context, commands, prepared, transient_allocation);
         result.build_ns              = hrx_graph_replay_now_ns() - build_start_ns;
@@ -1167,6 +1259,7 @@ RecordedCommandGraphExecutionResult bind_and_launch_recorded_command_graph(
             return result;
         }
         recorded = std::move(rebuilt);
+        recorded.bound_graphvalue_refs = graphvalue_ref_snapshot(prepared);
     } else {
         result.event = HrxGraphReplayEvent::Hit;
     }

@@ -101,6 +101,13 @@ struct RecordedCommandGraph {
     uint64_t         bound_transient_arena_allocation_id = kInvalidTransientArenaAllocationId;
     size_t           dispatch_count                      = 0;
     Status           status;
+    // GraphValue device refs baked into the recorded exec at record time.
+    // If a later execution resolves a value to a different buffer (compute
+    // arena instance replaced on growth), the recorded exec writes the stale
+    // handle -> vanished writes (rounds 17c-17f). Compare at launch and
+    // re-record on change.
+    struct GraphValueRefSnap { int32_t value; hrx_buffer_t buffer; size_t offset; size_t length; };
+    std::vector<GraphValueRefSnap> bound_graphvalue_refs;
 
     RecordedCommandGraph() = default;
     ~RecordedCommandGraph();
