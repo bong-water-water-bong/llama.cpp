@@ -1346,3 +1346,23 @@ Round 34 (2026-09-06): strided-gather experiment NEGATIVE - view overlap is expe
   dumps at the HRX readback points) or a kernel-numerics review of the zaya-specific path
   (MUL_MAT_ID expert mms, router chain). Baseline: 5-token 563 (oracle 9079), 1-token 2364
   (oracle 9731).
+
+Round 35 (2026-09-06): divergence DEFINITIVELY localized to the expert-mm kernel (loom mul_mat_id)
+- Evidence chain (zaya f32twin, 5-token "The capital of France is"):
+  1. post_attn_norm-0/Qraw/node_153 bit-identical between HRX runs (attention + norms exact).
+  2. router_logits-0 CPU vs HRX: ~0.003-0.009 fp noise only; per-token argmax IDENTICAL
+     ([12,15,16,12,16,0]) -> expert selection = the same.
+  3. gate_up (mul_mat_id output): CPU oracle (ngl0 GGML_DUMP_NODE dump, /tmp/nodedump/
+     r04_000) rms=0.878; HRX gate/up readbacks (/tmp/hrx_gate0.bin, hrx_up0.bin via
+     GGML_HRX_DUMPVIEW) rms=2.01/1.95 = 2.3x LARGER; no offset/permutation maps them
+     (best-alignment SSE mismatches).
+  4. => same expert + same input + same weights, the HRX loom ggml_mul_mat_id_f32_f32_wmma
+     computes different values than ggml CPU's mul_mat_id.
+- All structural machinery exonerated (writes full-extent 98304, readbacks real, views
+  layout-preserving, routing identical).
+- SUSPECTS: a fused post-op (scale by ffn_moe_weights/probs, or an output_unary_op) applied
+  by the loom kernel/dispatch but not the CPU path; or the expert weight rows indexed wrong
+  (ids/partition mapping). pd program-8: kernel ggml_mul_mat_id_f32_f32_wmma, expert_count 16,
+  route_count 1, output_size 4096.
+- Handed to d5694d (loom kernel review, m_mtps4tje) + eb4f0b. Tools: GGML_DUMP_NODE +
+  GGML_DUMP_FILTER (ngl0 CPU dumps), GGML_HRX_DUMPVIEW (HRX readback dumps, keep-first).
