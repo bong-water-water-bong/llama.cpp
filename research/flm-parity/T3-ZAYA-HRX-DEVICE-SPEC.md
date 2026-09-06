@@ -1326,3 +1326,23 @@ Round 33 (2026-09-06): gate/up = strided views of gate_up; write 49152 vs readba
   (benign over-copy) - eb4f0b's view/copy machinery read (m_mtpr9dp8). Fix candidates: zero-fill
   the tail, size the base to the actual slot count, or make the copy extent = the logical write.
 - Evidence: /tmp/rts4.err (ne/nb geometry), /tmp/gb.err (49152 writes).
+
+Round 34 (2026-09-06): strided-gather experiment NEGATIVE - view overlap is expected (layout-preserving reads); divergence elsewhere
+- Hypothesis tested: the gate/up views' readbacks (90112B span) "overlap" (gate s1 == up s0) -
+  implemented a logical-order strided gather in buffer_get. Result: slots became distinct but
+  output did NOT reach the oracle (5-token 85363, 1-token 32003, both worse than the baseline
+  563/2364). REVERTED.
+- CONCLUSION: the overlap is EXPECTED under layout-preserving semantics - the contiguous span
+  from the view's offset legitimately contains the parent's interleaved gate/up rows; the CPU
+  consumer reads per nb (stride-aware), so the plain d2h copy is correct. buffer_get is NOT
+  the divergence.
+- 1-token geometry: gate ne=2048,1,2 (2 slots for the 1-token graph, span 24576) - the graphs
+  carry padding slots (slot counts > real tokens in some phases), so capacity-tail effects
+  remain possible where the kernel writes fewer slots than the graph reads.
+- Tree cleaned: eb4f0b's stale TRACE_1336 probes (3 files, authorized deletion) + orphan
+  ggml-hrx-support.h + stray scripts removed; clean at bdf013016; build green.
+- OPEN: the remaining numerical divergence (zaya coherent-but-wrong first token; qwen-fixed +
+  zaya-structural-fixed committed) needs either the CPU-oracle dump harness (ngl0 named-tensor
+  dumps at the HRX readback points) or a kernel-numerics review of the zaya-specific path
+  (MUL_MAT_ID expert mms, router chain). Baseline: 5-token 563 (oracle 9079), 1-token 2364
+  (oracle 9731).
