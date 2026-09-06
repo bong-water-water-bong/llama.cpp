@@ -105,3 +105,35 @@ match CPU. Consistent with round-64 ROW_DEBUG "publish PERFECT ... values wrong
 = wmma compute per partition": the per-partition VALUE fetch/compute inside the
 wmma core is the remaining bug site (d5694d value-level review).
 Captures: ~/zaya-captures-428ab3/ (720 partition + 720 expert_table files).
+
+## Addendum 2 — executor-side confirmation of rounds 65-67 (binding theory dead; mm compute confirmed)
+
+Investigated b30173's round-66/67 binding directive (output binding -> transient arena;
+external slot = leftovers) from the dispatch/prepare side. Independent evidence says the
+binding theory is already resolved/void at HEAD (post-2824946b5 alias-only externalization):
+
+1. The gate_up mm (uid-10866 class, blk.0.ffn_gate_up_exps.weight 512MB) ALREADY binds its
+   output to the EXTERNAL ggml slot: pddbg b4 val=3 -> compute arena @2621440 len=98304
+   (origin GraphValue, ffn_moe_gate_up-0). The 10868-class mm (ffn_down_exps 256MB) output
+   (49152B) IS legitimately transient (consumed in-slice by the weighted MUL path). No
+   dispatch binding change is warranted.
+2. The external slot @2621440 post-run is NOT leftovers - it is the kernel's deterministic
+   output: tok0 gate[0] = -1.4707 (EXACTLY the round-36/41 correct token-0 value, fp-exact
+   to 4dp) while tok1-5 = the 0.3435-class wrong values. A never-written slot cannot hold
+   token-0 exactly right. => the kernel writes the external slot; its VALUES for t1-5 are
+   wrong = the mm per-partition compute (round 67 %values-head: expert-3/t0 right,
+   t1-5 wrong mad 0.54-1.18). Round-66's "transient = correct / slot = leftovers" =
+   consistent with the round-67 provenance-error retraction.
+3. Per-token gate/up row heads from /tmp/prg_dump/10866_001_ffn_moe_gate_up-0.bin
+   (98304B = [4096,1,6], plane = token, gate = rows 0-2047, up = rows 2048-4095) -
+   for a137d5's classification matrix:
+     tok0 gate: -1.4707 -1.3945 -0.7773  0.0187 -1.5879 -0.4514 ...
+     tok0 up:   -0.1617  2.7422  0.4858  0.5908  0.4697 -0.2520 ...
+     tok1 gate:  0.3435  0.5103  0.7173  1.0615 -0.4341  0.9185 ...
+     tok1 up:    0.2013 -0.1536  0.4487 -0.4280  1.0830 -0.6089 ...
+     tok2 gate:  0.1693  1.1270  0.4482  1.4727 -0.3767 -0.4646 ...
+     tok2 up:   -1.7598 -1.0254 -0.3865  0.7944  0.1096  0.6104 ...
+     (tok3-5 full rows in the file; all 40 blocks' gate_up captures on request)
+   Files: /tmp/prg_dump/10866_001_ffn_moe_gate_up-0.bin + ~/zaya-captures-428ab3/.
+4. Lane status: dispatch STANDBY per round 67 - no dispatch/prepare code change warranted
+   until the classification matrix (a137d5) names a concrete dispatch-side site.
