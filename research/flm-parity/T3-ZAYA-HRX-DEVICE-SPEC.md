@@ -1571,3 +1571,14 @@ Round 50 (2026-09-06): corruption localized BETWEEN attention output and next bl
   resolved (d5694d's /tmp/zadump arena capture = 61GB - cleaned; his capture is running).
 - Handed to eb4f0b (m_mtpuulsg). Goal: 3/5 complete; qwen fixed+committed; zaya = CCA-state
   path in active localization.
+
+Round 51 (2026-09-06): input_norm-0 slot-0 BIT-IDENTICAL; divergence from token-1 in block-0 middle
+- input_norm-0 (block-0 own input norm): slot 0 mad=0.000000 (cpu0=hrx0=-1.1449 BIT-IDENTICAL);
+  slot 1 head matches (0.7869) then diverges mid-row (mad 0.66); CPU slots 2-5 = ZERO (padded
+  in the r04 dump - not a clean oracle there; input_norm-1 = the cleaner 6-slot signal).
+- => embedding + token-0 path bit-exact; divergence enters at token-1+ somewhere in block-0's
+  middle (attention fine per node_153; norm/ffn boundary muddy). The block-0 OUTPUT assembly
+  (residual/CCA/ffn-residual) = the origin window.
+- REMAINING DISCRIMINATORS (eb4f0b's #3/#4): cache_s_l0 write/read + block-0 ffn residual
+  output per token. Offered the DUMPVIEW chain extension; awaiting the go.
+- Fleet: eb4f0b (localization) + d5694d (kernel instrument) both active.
