@@ -35,9 +35,16 @@ template.def<@ggml.mul_mat_id_f32_f32_wmma.publish_vector4> device @ggml_mul_mat
   %output_noalias = buffer.assume.noalias %output : buffer
   %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%output_row_count]x[%output_size]xf32>
   scf.if %publish_word {
-    %bounded_assignment, %assignment_count = index.assume %assignment, %output_row_count [lt(%assignment, %output_row_count)] : index, index
+    // dst row = token-major (token * route_count + route); the partition
+    // ordinal (%assignment) is NOT the output row: partition-space ordinals
+    // exceed output_row_count once >1 expert partitions exist (route_tile_base
+    // = partition<<5), scattering results to wrong rows. Round 37 fix.
+    %bounded_token, %token_capacity = index.assume %token, %token_count [lt(%token, %token_count)] : index, index
+    %bounded_route, %route_capacity = index.assume %route, %route_count [lt(%route, %route_count)] : index, index
+    %row_offset = index.mul %bounded_token, %route_count : index
+    %row = index.add %bounded_route, %row_offset : index
     %mask = vector.mask.range [%channel to %output_size step %c1] : index -> vector<4xi1>
-    vector.store.mask %values, %output_view[%bounded_assignment, %channel], %mask : vector<4xf32>, view<[%output_row_count]x[%output_size]xf32>, vector<4xi1>
+    vector.store.mask %values, %output_view[%row, %channel], %mask : vector<4xf32>, view<[%output_row_count]x[%output_size]xf32>, vector<4xi1>
   }
   template.return
 }
