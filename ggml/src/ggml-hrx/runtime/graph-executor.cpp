@@ -1,4 +1,7 @@
 #include "graph-executor.h"
+#include <unordered_set>
+#include <stdio.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -176,11 +179,38 @@ GraphExecutionResult GraphExecutor::execute(const ggml_cgraph & graph) const {
         &context_.host_transfers,
         &context_.host_weights,
     };
+    // [eb4f0b 2026-09-06] GGML_HRX_DOUBLE_EXECUTE probe: the canary's FIRST
+    // execution of a freshly built program loses writebacks (KV + terminal
+    // externals read zero post-sync at n_past=0; later executions of the same
+    // program land — rounds 17a/17b). If a second launch of the same program
+    // with the same bindings lands its writes, the loss is first-launch
+    // writeback (warm/barrier fix) rather than a semantic error. Safe for
+    // dense qwen (KV slot at the same n_past re-written identically); NOT for
+    // recurrent-state models (state would double-apply) — probe only.
+    bool double_exec = getenv("GGML_HRX_DOUBLE_EXECUTE") != nullptr;
+    bool do_second = false;
+    if (double_exec && use_graph_prepared) {
+        static std::unordered_set<uint64_t> warmed_uids;
+        const uint64_t uid = lookup.program->uid();
+        do_second = warmed_uids.insert(uid).second;
+    }
     const PreparedCommandProgramCacheExecutionResult execution =
-        use_graph_prepared ? lookup.program->execute_with_result(execution_context, bindings) :
-                             context_.prepared_programs.execute_with_result(execution_context, lookup.program->uid(),
-                                                                            lookup.program->command_shape(),
-                                                                            lookup.program->commands(), bindings);
+        [&]() -> PreparedCommandProgramCacheExecutionResult {
+        auto run_once = [&]() {
+            return use_graph_prepared ?
+                lookup.program->execute_with_result(execution_context, bindings) :
+                context_.prepared_programs.execute_with_result(execution_context, lookup.program->uid(),
+                                                               lookup.program->command_shape(),
+                                                               lookup.program->commands(), bindings);
+        };
+        if (do_second) {
+            PreparedCommandProgramCacheExecutionResult warm = run_once();
+            if (!warm.success) { return warm; }
+            fprintf(stderr, "[dblexec] warmed uid=%llu once; running again\n",
+                    (unsigned long long) lookup.program->uid());
+        }
+        return run_once();
+    }();
     if (!execution.success) {
         result.status.append(execution.status);
         if (result.status.success()) {
