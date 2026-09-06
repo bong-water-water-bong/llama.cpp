@@ -826,6 +826,23 @@ static bool device_supports_op(ggml_backend_dev_t device, const ggml_tensor * op
     if (op == nullptr) {
         return false;
     }
+    // Diagnostic: GGML_HRX_CPU_OPS=<OP1,...> now gates ALL claim paths (binary/
+    // unary included), not just the eager list. Lets zaya mixed-split bisection
+    // force e.g. ADD/MUL (res_scale) to CPU. (round 16)
+    {
+        const char * cpu_ops = std::getenv("GGML_HRX_CPU_OPS");
+        if (cpu_ops != nullptr && cpu_ops[0] != '\0') {
+            std::string hay = ",";
+            hay += ggml_op_name(op->op);
+            hay += ",";
+            std::string list = ",";
+            list += cpu_ops;
+            list += ",";
+            if (list.find(hay) != std::string::npos) {
+                return false;
+            }
+        }
+    }
     // Empty tensors (0 elements, e.g. 0-token ubatches / 0-width recurrent
     // state slices during decode) have no kernel path and break the HRX
     // external-binding builder (length-0 bindings are a hard error). Split to

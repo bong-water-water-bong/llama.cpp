@@ -401,3 +401,33 @@ Round 16 (2026-09-06): CPU oracle re-verified via RAW-TOKEN probe; GPU matrix st
   recurring jobs (PIDs 611764/617112/624546, 22:07-22:4x); flm serve (35b-a3b)
   idle since 22:10. Run cells in a quiet gap; each is ~1-2 min + load.
 - Branch fix/hrx-ngl-init-order. Commits: aab33c1..HEAD (this doc + tools).
+
+Round 16b (2026-09-06): layer-0 origin confirmed; all per-op forcing fails; executor staging audited
+- Tooling: GGML_HRX_CPU_OPS now gates ALL claim paths (binary/unary included), not
+  just the eager list (ggml-hrx.cpp device_supports_op). Enables forcing ADD/MUL
+  (zaya res_scale) to CPU for bisection. Build: make -C build -j llama-cli.
+- Post-round-15 isolation (zgreedy raw-token gate, ZAYA_1LAYER where noted):
+  * ngl0 + HRX registered (round-15 device-list fix): tok0=9079 ORACLE (verified
+    raw-token; llama-cli text is template-confounded, see round 16).
+  * ngl99 full: tok0=16745 "gregregre..." (F16=F32=unified: byte-identical logits)
+  * ngl99 + ZAYA_1LAYER: tok0=28453 vs CPU-1layer 88048 -> CORRUPTION STARTS IN
+    LAYER 0 (32 graph splits). Partial ngl (1/2/4/8) hard-aborts (over-claim).
+  * Per-op forcing at 1-layer, all STILL wrong: RMS_NORM->CPU 52617, MUL_MAT->CPU
+    131213, ADD+MUL->CPU 1125 (res_scale), SUM_ROWS/CLAMP->CPU 28453 (unchanged).
+    Matches round-14 tokens exactly -> not a single op kernel; NOT fixable by
+    op-class routing.
+- Code audit (for the executor owner): cross-backend host bindings are materialized
+  in command-program-executor.cpp materialize_host_bindings (weights -> HostWeightCache
+  device buffers; others -> HostStagingBuffer device staging). Ordering in
+  execute_prepared_command_program: upload_async (chunked hrx_stream_update_buffer)
+  -> command lists -> download_synchronous (stream sync + d2h) - looks correct.
+  Suspects remaining: (a) graph-program-cache staleness across reused host_data
+  pointers (bindings hash includes pointers/generations; allocator reuse across
+  graphs), (b) constant images baked into cached programs going stale, (c) device
+  kernel bug on a shape only zaya hits (e.g. n_groups=10 CCA conv/dw, ne=6 batch
+  traces), (d) dmesg -ENOMEM "amdxdna_gem_shmem mmap Failed to insert pages" seen
+  ~11:25 (round-15-era runs) - page-insertion failures could silently zero device
+  reads of some host buffers.
+- NEXT (needs undisturbed device + instrumentation): dump layer-0 subgraph boundary
+  values (first HRX subgraph input vs CPU source) to localize the first corrupt
+  byte; check dmesg during run; verify program-cache identity/generation handling.
