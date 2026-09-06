@@ -1464,3 +1464,19 @@ Round 41 (2026-09-06): kernel dst fix (cc9da925b) VERIFIED ACTIVE but insufficie
   bindings) and does it honor view strides? eb4f0b executor read (m_mtpsxxkv). d5694d's fix
   confirmed active (m_mtpsy23c).
 - Evidence: /tmp/hrx_ffn_moe_gate-0.bin (post-fix rows), /tmp/nodedump/r04_000 (CPU oracle).
+
+Round 42 (2026-09-06): full dst-ordering fix (cc9da925b + f06731ffe) applied + corpus rebuilt - zaya UNCHANGED (563)
+- Both d5694d commits applied to the current branch + forced kernel-corpus rebuild: still 563.
+- gate_up region (view readbacks = base aliases): token-0 gate AND up = CPU-correct (fp noise);
+  tokens 1-5 WRONG. The base's t0 lands right, t1+ don't, even with the token-major publish.
+- Table semantics (moe_routing_tables.loom:80): the builder stores %assignment_i32 = the GLOBAL
+  assignment index at assignment_view[expert][ordinal] (= token for route_count=1) -> the
+  kernel's %token should be right. Yet t1+ writes don't land at the expected base rows.
+- LEADS: (1) kernel per-partition assignment->table indexing (LOCAL-in-partition vs the
+  table's row layout); (2) the sampled "base region" = actually the view materialization
+  (unverified - all execution = recorded-graph launches; per-kernel probes never fire; the
+  direct path execute_prepared_kernel_command is never called even with FORCE_DIRECT).
+- d5694d to consider a kernel-side debug write of the output row index to close it
+  definitively. Kernel fixes = uncommitted on the branch; tree otherwise clean (DUMPVIEW
+  instrument in ggml-hrx.cpp only).
+- Evidence: base region t0-correct/t1+-wrong (round 41 captures).
