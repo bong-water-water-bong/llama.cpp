@@ -1090,3 +1090,34 @@ FINAL STATE after rounds 16a-20: all executor-side mechanisms closed with byte-l
   Remaining hypotheses require on-device iree graph EXECUTION tracing (does the last node of the
   launched exec actually execute / does its write commit): per-node execution, completion
   counters, or memory snapshotting after the exec - platform device owner territory.
+
+Round 21 (2026-09-06): BREAKTHROUGH - trigger isolated + root cause = split-externalization gap (l_out-26), NOT execution
+- TRIGGER ISOLATED: GGML_HRX_CPU_OPS=GET_ROWS is the entire cause of the canary 456.
+  Plain run (no env): tok0=12095 (oracle, fully fused, 0 splits, 0 readbacks).
+  Same command + env: tok0=456 (graph splits into 4 programs; garbage everywhere incl. decode:
+  " [ }" vs oracle " Paris. The capital of France is also").
+- node_972 EXONERATED (37 rounds chased the wrong tensor): its device slot @gen-4/1572864
+  holds REAL, varied f32 (5120/5120 nonzero, var 2.47) on batch 0 AND every decode step;
+  d2h readbacks return the identical real values. The write always landed.
+- ACTUAL ZERO TENSOR: l_out-26 (the residual-add partner, gen-4 @off=0, 20480B) = ALL ZEROS
+  on every step. Full-arena forensic (d5694d GGML_HRX_ARENA_DUMP e2d260b02): gen-4 (78MB)
+  contains EXACTLY ONE data region (node_972 @0x180000); l_out-26's data exists NOWHERE in
+  gen-4. KV arena (gen-3) fully populated -> all device programs executed correctly.
+- RECORD BINDINGS: gen-4 has only 2 refs (node_972). l_out-26 has NO device write binding to
+  its ggml slot (gen-4@0), yet the CPU-side residual add reads it from there (readtrace
+  src_off=0) -> reads a never-written slot -> zero.
+- ROOT CAUSE: graph splitter externalization gap. With CPU-forced ops (GET_ROWS) the
+  residual-add node lands on CPU; its device-produced input l_out-26 (blk.26 output, a
+  NON-terminal in-program value) is never emitted as a program-boundary external, so no
+  program terminal writes its ggml-buffer slot. node_972 (the terminal mm of its program)
+  externalized correctly. Device pipeline itself computes correctly (node_972 real).
+- ZAYA CONNECTION: zaya's NATIVE dispatch puts CPU ops in the split without the env ->
+  same externalization gap -> zaya full ngl99 = 143243 (real but wrong vs oracle 9079).
+  Fixing the gap should resolve both.
+- FIX DIRECTION: any ggml value consumed off-device (CPU-side node) whose producer runs on
+  device must be emitted as a program-boundary external (device write to its ggml buffer
+  slot) even when it is NOT a program terminal value.
+- Evidence on strixhalo: /tmp/adump/arena_78315520_4.bin (gen-4: only node_972 region),
+  /tmp/adump/arena_29360128_3.bin (KV full), /tmp/wb2.err (record bindings: gen-4 = 2 refs),
+  /tmp/full.err + /tmp/ok.err (env vs no-env), /tmp/lout_fail.bin (zeros), /tmp/lout.bin,
+  /tmp/n972.bin (real). Handed to eb4f0b (m_mtpnze65) - split/claim territory.
