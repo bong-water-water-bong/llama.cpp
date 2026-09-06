@@ -1692,3 +1692,15 @@ Round 61 (2026-09-06): cache_s_l0 (block-0 state) CLEAN at 5-token prefill - sta
   downstream of the ffn divergence.
 - Remaining: mm-input-vs-compute fork (post_attn_norm-0 comparison, HRX captured) or
   d5694d's row-debug kernel writes.
+
+Round 62 (2026-09-06): exclusion chain COMPLETE - mm per-partition compute/fetch = origin with zero practical ambiguity
+- eb4f0b formally withdrew the state-write model (block-0 state clean) and concluded: the
+  exclusion chain is complete (input_norm-0 bit-identical + node_153 uniform-fine +
+  cache_s_l0 clean + ids identical => every input to post_attn_norm-0 clean => the norm
+  output (mm src1) clean by construction) => the gate_up mm per-partition compute/fetch =
+  the origin with zero practical ambiguity. d5694d proceeds on the fetch review with full
+  confidence. The n=1 progressive entry = downstream of the block-5 ffn divergence via the
+  state recurrence (one root).
+- Remaining belt-and-suspenders: the post_attn_norm-0 direct comparison (CPU name = fused
+  naming resisted filters; HRX program-dump captured) + d5694d's row-debug kernel writes.
+- Round trail current through 62; the mm fix = the last step to the 5-token oracle.
