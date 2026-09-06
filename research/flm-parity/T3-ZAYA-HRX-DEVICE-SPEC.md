@@ -1215,3 +1215,23 @@ Round 25 (2026-09-06): stale-record theory KILLED - multi-token gate write fails
   in his worktree). Handed to eb4f0b + d5694d.
 - Evidence: /tmp/fdg.err (all-agree + zero), /tmp/zd2.log (FORCE_DIRECT 53335), /tmp/trm.err,
   /tmp/tg3.err.
+
+Round 27 (2026-09-06): gate/up write-target = dedicated wrong buffer (same-process, ALLBIND census)
+- Captures for eb4f0b (kernel/dispatch slice):
+  1. ARENA_DUMP produced nothing for zaya: the compute arena is only 4.75MB (worst-case bs=128
+     reserve; qwen was 78MB) - below d5694d's 16-256MB filter. KV = 10MB, model = 31.6GB. The
+     filter needs lowering for zaya (noted for d5694d).
+  2. ALLBIND + READTRACE same-process (/tmp/c4.err): gate WRITE binding (val=3, origin=0,
+     access=2 @2621440 len 131072) buf=0x55e863b23840 vs gate READBACK ctxbuf=0x55e863beaf90.
+     Buffer census of access=2 (write) bindings: 0x...bb0e60 (3645 = transient arena outputs),
+     0x...beaf90 (880 = ggml compute arena = node_972-class externals that read back correctly),
+     0x...3840 (160 = EXACTLY 40 ffn_moe_gate + 40 ffn_moe_up).
+- CONCLUSION: gate/up's record write-target = a dedicated 160-ref buffer (0x...3840) that the
+  readback never reads; their ggml home (resolver trR + readback) = 0x...beaf90. Working
+  externals (node_972 class) write their ggml home. The prepared/record binding for gate/up is
+  NOT sourced from ggml_backend_hrx_resolve_value_buffer (which gives the correct tensor
+  context) - it comes from import-time value storage / command-binding construction. Suspect:
+  dispatch-mul-mat's output-binding construction for the gate (expert/MoE) pattern assigns the
+  output to a fused/scratch buffer instead of the external's ggml context.
+- Evidence: /tmp/c4.err (same-process write-vs-read buffers + census), /tmp/c3.err,
+  /tmp/c2.err, /tmp/all4.err. Handed to eb4f0b (m_mtppjfou).
