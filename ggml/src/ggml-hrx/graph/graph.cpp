@@ -4,18 +4,32 @@
 
 #include <cassert>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace ggml::hrx {
 namespace {
 
+// A value is TRANSIENT only when it is BOTH produced and consumed inside this
+// node set (computed by an in-set node, read by another). Anything consumed
+// here but produced OUTSIDE the set (a prior CPU/other-backend split computed
+// it, e.g. zaya/qwen CPU GET_ROWS feeding an HRX layer) must stay EXTERNAL so
+// it binds from its real ggml buffer (host_data staging / device copy) instead
+// of being freshly zero-allocated in the transient arena. Previously only
+// consumption was checked, so CPU-produced activations consumed by the set were
+// misclassified Transient -> kernels read zeros (round 16r).
 static bool tensor_is_external(const ggml_tensor *                                  tensor,
-                               const std::unordered_map<const ggml_tensor *, int> & use_counts) {
+                               const std::unordered_map<const ggml_tensor *, int> & use_counts,
+                               const std::unordered_set<const ggml_tensor *> &      produced_here) {
     if (tensor->op == GGML_OP_NONE) {
         return true;
     }
     const auto found = use_counts.find(tensor);
-    return found == use_counts.end() || found->second == 0;
+    if (found == use_counts.end() || found->second == 0) {
+        return true;
+    }
+    // consumed by an in-set node: transient only if also produced here
+    return produced_here.find(tensor) == produced_here.end();
 }
 
 }  // namespace
@@ -132,6 +146,12 @@ GraphImportResult import_ggml_graph(const ggml_cgraph & graph) {
         }
     }
 
+    std::unordered_set<const ggml_tensor *> produced_here;
+    produced_here.reserve(static_cast<size_t>(graph.n_nodes));
+    for (int i = 0; i < graph.n_nodes; ++i) {
+        produced_here.insert(graph.nodes[i]);
+    }
+
     ValueMap & values = result.graph.values();
     for (int i = 0; i < graph.n_nodes; ++i) {
         const ggml_tensor *  node = graph.nodes[i];
@@ -140,11 +160,13 @@ GraphImportResult import_ggml_graph(const ggml_cgraph & graph) {
             if (source == nullptr) {
                 continue;
             }
-            const ValueKind kind = tensor_is_external(source, use_counts) ? ValueKind::External : ValueKind::Transient;
+            const ValueKind kind =
+                tensor_is_external(source, use_counts, produced_here) ? ValueKind::External : ValueKind::Transient;
             inputs.push_back(values.get_or_add_tensor_value(source, kind));
         }
 
-        const ValueKind output_kind = tensor_is_external(node, use_counts) ? ValueKind::External : ValueKind::Transient;
+        const ValueKind output_kind =
+            tensor_is_external(node, use_counts, produced_here) ? ValueKind::External : ValueKind::Transient;
         const ValueId   output      = values.get_or_add_tensor_value(node, output_kind);
         GraphNode &     graph_node  = result.graph.add_node(node->op, output, std::move(inputs));
         graph_node.params           = import_op_params(*node);

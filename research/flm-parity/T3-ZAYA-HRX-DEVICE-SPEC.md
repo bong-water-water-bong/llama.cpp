@@ -774,3 +774,32 @@ Round 16p (2026-09-06): BREAKTHROUGH - HRX programs are MISSING their CPU-produc
   vs (b); d5694d stood down (driver clean confirmed). If (a): fix in the
   graph import/external-list construction. If (b): fix in resolve_buffer_binding
   host-buffer branch.
+
+Round 16r (2026-09-06): ROOT-CAUSE FIX LANDED (classification) - exact zeros GONE; remaining: prefill final-node output reads zero
+- FIX (graph.cpp tensor_is_external): a value consumed by the node set was
+  classified Transient whenever use_count>0, regardless of who PRODUCED it.
+  CPU-produced activations (embd from CPU GET_ROWS, node_973/974) consumed by
+  HRX split nodes were therefore misclassified Transient -> freshly zero-
+  allocated in the HRX transient arena -> kernels read zeros -> exact-zero
+  decode. Now: External unless produced WITHIN the set (produced_here check).
+  Working qwen (single-split, in-set producers) unaffected; zaya ngl0 oracle
+  unaffected.
+- POST-FIX MEASUREMENTS (canary, GGML_HRX_CPU_OPS=GET_ROWS):
+  * embd/node_973/974 now present + resolved as host-staged externals
+    ([hrxext] resolved=1, hostbuf=1). All staged uploads byte-MATCH host
+    (stage-v verify, incl. 4096/20480 B F32).
+  * PREFILL: KV cache now byte-IDENTICAL to the working reference
+    (0.4438 0.2634 -0.1373...) -> prefill layers + attention fully correct.
+  * REMAINING ANOMALY: prefill split#1 final node output node_972 (blk.27
+    attn_output, 5-token [1024,5], 20480 B) reads EXACT ZERO post-sync, while
+    decode-step node_972 (4096 B) reads REAL values. Result: the prefill
+    residual-gather feeds zeros to the output head -> first decode token 456
+    (real logits now, wrong value) instead of 12095.
+  * Decode steps now produce real (wrong) tokens - no more degenerate zeros.
+- NEXT: why does the PREFILL program final external-output write (node_972)
+  not land while decode's does? (wmma prefill kernels vs wave64 decode; or the
+  20480 B 5-token external write target). Compare the dispatch write-binding
+  for node_972 in the prefill program (eb4f0b hook: GGML_HRX_DUMP_WRITEBIND).
+- Instruments in tree (env-gated, uncommitted): GGML_HRX_VALCHECK (per-external
+  content dump), GGML_HRX_VERIFY_STAGING (post-upload d2h verify). Fix
+  candidate committed separately.
