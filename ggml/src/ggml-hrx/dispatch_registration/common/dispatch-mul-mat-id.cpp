@@ -190,8 +190,17 @@ static bool match_mul_mat_id_dispatch(const DispatchMatchContext & context, Disp
     dispatch.bindings.push_back({ routing_bundle.expert_table, 0, routing_bundle.expert_table_byte_count });
     dispatch.bindings.push_back({ routing_bundle.partition_table, 0, routing_bundle.partition_table_byte_count });
     dispatch.bindings.push_back({ match.weight->id, 0, match.weight->byte_count });
+    if (std::getenv("GGML_HRX_WLAYOUT")) {
+        const ggml_tensor * w = match.weight->tensor;
+        if (w != nullptr) {
+            fprintf(stderr, "[wlayout] %s type=%d ne=[%lld,%lld,%lld,%lld] nb=[%zu,%zu,%zu,%zu] bytes=%zu\n",
+                    w->name ? w->name : "?", (int) w->type,
+                    (long long) w->ne[0], (long long) w->ne[1], (long long) w->ne[2], (long long) w->ne[3],
+                    w->nb[0], w->nb[1], w->nb[2], w->nb[3], match.weight->byte_count);
+        }
+    }
     dispatch.bindings.push_back({ match.output->id, 0, match.output->byte_count });
-    if (std::getenv("GGML_HRX_ROW_DEBUG")) {
+    {
         // [b30173/d5694d] dedicated row-debug buffer: {token, dst_row, assignment, expert}
         // per publish. Kernel side writes it; host dumps post-run. 256 i32 slots.
         const ValueId row_debug_value(context.next_plan_value.value +
