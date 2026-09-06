@@ -580,3 +580,28 @@ Round 16h (2026-09-06): exhaustive negative set + final handoff state
   diverges in the qwen canary (embd in vs l_out out). All canaries, repro
   commands, and this log are in-tree (branch fix/hrx-ngl-init-order, commits
   through 8a297e58f + this round).
+
+Round 16i (2026-09-06): instrumented proof - mixed-graph HRX dispatches leave writes at EXACT ZERO
+- Added env-gated (GGML_HRX_DUMP_EXT) post-sync d2h readback in GraphExecutor::
+  execute (graph-executor.cpp; reverted after the measurement, tree clean).
+- RESULTS (qwen3-0.6B Q4_K_M ngl99):
+  * WORKING all-HRX (1 split, 542 externals): cache_k_l0 reads REAL values
+    (0.44, 0.26, -0.14, ...) after sync; tok0=12095.
+  * BROKEN canary (+GGML_HRX_CPU_OPS=GET_ROWS, splits 533-ext + 7-ext + 4-ext):
+    after hrx_stream_synchronize, cache_k_l0/v_l0 (28 layers, external write
+    targets of the main split) AND result_output (in the 7-ext split) ALL READ
+    EXACTLY ZERO. Kernels "succeed" (no error) but no bytes land anywhere the
+    CPU reads - while the very same external weights (read-only inputs) read
+    back fine (real values present).
+- CONCLUSION: in mixed (multi-split / host-staged-input) graphs the HRX dispatch
+  submission silently no-ops or writes to unbound locations - NOT a numerics or
+  per-op kernel bug (identical kernels write correctly in the single-split
+  program). Prime suspect: iree command-buffer submission when a program mixes
+  host-staged uploads (update_buffer) with dispatches, or a per-frame prepared-
+  program/binding mismatch in the multi-split path. The 542-ext working program
+  vs 533-ext broken program differ by: (a) a host-staged external input (embd),
+  (b) result_output living in a SECOND split (output_norm/lm_head split off).
+- NEXT (executor owner, on-device): libhrx IREE tracing (HRX_TRACE_ZONE) to see
+  whether the canary programs are submitted and whether iree_hal_command_buffer
+  batch dispatch with update_buffer commands actually executes; or minimal
+  repro: build the 533-ext program shape with vs without one host-staged input.
