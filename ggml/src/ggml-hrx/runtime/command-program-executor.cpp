@@ -1,4 +1,7 @@
 #include "command-program-executor.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <inttypes.h>
 
 #include "dispatch/command-program-diagnostics.h"
 #include "dispatch/command-program-resolver.h"
@@ -588,6 +591,18 @@ static Status upload_prepared_host_staging(const CommandProgramExecutionContext 
         Status upload_status =
             context.host_transfers->upload_async(context.stream, staging.host_data, staging.buffer, 0, staging.length);
         status.append(upload_status);
+        if (std::getenv("GGML_HRX_VERIFY_STAGING") && upload_status.success() && staging.length >= 512) {
+            hrx_stream_synchronize(context.stream);
+            const size_t n = std::min<size_t>(32, staging.length);
+            uint8_t back[32] = {0};
+            context.host_transfers->download_synchronous(context.stream, staging.buffer, 0, back, n);
+            const float * hf = (const float *)staging.host_data;
+            const float * bf = (const float *)back;
+            bool same = true;
+            for (size_t i = 0; i < n / sizeof(float); i++) { if (hf[i] != bf[i]) { same = false; break; } }
+            fprintf(stderr, "[stage-v] len=%zu host0..3=%.5g %.5g %.5g %.5g dev0..3=%.5g %.5g %.5g %.5g %s\n",
+                    staging.length, hf[0], hf[1], hf[2], hf[3], bf[0], bf[1], bf[2], bf[3], same ? "MATCH" : "MISMATCH");
+        }
     }
     return status;
 }
@@ -684,6 +699,14 @@ static bool execute_prepared_kernel_command(const CommandProgramExecutionContext
          executable.launch.workgroup_size[2]  },
         executable.launch.subgroup_size,
     };
+    if (getenv("GGML_HRX_DUMP_WRITEBIND")) {
+        fprintf(stderr, "[hrxbind2] dispatch ord=%u bindings=%zu cmd=%s\n",
+                (unsigned) executable.export_ordinal, refs.size(), command_context.c_str());
+        for (size_t bi = 0; bi < refs.size(); ++bi)
+            fprintf(stderr, "[hrxbind2]   b%zu buf=%p off=%" PRIu64 " len=%" PRIu64 "\n",
+                    bi, (void*) refs[bi].buffer, (uint64_t) refs[bi].offset, (uint64_t) refs[bi].length);
+        fflush(stderr);
+    }
     if (ErrorResult error = take_status(hrx_stream_dispatch(
             context.stream, executable.executable, executable.export_ordinal, &config, command.kernel.constants.data(),
             command.kernel.constants.size(), refs.data(), refs.size(), 0))) {
