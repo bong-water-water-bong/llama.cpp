@@ -947,3 +947,26 @@ Round 16x (2026-09-06): ZAYA FULL -ngl 99 post-fix - real varied tokens (major p
   MUL_MAT ne[1]>1 when GGML_HRX_CPU_OPS non-empty (diagnostic config only).
   Battery after: canary (both prompts), zaya full, zaya 1-layer, working qwen,
   zaya ngl0.
+
+Round 16y (2026-09-06): (B) tested + reverted; known-good state confirmed
+- eb4f0b landed (B) (7810bb40a: demote multi-token MUL_MAT to CPU when
+  GGML_HRX_CPU_OPS set) but it did not compile (inserted in eager_capability_
+  declared where op is an enum, not a tensor). Fixed by moving to
+  device_supports_op. Result with the fixed (B): canary tok0=126597 (real
+  logits ~12.3, varied text) - a NEW wrong answer, not the oracle. Prefill-all-
+  CPU + HRX-decode creates its own cross-boundary issues and does not cleanly
+  test the node_972 hypothesis. (B) REVERTED (f236d4d35) to keep the tree at
+  the known-good state.
+- CONFIRMED BASELINE (tree at 0282cee56 + revert): working qwen 12095; canary
+  456 (known residual: node_972 wmma-terminal-external write vanish in
+  prefill); zaya full -ngl 99 143243 (real varied tokens, post-fix
+  improvement, not oracle).
+- ASSESSMENT after rounds 16a-16y: the classification fix (a0af0f985) is the
+  substantive landing (exact-zero decode eliminated; zaya full now decodes
+  real tokens; qwen prefill byte-correct KV). The remaining node_972-class
+  vanish is execution/kernel-side (identical correct recorded refs per
+  a137d5; wmma-terminal-external specific; wave64 multi-token unusable; no
+  claim-level graph context for CPU demotion). Needs the platform's
+  kernel/driver owner (iree/amdgpu graph-launch writeback) or an executor
+  design change (e.g., always write split-external mm outputs through a
+  wave64/decode-style or explicit-copy path).
