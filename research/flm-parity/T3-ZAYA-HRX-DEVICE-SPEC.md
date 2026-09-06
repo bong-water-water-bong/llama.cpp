@@ -930,3 +930,20 @@ Round 16w (2026-09-06): matcher-only CPU-demotion aborts (claim mismatch); demot
   (d) is testable by moving node_972-class externals into the transient arena.
 - State unchanged: fix a0af0f985 landed; canary prefill byte-correct KV; ONE
   lost write (node_972 wmma terminal external). Full trail 16a-16w.
+
+Round 16x (2026-09-06): ZAYA FULL -ngl 99 post-fix - real varied tokens (major progress on the actual task-4 target)
+- Measurement: zaya-q4nx-c43.gguf -ngl 99 F16 (33 layers, full mixed graph) with
+  the a0af0f985 classification fix: tok0=143243, top5 logits ~10.8-8.9, text
+  "}+( Integration Comparison Comparison Comparison..." - REAL data flowing
+  through the whole 33-layer mixed graph. Pre-fix the same run gave degenerate
+  repetition (tok0=16745 "gregregre..."). The fix moved the actual goal target
+  from garbage-repetition to real-but-wrong. Still not oracle (9079).
+- Analysis: the varied-but-wrong output + trailing repetition suggests the
+  residual-class write loss (node_972-class) is present for zaya too, plus its
+  recurrent-state hops; the trailing "Comparison Comparison" repetition points
+  at the recurrent/conv state path.
+- Canary (qwen GET_ROWS) still 456; working qwen 12095; zaya ngl0 oracle 9079.
+- PLAN: eb4f0b implementing scoped (B) - device_supports_op claim-false for
+  MUL_MAT ne[1]>1 when GGML_HRX_CPU_OPS non-empty (diagnostic config only).
+  Battery after: canary (both prompts), zaya full, zaya 1-layer, working qwen,
+  zaya ngl0.
