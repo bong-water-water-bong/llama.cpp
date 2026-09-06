@@ -591,18 +591,6 @@ static bool eager_capability_declared(enum ggml_op op) {
                 return false;
             }
         }
-        // (B) [eb4f0b/b30173 2026-09-06] diagnostic-gated: with CPU ops forced
-        // (GGML_HRX_CPU_OPS set), demote ALL multi-token prefill MUL_MATs to
-        // CPU. Round 16v/16w: a wmma MUL_MAT whose output is the terminal
-        // split-external write vanishes (node_972 zeros) on the prefill
-        // program; wave64 is decode-only. Per-op claim can't tell terminal
-        // from internal, so under the diagnostic knob the whole prefill-mm
-        // class goes CPU (prefill ~all-CPU, decode stays HRX) to test whether
-        // CPU-computed node_972 + HRX decode reaches the oracle. Zero effect
-        // on default runs (knob unset). Token/batch dim = activation ne[1].
-        if (op->op == GGML_OP_MUL_MAT && op->src[1] != nullptr && op->src[1]->ne[1] > 1) {
-            return false;
-        }
     }
     switch (op) {
         // The scheduler probes preallocated weight tensors as NONE operations when deciding whether their buffer type is
