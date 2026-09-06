@@ -1617,3 +1617,15 @@ Round 54 (2026-09-06): consolidation - prefill ids MATCH (solid); several compar
 - Next: post_attn_norm-0 capture needs an executor-side in-program tensor dump (new mechanism)
   or d5694d's kernel instrument. Decode ids need an aligned capture.
 - Fleet: eb4f0b (localization), d5694d (kernel instrument).
+
+Round 55 (2026-09-06): CCA state diverges from block ~5 at n=1 (mad 0.015@0 -> 1.81@5 -> 3.99@20)
+- cca_last_conv_states copy mad series (n=1 "Paris" prefill): block 0 = 0.015 (clean-ish),
+  5 = 1.81, 15 = 1.33, 20 = 3.99 - the state diverges from ~block 5 and grows through the
+  prefill. cache_s_l10 detailed: SCALE component identical (0.00000), cca_last_conv_states
+  copy mad 2.28, input_norm-10 copy mad 0.54.
+- Supports eb4f0b's windowed-state model: the HRX block outputs (input_norm copies) feeding
+  the CPU conv/state drift progressively from block ~5; the state carries the corruption.
+- ORIGIN WINDOW: block ~5's output assembly. Next probes proposed: block-5 router ids
+  (single-token flip-check) or block-5 ffn/conv outputs.
+- Captures: /tmp/ndh_* (HRX) + /tmp/ndc_* (CPU) on strixhalo.
+- Fleet: eb4f0b synthesizing; d5694d kernel instrument.
