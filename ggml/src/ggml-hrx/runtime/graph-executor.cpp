@@ -1,4 +1,6 @@
 #include "graph-executor.h"
+#include <stdio.h>
+#include <stdlib.h>
 
 #include "backend-buffer-binding.h"
 #include "ggml-impl.h"
@@ -53,7 +55,8 @@ CommandProgramBindings GraphExecutor::bind_external_value_buffers(const GraphPro
         ValueBufferBinding    value_binding;
         CommandProgramBinding binding;
         binding.value = external.value;
-        if (ggml_backend_hrx_resolve_value_buffer(external.tensor, value_binding)) {
+        const bool resolved = ggml_backend_hrx_resolve_value_buffer(external.tensor, value_binding);
+        if (resolved) {
             binding.buffer     = value_binding.buffer;
             binding.host_data  = value_binding.host_data;
             binding.offset     = value_binding.offset;
@@ -64,6 +67,20 @@ CommandProgramBindings GraphExecutor::bind_external_value_buffers(const GraphPro
             binding.weight     = value_binding.weight;
         } else {
             status.log("external value %d is not bound", external.value.value);
+        }
+        // [eb4f0b 2026-09-06] per-external trace: which list entries lose their
+        // CPU-produced activations (embd / node_973 etc.) vs leaves/weights.
+        if (getenv("GGML_HRX_DUMP_WRITEBIND")) {
+            const ggml_tensor * t = external.tensor;
+            ggml_backend_buffer_t tb = t ? (t->view_src ? t->view_src->buffer : t->buffer) : nullptr;
+            fprintf(stderr,
+                    "[hrxext] value=%d name=%s resolved=%d nbytes=%zu buf=%p hostbuf=%d data=%p base=%p\n",
+                    external.value.value, t ? ggml_get_name(t) : "?", resolved ? 1 : 0,
+                    t ? (size_t) ggml_nbytes(t) : 0u, (void*) tb,
+                    tb ? (ggml_backend_buffer_is_host(tb) ? 1 : 0) : -1,
+                    (void*) (t ? t->data : nullptr),
+                    (void*) (tb ? ggml_backend_buffer_get_base(tb) : nullptr));
+            fflush(stderr);
         }
         bindings.push_back(binding);
     }
