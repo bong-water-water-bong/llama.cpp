@@ -29,3 +29,28 @@ mm1 t1-5 bug and premature until mm1 = fixed.
 /tmp/fix_gu.bin (post-fix gate_up slot), oracle: ~/zaya-decode/ffn_oracle/r03_004*.bin,
 ~/zaya-captures-428ab3/. Fix target: mm1 (gate_up exps MUL_MAT_ID) per-partition compute
 for tokens 1-5 (d5694d wmma lane; oracle + captures ready).
+## Silu-consistency appendix (round 70, for b30173's cross-check of m_mtq1iqj7)
+Cascade = monotonic, consistent with the gate_up mm = the FIRST divergence:
+
+per-token mad (HRX post-fix captures vs ~/zaya-decode/ffn_oracle/):
+  token  | gate_up (r03_004) | swiglu (r03_005) | moe_out (r04_006)
+  t0     | 0.0051            | 0.0027            | 0.0011
+  t1     | 1.0105            | 0.4463            | ~0.15
+  t2     | 0.8715            | 0.3178            | ~0.10
+  t3     | 1.0575            | 0.4013            | ~0.23
+  t4     | 0.9161            | 0.3615            | ~0.08
+  t5     | 0.8963            | 0.3277            | ~0.11
+The silu squashes the gate/up error ~2.4-2.8x (1.0 -> 0.4), the down mm + expert
+weight attenuate further (0.4 -> 0.15): exactly the shape of a single upstream
+error source at the gate_up compute.
+
+Row-0 heads (HRX | oracle):
+  gate t1 0.3435|0.2654   t2 0.1693|1.1045   t3 -1.7227|-1.0146   t4 -0.8857|0.1876  t5 -0.5151|0.5645
+  up   t1 0.2013|-0.4716  (full rows in the files)
+  swiglu t2 -0.1616|0.6216  t3 0.5129|-0.1126  t4 0.3215|0.1329  t5 0.0728|-0.2400
+
+Expert table (block-0, gate+up share the bundle): e2->t4, e3->t0, e4->t5, e5->t1,
+e7->t3, e12->t2; partition descriptors = experts at ordinals 0-5, local_part 0,
+rows 1 (route_count=1). Captures: /tmp/fix_gu.bin, /tmp/fix_sw.bin, /tmp/prg_dump/
+10866_001_common.moe_routing.{expert,partition}_table.bin; copies in
+~/zaya-captures-428ab3/. Oracle: ~/zaya-decode/ffn_oracle/r03_00{4,5,7}_*.
