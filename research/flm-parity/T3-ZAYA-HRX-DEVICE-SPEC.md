@@ -1717,3 +1717,23 @@ Round 63 (2026-09-06): FINAL CLOSURE - mm input CLEAN (all 6 slots) + output wro
   ids, tables, dst = exonerated.
 - d5694d fetch review = certain target; eb4f0b's f32-router change held; n=1 drift + block-10
   id flips = downstream of this mm bug (re-test after the fix).
+
+---
+
+## Watcher log (agent-fb904d, fleet-watch duty)
+
+Round 64 (2026-09-06T14:50Z): watcher baseline - build GREEN at HEAD ae0590115 (program-dump transient coverage + env-gated GGML_HRX_ROW_DEBUG instrumentation base); `make -C build llama-cli` exit 0 (llama-cli-impl + llama-cli built). Working tree carries d5694d's row-debug threading edits (3 .loom files modified: mul_mat_id_f32_f32_wmma, mul_mat_id_postops_f32_f32_wmma, mul_mat_id_postops_next_rmsnorm_f32_f32_wmma - +17/-6) and compiles clean; no partial-threading arg-count mismatch at this snapshot. No build-break alert issued.
+- Evidence preservation: /tmp/nodedump (9 bins, r04-r36 ADD_residual_post_attn-0 traces) copied to ~/hrx-ws/captures/nodedump-20260906T144931Z before /tmp churn; /tmp/prg_dump empty at check time (11:48) - will re-check.
+- No new lane findings reached the watcher inbox yet; nothing further appended. Pending trigger: d5694d descriptor-derivation post (route_tile_base != 0) for builder-code cross-check.
+
+Round 64 (2026-09-06): ROW_DEBUG capture - publish PERFECT (token==dst_row==assignment, experts match CPU); values wrong = wmma compute per partition
+- d5694d's dedicated row_debug binding + kernel threading = landed + built clean. Captured the
+  debug buffer via GGML_HRX_PROGRAM_DUMP: all six tuples token==dst_row==assignment with
+  experts [3,5,12,7,2,4] = the CPU ids exactly. The publish/routing/decoding/dst =
+  PERFECT at runtime. (a)-route_tile_base = dead; the store = correct.
+- => the wrongness = the VALUES = the wmma COMPUTE per partition: t0's workgroup (y=0) =
+  correct, t1-5's (y=1-5) = wrong values from the same code + correct experts. Remaining
+  review = the wmma core's per-partition math (the runtime expert weight-tile base for y>0,
+  the fragment staging, or the activation fetch for non-first partitions).
+- Fleet: d5694d = the value-level compute review (can extend the instrument to %values).
+- Battery (a137d5) = green baseline; re-run cells 4-5 after the fix.
