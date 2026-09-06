@@ -1430,3 +1430,19 @@ Round 39 (2026-09-06): count-mismatch hypothesis OUT (ids 0..15, expert_count 16
   partition<<5+local vs CPU token-sequential) - fix in the MoE routing bundle dst ordering,
   in d5694d's hands. Battery armed.
 - Evidence: /tmp/nodedump/r04_108 (argsort ids [16,6]).
+
+Round 40 (2026-09-06): ZEROPAD test NEGATIVE - unwritten-pad mechanism ruled out; dst-ordering #2 confirmed
+- GGML_HRX_ZEROPAD (env-gated zero-fill of every write-binding region before each dispatch,
+  command-program-executor.cpp): NO CHANGE (5-token 563, 1-token 2364 = baseline).
+- => the rows the downstream reads as token slots are NOT unwritten leftovers (zeros don't
+  alter results) - they contain data written at wrong dst positions = d5694d's #2
+  (partition-ordinal dst vs token-sequential) confirmed as the mechanism.
+- n=1 residual puzzle: at n=1 (2-slot graph, 1 real token), token-0 gate/weighted = fp-correct
+  through early blocks yet the output diverges at later blocks even with zeroed pads - the
+  depth-progressive drift at n=1 is not pad garbage; next suspect = CCA recurrent state path
+  (cache_s crossing CPU) if the dst-ordering fix doesn't clear n=1.
+- Note: the recurring stale [trGP]/[trPCC] TRACE_1336 probes keep reappearing in
+  graph-program-cache.cpp / prepared-command-program-cache.cpp (re-added 3+ times this session,
+  each breaking the build with the out-of-scope 'bindings' error) - purged again; tree = my 2
+  env-gated instruments only (ggml-hrx.cpp DUMPVIEW, command-program-executor.cpp ZEROPAD).
+- Awaiting d5694d's routing-bundle dst-ordering fix; battery armed.
