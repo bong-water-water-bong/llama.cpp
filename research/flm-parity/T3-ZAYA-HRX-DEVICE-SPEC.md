@@ -1235,3 +1235,17 @@ Round 27 (2026-09-06): gate/up write-target = dedicated wrong buffer (same-proce
   output to a fused/scratch buffer instead of the external's ggml context.
 - Evidence: /tmp/c4.err (same-process write-vs-read buffers + census), /tmp/c3.err,
   /tmp/c2.err, /tmp/all4.err. Handed to eb4f0b (m_mtppjfou).
+
+Round 28 (2026-09-06): gate-slot SET_ROWS write = origin GraphValue bound to wrong buffer (ref-path at fault)
+- eb4f0b 8e6e5e7d2: recref2 prints EVERY record-time kernel binding origin/val/buf/off/len/access
+  under GGML_HRX_DUMP_ALLBIND (the old 20480/4096 filter excluded gate's 131072B).
+- zaya ngl99 capture (/tmp/o5.err): recref2 for the gate slot @2621440:
+  * val=3 origin=0 buf=0x55b77f67f840 off=2621440 len=131072 access=2 (the SET_ROWS write)
+  * val=13 origin=0 buf=0x55b77f67f840 off=2621440 len=131072 access=0 (read at same slot)
+- origin=0 = GraphValue (qwen calibration: node_972/embd=0, transients=1). The whole SET_ROWS
+  command's binding set (val 3 write + val 13 read) resolved to buffer 0x...f840, while trR
+  (ggml_backend_hrx_resolve_value_buffer on the tensor) = the ggml home 0x...beaf90-class.
+- Per eb4f0b's dichotomy: origin=GraphValue + wrong buffer => the buffer-resolution/ref path
+  (reresolve or the command-binding resolution for GraphValue-origin outputs) is at fault -
+  NOT the transient/two-home case (fix = dual-write) and NOT the fusion case.
+- Evidence: /tmp/o5.err. Handed to eb4f0b (m_mtppnr3a).
