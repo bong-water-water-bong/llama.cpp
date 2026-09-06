@@ -1768,3 +1768,16 @@ Round 66 (2026-09-06): TWO layered fixes identified - (1) the transient-vs-exter
   d5694d loom lane.
 - Both = in the fleet with the full evidence (the pddbg bindings, the numpy correlation,
   the strided-off trace).
+
+Round 67 (2026-09-06): in-kernel %values-head = authoritative - mm COMPUTES WRONG for 5/6 experts; binding conclusion retracted
+- d5694d's %values-head instrument (the in-kernel %wide f32→i32 into the debug buffer) =
+  captured + decoded: expert 3 (t0) = right (mad 0.0045, corr 1.0); t1-5 = WRONG (mad
+  0.54-1.18) with MIXED correlations (t3/t4 ~0.6-0.7, t1/t2/t5 ~0-0.3) - neither a clean
+  half-dot nor wrong-expert nor precision.
+- b30173's earlier correlation (the transient dump = correct all 6) = provenance error
+  RETRACTED (the dump = not the mm's output; the %wide = the definitive source).
+- => the compute = the target again: the classifying matrix (HRX t vs CPU(t, expert X) for
+  all 16x6) = the next = a137d5's computation - names the specific weight-slice/offset bug
+  vs the within-plane scramble.
+- Fleet: d5694d (the instrument + the analysis complete), a137d5 (the classification matrix),
+  428ab3 (dispatch standby), fb904d (watcher).
