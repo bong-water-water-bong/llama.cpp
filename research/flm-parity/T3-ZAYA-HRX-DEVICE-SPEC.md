@@ -1121,3 +1121,32 @@ Round 21 (2026-09-06): BREAKTHROUGH - trigger isolated + root cause = split-exte
   /tmp/adump/arena_29360128_3.bin (KV full), /tmp/wb2.err (record bindings: gen-4 = 2 refs),
   /tmp/full.err + /tmp/ok.err (env vs no-env), /tmp/lout_fail.bin (zeros), /tmp/lout.bin,
   /tmp/n972.bin (real). Handed to eb4f0b (m_mtpnze65) - split/claim territory.
+
+Round 22 (2026-09-06): qwen mixed-split FIXED (canary = 12095 oracle) + zaya remaining zeros = ffn_moe_gate/up
+- eb4f0b graph.cpp fix (UNCOMMITTED as of this round, validated in-tree): tensor_is_external
+  now also externalizes any produced value whose FULL-graph use count exceeds its in-slice
+  use count (full_graph_use_count via ggml_graph_view aliasing of the scheduler's full
+  use_counts/visited_hash_set). Values consumed by nodes in a LATER split (cross-slice
+  readers like the CPU residual add) must stay External (ggml-slot write) even with in-slice
+  consumers.
+- VALIDATED BATTERY with the fix:
+  * Canary (qwen + GGML_HRX_CPU_OPS=GET_ROWS): tok0=12095 ORACLE, text " Paris. The capital
+    of France is also" - ROUND 21 RESOLVED, 38+ rounds of misdiagnosis closed.
+  * Working qwen (no env): 12095 (no regression).
+  * zaya q4nx ngl0: 9079 (no regression).
+  * ZAYA q4nx ngl99: tok0=53335 repeating "expands expands..." - CHANGED from pre-fix
+    143243 (real-varied-wrong) but STILL NOT oracle 9079.
+- Zaya remaining zeros (readtrace /tmp/zrt2.err): ffn_moe_gate-N and ffn_moe_up-N read back
+  ALL-ZEROS for every block N; Qraw-N/input_norm-N/node_N/ffn_moe_weighted-N all REAL. Zero
+  every step -> router deterministic -> single-token collapse. Same externalization class
+  (HRX-produced gate/up consumed by the CPU top-k ARGSORT) but the use-count fix did NOT
+  cover them -> open question: ggml_graph_view use_counts aliasing for zaya's 1083-split
+  structure (slices may not alias the full table), or in-slice==full use counts for gate/up.
+- Executor cgraph discriminator (GGML_HRX_GRAPHCOUNT, /tmp/gc2.err): executor alternates
+  972-node layer slices + 11-node tail slices (first op ADD = residual add, then final norm
+  + lm_head) per step - the residual-add consumer IS in an HRX-executed cgraph (different
+  call), confirming the fix shape (scheduler marks cross-slice values as slice outputs).
+- Evidence: /tmp/fix1.err (canary 12095), /tmp/zaya_fix.log (53335), /tmp/zaya0_fix.err
+  (9079), /tmp/zrt2.err (zaya gate/up zeros), /tmp/gc2.err (972/11 alternation).
+- OPEN: commit the graph.cpp fix (still uncommitted); zaya gate/up externalization or
+  aliasing fix; then re-run the zaya battery.
