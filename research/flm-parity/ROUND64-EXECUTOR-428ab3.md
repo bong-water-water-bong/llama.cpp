@@ -235,3 +235,17 @@ Standing: dispatch/prepare = no-op; the binding theory is closed at every level
 (command program origin, prepared refs, executed refs, 40/40 live blocks, slot content).
 Live paths remain: the dispatch-gated view-split fusion WIP (tree) + classification
 matrix + d5694d's f32/fused work. 428ab3 stays on standby for those.
+
+## CORRECTION (13:26, commit 69f0fceb9) — addenda 2/5/6/7 partially superseded
+My earlier "views are pure aliases of the mm slot; no fill can scramble aliased memory;
+mm values wrong at source" conclusions assumed the CPU read the views directly. The
+runtime reality (round-68/69 finding): the ggml sched materializes CPU-side copies of the
+gate/up views (dup_tensor_layout + backend_tensor_copy -> buffer_get), and the
+gather-era strided readback in buffer_get filled those copies COMPACT-LOGICAL while the
+consumer reads at the STRIDED nb -> token doubling. That corruption (added ~12:51,
+present in all gather-era runs/readbacks) explains the round-64/66 "correct transient /
+leftover slot" observations. Fix = committed (69f0fceb9): single parent-resolved span =
+the backend convention + the round-63 baseline semantics. After the fix the pipeline
+(slot -> gather -> CPU GLU -> swiglu) is rms-1e-6 consistent for ALL tokens and the
+remaining divergence = the mm1 gate_up per-partition COMPUTE VALUES (round-67 %wide,
+d5694d lane) = round-63 closure RE-CONFIRMED. Details: research/flm-parity/ROUND69-STRIDED-FIX.md.
