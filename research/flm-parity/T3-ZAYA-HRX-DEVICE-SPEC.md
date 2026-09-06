@@ -1682,3 +1682,13 @@ Round 60 (2026-09-06): node_153 re-measured correctly - attention UNIFORMLY fine
   first divergence.
 - Remaining forks: post_attn_norm-0 (mm input, in-program) or the mm compute/fetch =
   d5694d's dedicated-buffer instrument (executor plumbing recipe handed off, m_mtpvlxd9).
+
+Round 61 (2026-09-06): cache_s_l0 (block-0 state) CLEAN at 5-token prefill - state-write NOT the origin at block 0
+- cache_s_l0: SCALE mad 0.00000, cca_last_conv_states copy mad 0.0117, input_norm copy mad
+  0.00000 (identical). eb4f0b's model (a) (state-write corrupt at block 0) = NOT supported.
+- With input_norm-0 bit-identical + node_153 uniform-fine + cache_s_l0 clean: the corruption
+  enters inside block-0's POST-attention ffn path (gate_up -> weighted/down/residual).
+  Rounds 58-60 gate_up origin stands. The n=1 progressive state divergence (round 55) =
+  downstream of the ffn divergence.
+- Remaining: mm-input-vs-compute fork (post_attn_norm-0 comparison, HRX captured) or
+  d5694d's row-debug kernel writes.
