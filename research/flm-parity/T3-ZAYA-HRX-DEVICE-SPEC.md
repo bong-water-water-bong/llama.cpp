@@ -1173,3 +1173,24 @@ Round 23 (2026-09-06): zaya remaining failure = CROSS-BUFFER WRITE on prefill ga
 - Evidence: /tmp/zwr.err (same-process write/read handles), /tmp/zrt2.err (gate/up zero on
   prefill only, full value-class census), /tmp/ext.err (externalization decisions),
   /tmp/zde.err (double-execute negative), /tmp/zaya_fix.log (53335).
+
+Round 24 (2026-09-06): zaya stale handle pinned to the RECORDED CB baked refs (all live sites agree)
+- eb4f0b 0740b4860 added [trM] (match-captured vs live tensor resolve) to the gate trace.
+- trM data (zaya ngl99, /tmp/trm.err): cap_buf == live_buf == 0x55adb0b03fa0 for ALL gate/up
+  (160 lines, cap_t==live_t, gen=5 id=5) - NO match-tensor staleness (eb4f0b's prediction
+  failed). trA (per-exec ext binding) == trR (resolver) == 0x...b03fa0: all live sites agree.
+- The stale handle lives ONLY in the RECORDED command buffer's baked refs: combined run
+  /tmp/tg3.err (TRACE_GATE+READTRACE+WRITEBIND, same process) shows record-time dispatch
+  binding [hrxbind3] for gate @2621440 = 0x...dc80 while resolver+readback = 0x...cf90.
+- resync-ext fires ZERO times -> the (A) reresolve snapshot-compare never triggers the
+  re-record even though baked (0x...dc80) != live (0x...cf90).
+- SYNTHESIS: gate/up dispatches use the recorded CB's stale baked handle (a pre-arena-growth
+  generation); reresolve keeps PREPARED refs live (trA correct) but the recorded CB is never
+  re-recorded. qwen works because its arena never grows mid-run (baked stays valid); zaya's
+  gate slices record against a pre-growth generation (the 17f wrong-set compare + 17h growth
+  mechanism, now pinned to zaya's actual failure).
+- FIX CANDIDATES (eb4f0b's slice): (1) fix the resync-ext comparison so baked-vs-live
+  divergence triggers re-record (17f WRONG-SET fix); (2) invalidate recorded CBs after arena
+  growth. Battery armed: zaya ngl99 expect oracle 9079.
+- Evidence: /tmp/trm.err (all live sites agree), /tmp/tg3.err (record-vs-live same-process
+  divergence), /tmp/zgc.err (4689 tiny view calls), /tmp/zrt2.err, /tmp/zwr.err.
