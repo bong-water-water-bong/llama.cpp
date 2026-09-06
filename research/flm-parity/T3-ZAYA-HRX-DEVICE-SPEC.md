@@ -1522,3 +1522,13 @@ Round 45 (2026-09-06): lead determination = LEAD 1 (kernel per-partition indexin
 - Tree: committed docs + the 3 uncommitted loom kernel fixes (mul_mat_id plain/postops/
   next_rmsnorm from cc9da925b+f06731ffe) only.
 - Handed to d5694d (m_mtptjfhf).
+Round 46 (2026-09-06): embed staleness CLOSED - the fix IS running; %token semantics = the live question
+- Text-format rebuild (-DGGML_HRX_KERNEL_CORPUS_SOURCE_FORMAT=text): still 563.
+- Embedded ops/mul_mat_id_f32_f32_wmma.loom = byte-identical to the patched working tree
+  (7446B, token-major present); the motifs core (25518B) = separate (no publish) as expected.
+- => the runtime JIT compiles the patched publish_vector4 yet zaya still scatters t1+
+  => the %token value at runtime (per-partition local ordinal? partition-relative?) != the
+  token index the table's global assignment implies. d5694d's kernel instrumentation (emit
+  token/dst-row/assignment/expert per write into a debug region) = the only way to see the
+  actual %token - requested (m_mtptmdza).
+- Build dir now uses text kernel format (cmake cache change) - note for future builds.
