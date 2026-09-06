@@ -1642,3 +1642,14 @@ Round 56 (2026-09-06): (b) builder->mm race STRUCTURALLY RULED OUT; (a) per-part
   confirmation (correct table tuples + wrong rows).
 - Fleet aligned: eb4f0b (code conclusions), d5694d (kernel instrument + (a) review).
 - My branch ready for the instrument commit.
+
+Round 57 (2026-09-06): measurement ceiling - readback-based CCA comparisons hit alignment limits; kernel instrument = the path
+- CCA block-0 captures (n=1 "Paris"): cache_s_l0 (cca_last) mad 0.013, scale/cca_state mad
+  0.00000, cca_conv_input mad 0.007 = clean at aligned components; cca_prev_hs-0 mad 1.019
+  but the HRX file (r10851) = likely decode-vs-prefill misaligned (HRX prefill = r40-era) -
+  UNVERIFIED.
+- Measurement ceiling: in-program HRX tensors don't cross (no readback); the HRX run-counter
+  inflation (each slice = a graph_compute) makes cross-run file alignment persistently
+  error-prone. Precise remaining measurements need d5694d's kernel instrument or an
+  executor-side in-program dump keyed to the program.
+- Fleet aligned; battery + aligned captures on demand for any landed fix.
