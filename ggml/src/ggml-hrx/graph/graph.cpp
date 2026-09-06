@@ -158,6 +158,11 @@ const GraphIndex & Graph::index() const {
 GraphImportResult import_ggml_graph(const ggml_cgraph & graph) {
     GraphImportResult                            result;
     std::unordered_map<const ggml_tensor *, int> use_counts;
+    auto is_layout_alias = [](ggml_op op) {
+        return op == GGML_OP_VIEW || op == GGML_OP_RESHAPE || op == GGML_OP_PERMUTE || op == GGML_OP_TRANSPOSE;
+    };
+    // consumers[V] = in-slice nodes whose srcs include V.
+    std::unordered_map<const ggml_tensor *, std::vector<const ggml_tensor *>> consumers;
     for (int i = 0; i < graph.n_nodes; ++i) {
         const ggml_tensor * node = graph.nodes[i];
         if (node == nullptr) {
@@ -167,6 +172,7 @@ GraphImportResult import_ggml_graph(const ggml_cgraph & graph) {
         for (const ggml_tensor * source : node->src) {
             if (source != nullptr) {
                 ++use_counts[source];
+                consumers[source].push_back(node);
             }
         }
     }
@@ -175,6 +181,56 @@ GraphImportResult import_ggml_graph(const ggml_cgraph & graph) {
     produced_here.reserve(static_cast<size_t>(graph.n_nodes));
     for (int i = 0; i < graph.n_nodes; ++i) {
         produced_here.insert(graph.nodes[i]);
+    }
+
+    // alias_only_external: a produced value whose in-slice consumers are ALL
+    // layout aliases, and none of those aliases' outputs (recursively) is
+    // consumed by a real (non-alias) in-slice node, is read solely through
+    // slice-exiting aliases (cross-slice readers like the CPU swiglu). Its
+    // real ggml slot must be written -> External. If an alias-descendant is
+    // consumed by a real in-slice op (Kcur -> permuted views -> in-slice
+    // flash-attn), the value stays Transient (fused path, round 30).
+    std::unordered_set<const ggml_tensor *> alias_only_external;
+    for (int i = 0; i < graph.n_nodes; ++i) {
+        const ggml_tensor * node = graph.nodes[i];
+        if (node == nullptr || !produced_here.count(node)) {
+            continue;
+        }
+        const auto uc = use_counts.find(node);
+        if (uc == use_counts.end() || uc->second == 0) {
+            continue;  // no in-slice consumer: handled by the terminal rule
+        }
+        bool reaches_real = false;
+        {
+
+            std::unordered_set<const ggml_tensor *> seen;
+            // BFS over alias consumers starting from the node's own consumers.
+            std::vector<const ggml_tensor *> frontier = consumers[node];
+            while (!frontier.empty() && !reaches_real) {
+                const ggml_tensor * cur = frontier.back();
+                frontier.pop_back();
+                if (!seen.insert(cur).second) {
+                    continue;
+                }
+                if (!is_layout_alias(cur->op)) {
+                    reaches_real = true;  // a real in-slice consumer exists
+                    break;
+                }
+                const auto cc = consumers.find(cur);
+                if (cc != consumers.end()) {
+                    for (const ggml_tensor * next : cc->second) {
+                        frontier.push_back(next);
+                    }
+                }
+            }
+        }
+        if (!reaches_real) {
+            alias_only_external.insert(node);
+            if (std::getenv("GGML_HRX_TRACE_EXT")) {
+                const char * nm = ggml_get_name(node);
+                fprintf(stderr, "[ext] ALIAS-ONLY-EXTERNAL name=%s op=%s\n", nm ? nm : "?", ggml_op_name(node->op));
+            }
+        }
     }
 
     ValueMap & values = result.graph.values();
@@ -204,9 +260,11 @@ GraphImportResult import_ggml_graph(const ggml_cgraph & graph) {
                         consumed_outside ? 1 : 0, (int)(lu == use_counts.end() ? 0 : lu->second), (int)fu);
             }
         }
+        const bool alias_only = alias_only_external.count(node) != 0;
         const ValueKind output_kind =
-            (tensor_is_external(node, use_counts, produced_here) || consumed_outside) ? ValueKind::External
-                                                                                      : ValueKind::Transient;
+            (tensor_is_external(node, use_counts, produced_here) || consumed_outside || alias_only)
+                ? ValueKind::External
+                : ValueKind::Transient;
         const ValueId   output      = values.get_or_add_tensor_value(node, output_kind);
         GraphNode &     graph_node  = result.graph.add_node(node->op, output, std::move(inputs));
         graph_node.params           = import_op_params(*node);
