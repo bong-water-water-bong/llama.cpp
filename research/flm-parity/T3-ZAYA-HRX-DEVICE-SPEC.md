@@ -831,3 +831,27 @@ Round 16s (2026-09-06): KV byte-identical canary-vs-working; prefill write-loss 
   confirmed). If no quick fix: force node_972-class tensors to ride the
   host-staged path (copy to host buffer at split boundary, like leaves) so the
   CPU split reads a guaranteed-consistent copy.
+
+Round 16t (2026-09-06): node_972 zero is PREFILL-PROGRAM-specific (wmma kernels), not token-count/first-batch
+- Measurement (GGML_HRX_NODECMP, reverted; tree clean at 345be184f): with a
+  1-token prompt ("Paris") the canary prefill node_972 ne=1024,1 = EXACT ZERO;
+  CPU oracle tok0=3219 vs GPU 7435. Earlier 6-token-prompt runs showed DECODE-
+  step node_972 (also 1-token shapes) = REAL values. So the failing case is the
+  PREFILL-SHAPED program specifically, regardless of token count:
+  * PREFILL program (wmma kernels: ggml_mul_mat_f32_f32_wmma, flash wmma):
+    node_972 external write = ZERO (every other write in the program - 224 KV
+    rows via SET_ROWS/flash - lands byte-correct).
+  * DECODE program (wave64 kernels): node_972 write = REAL.
+- This is not reserve/first-batch/cache (16j/16k eliminated; prefill is also
+  just one program), not embd (KV byte-identical proves inputs correct), not
+  cross-buffer (KV pristine at the 1572864 region), not staging, not the write
+  being last (working programs last binding lands). The remaining delta is the
+  KERNEL CLASS of the node_972 mm: wmma (prefill) vs wave64 (decode).
+- NEXT (executor/kernel owner): (1) compare the wmma MUL_MAT dispatch for
+  node_972 vs an identical wmma mm whose output DOES land (any mid-program
+  mm) - binding table slot for the last wmma mm output; (2) test whether a
+  wmma mm whose output is consumed in-program (not a split-external) lands -
+  if yes, the issue is wmma-kernel writes to split-external outputs; (3)
+  pragmatic fix candidate: keep node_972-class split outputs on the wave64
+  path (route prefill node_972 through CPU or a decode-style kernel), or write
+  node_972 via an explicit copy op after the wmma program.
