@@ -676,3 +676,24 @@ Round 16l (2026-09-06): matcher exonerated - programs are COMPLETE; defect is pe
   the working program; verify the cache view offset + n_past value on device.
   Dumps: /tmp/hrxdump (working) and /tmp/hrxdump2 (canary) - program.json +
   kernels.txt per shape.
+
+Round 16m (2026-09-06): staged uploads VERIFIED correct; embd crosses via sched copy into the device arena; defect is iree/driver-layer
+- Instrumentation this round (all reverted, tree clean):
+  * GGML_HRX_VERIFY_STAGING: post-upload d2h readback of every staged external
+    - ALL MATCH host bytes (leaf positions, mask). Host staging works perfectly.
+  * GGML_HRX_BIND_KIND: binding form dump per external. The CANARY embd is
+    bound as a DEVICE buffer in the HRX0 compute arena (buffer 0x..4a00,
+    off=1572864, len=4096, gen=4, weight=0) - it was COPIED there by the sched
+    (ggml_backend_tensor_copy CPU->HRX), NOT staged. result_output also in the
+    same arena (off=524288). KV cache = device buffer (gen=3). Leaves/mask =
+    HRX0_HOST arena host_data (gen=5) -> staged (verified correct).
+- Combined with rounds 16i-16l: programs complete (kernel dumps), staged uploads
+  correct, bindings current+consistent, kernels full speed, yet KV/result writes
+  land nowhere readable. => the defect is below this codebase layer: the iree
+  dispatch/binding execution or the amdxdna driver for programs whose external
+  set mixes device-arena bindings with host-staged bindings (the canary program
+  has BOTH; the working single-split program has ONLY device bindings).
+- FINAL TESTABLE HYPOTHESIS for the device owner: run the working qwen program
+  shape but add ONE host-staged external (e.g., force a leaf to stage) - if it
+  breaks, the mixing of staged + device bindings in ONE iree command buffer is
+  the trigger. All instrumentation, repros, and dumps documented.
