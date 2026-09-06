@@ -1150,3 +1150,26 @@ Round 22 (2026-09-06): qwen mixed-split FIXED (canary = 12095 oracle) + zaya rem
   (9079), /tmp/zrt2.err (zaya gate/up zeros), /tmp/gc2.err (972/11 alternation).
 - OPEN: commit the graph.cpp fix (still uncommitted); zaya gate/up externalization or
   aliasing fix; then re-run the zaya battery.
+
+Round 23 (2026-09-06): zaya remaining failure = CROSS-BUFFER WRITE on prefill gate/up (same-process evidence)
+- The round-22 externalization fix (a7f139ba7) fires for zaya's ffn_moe_gate/up (ext=1,
+  consumed_outside=1, local_use=0, full_use=1 — GGML_HRX_TRACE_EXT) yet they still read zero
+  on PREFILL only (decode reads real: gate-0 prefill 90112B@2621440 = all-zero; decode
+  8192B@20480 = real, every step).
+- Same-process iree-handle comparison (DUMP_WRITEBIND + READTRACE in one run, /tmp/zwr.err):
+  * gate READ (buffer_get ctxbuf): 0x55ab5babffa0 (compute arena; 1529 refs)
+  * gate PREFILL WRITE (record binding b1/b2 @2621440 len 131072): 0x55ab5bab4250 (720 refs)
+  => DIFFERENT device buffers: prefill writes buffer A, readback reads buffer B -> zero slot.
+  * Decode gate writes land in the correct buffer (real readback).
+- Zero prefill gates -> wrong router -> poisoned prefill KV -> all decode steps attend over
+  wrong KV -> deterministic collapse (tok0-99 = 53335 "expands..."), despite decode-side
+  values being real. GGML_HRX_DOUBLE_EXECUTE made it worse (1042 re-runs, state corruption,
+  <pad> stream) - zaya is not double-execute-idempotent.
+- Open: the write binding for multi-token prefill externals resolves to the wrong device
+  buffer (reresolve/(A) class - ff05bcb6f built for this, moot for qwen's l_out-26). Handed
+  to eb4f0b with the request to generalize the trR/trA three-site probe (81fbd67f1, currently
+  hardcoded to value 1336/20480@1572864) to zaya's gate value (value 4/5, len 90112,
+  off 2621440) or take the slice directly.
+- Evidence: /tmp/zwr.err (same-process write/read handles), /tmp/zrt2.err (gate/up zero on
+  prefill only, full value-class census), /tmp/ext.err (externalization decisions),
+  /tmp/zde.err (double-execute negative), /tmp/zaya_fix.log (53335).
