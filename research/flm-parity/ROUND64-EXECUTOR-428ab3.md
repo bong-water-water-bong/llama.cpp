@@ -216,3 +216,22 @@ t1-5. No option-(a) work is warranted; the tree's active dispatch-gated view-spl
 WIP + a137d5's classification matrix remain the live paths. (This message = the 5th
 pre-reconciliation directive in the 12:53-13:00 burst; the committed round-67 retraction
 and all executor evidence above stand.)
+
+## Addendum 7 — m_mtq02cul (13:02:08) "FINAL CONFIRMED SCOPE": 40/40 blocks empirically external; no-op
+
+Definitive run on the current tree (defensive evidence, GGML_HRX_ROW_DEBUG=1 +
+PRESERVE + PROGRAM_DUMP_DEBUG, f32twin 5-token; log /tmp/cap_def.log):
+- ALL 40 prefill gate_up mm commands (uids 10866..11919, cmd=2, ffn_gate_up_exps 512MB)
+  bind b4 output val=3 -> buf=0x...7000 (compute arena) off=2621440/2752512/2883584
+  len=98304 = the EXTERNAL ggml slot, in every block. The transient arena
+  (0x...dba0) carries only expert_table/partition_table/row_debug.
+- The output IS the external slot. There is no transient output binding to "fix" and no
+  correct transient data to copy; the slot content (addendum 2) = the mm's own
+  deterministic compute (tok0 exact, t1-5 wrong) = the %wide-consistent compute defect.
+- Decode on this tree = still divergent text (token stream changed vs earlier session
+  runs = the fleet's in-flight dispatch/loom churn, still not oracle). Expected: no
+  dispatch binding change can move it (nothing to change).
+Standing: dispatch/prepare = no-op; the binding theory is closed at every level
+(command program origin, prepared refs, executed refs, 40/40 live blocks, slot content).
+Live paths remain: the dispatch-gated view-split fusion WIP (tree) + classification
+matrix + d5694d's f32/fused work. 428ab3 stays on standby for those.
