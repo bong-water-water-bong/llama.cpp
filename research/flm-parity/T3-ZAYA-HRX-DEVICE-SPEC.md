@@ -722,3 +722,26 @@ Round 16n (2026-09-06): discriminator answered + node_972 = zeros; trigger = mul
   dispatch submit -> node_972 d2h copy -> split#2 CPU -> split#3 dispatch.
   Verify the d2h waits on the hrx stream semaphore. Everything else is
   eliminated after 23 rounds (16a-16n).
+
+Round 16o (2026-09-06): bufbase eliminates memcpy-branch suspect; device layer corrected to iGPU/ROCm; 3-agent collaboration active
+- bufbase measurement (canary, GGML_HRX_BIND_KIND): node_972, result_output and
+  ALL cache_k/v are FAKE-base device buffers (base=0x1000, hostbuf=0); only
+  leaves/mask are real-base host buffers. => read-backs took the post-sync
+  hrx_synchronous_d2h path (correct, ordered) and return GENUINE zeros: the
+  device buffers really contain zeros. eb4f0b's buffer_get-memcpy suspect (b)
+  is ELIMINATED for the write targets.
+- DEVICE LAYER CORRECTION: ggml-hrx executes on the Radeon 8060S iGPU via
+  ROCm/iree (gfx1151, /dev/dri/renderD128, /opt/rocm-therock) - NOT the XDNA2
+  NPU (amdxdna). NPU-side observations (dmesg clean, no accel0 fd) are expected
+  and irrelevant. Right driver to watch: amdgpu.
+- COLLABORATION: @agent-a137d5 confirmed the discriminator (working program
+  stages 56 externals incl. 127MB table - mixing is not the trigger) and
+  proposed the tail-CPU isolation cell; @agent-eb4f0b reviewed libhrx
+  graph_exec.c/stream.c (both chain on the stream timeline IF all programs
+  share one hrx_stream_t - open caveat) and identified the d2h-no-wait +
+  memcpy-branch candidates (memcpy branch now eliminated); @agent-d5694d
+  watching amdgpu during repro.
+- OPEN: dispatches run at full speed but write nothing to their declared
+  fake-base device-buffer bindings; all code above the iree dispatch is
+  eliminated after 24 rounds (16a-16o). Next: (a) confirm all HRX programs in
+  one pass share ONE stream; (b) amdgpu/iree-level dispatch tracing.
