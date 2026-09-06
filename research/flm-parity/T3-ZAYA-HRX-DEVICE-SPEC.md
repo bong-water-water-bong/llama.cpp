@@ -1754,3 +1754,17 @@ Round 65 (2026-09-06): weight-layout hypothesis CLOSED - [K,N,n_expert] row-majo
 - Remaining = the wmma COMPUTE for the y=1..5 workgroups (fragment staging / wave-scheduling
   across the 64x16 grid / a codegen defect for non-first partitions). Next = the %values-head
   marker or the static core review (d5694d).
+
+Round 66 (2026-09-06): TWO layered fixes identified - (1) the transient-vs-external output binding (primary; readback sees leftovers), (2) f16 wmma precision (0.003-level)
+- Reconciliation: d5694d's f16 root cause (weights/activations/accumulator = f16 in the wmma
+  core) = consistent with my numpy correlation (all 6 tokens = mad 0.0025-0.0030 = the f16
+  noise, uniform, NOT the 0.44-0.67 "genuinely wrong" values). The round-59 wrong rows = the
+  LEFTOVER SLOT (the ggml external @2621440 never written by the mm - the dispatch binds the
+  output to the transient arena; the readback reads the leftovers).
+- FIX 1 [PRIMARY] = the dispatch output binding -> the external ggml slot (or a transient->
+  slot copy) - 428ab3/eb4f0b dispatch lane. Without it = 563 regardless of the precision.
+- FIX 2 [PRECISION] = the f32-exact mul_mat_id (f32 accumulator/fragments) for the
+  byte-level oracle numerics (the f16 = 0.003 = benign for argmax, not byte-exact) -
+  d5694d loom lane.
+- Both = in the fleet with the full evidence (the pddbg bindings, the numpy correlation,
+  the strided-off trace).
