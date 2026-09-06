@@ -605,3 +605,29 @@ Round 16i (2026-09-06): instrumented proof - mixed-graph HRX dispatches leave wr
   whether the canary programs are submitted and whether iree_hal_command_buffer
   batch dispatch with update_buffer commands actually executes; or minimal
   repro: build the 533-ext program shape with vs without one host-staged input.
+
+Round 16j (2026-09-06): recorded-replay path exonerated; invariant = staged-input programs write NOTHING
+- Experiment: can_use_prepared_fast_path forced false (disable recorded-replay /
+  reserve-binding theory: fast path keys on NODE COUNT only). Result: canary
+  still tok0=0, zaya unchanged, and WORKING qwen still 12095 -> both the replay
+  path AND the fresh path work for single-split and both fail for mixed. Not
+  the reserve-binding/replay bug. Reverted (tree clean).
+- SCHED_DEBUG=2 of the canary shows the exact topology: split#1 HRX0 = all
+  layers 0-26 + layer-27 attn + KV SET_ROWS (nodes #16/#18 write cache_k/v);
+  split#2 CPU = residual GET_ROWS (forced); split#3 HRX0 = layer-27 tail +
+  output_norm + lm_head -> result_output. KV and result_output both exact-zero
+  post-sync => EVERY HRX program that contains a host-staged external input
+  (embd in split#1, node_973/974 in split#3) silently writes nothing, while the
+  identical kernels in the no-staging single-split program write correctly.
+- INVARIANT (all 19+ rounds): mixed-graph HRX programs with host-staged
+  external inputs -> dispatches no-op (no error, zero writes). Upload flavor
+  (async/sync, 16g), buffer claims (16f), UID cache + validation (16h), replay
+  path (16j) all exonerated. Remaining suspect: the kernel binding table when a
+  program has staged bindings (host_data entries must be replaced by their
+  device staging buffers in the iree dispatch table; a host pointer in a device
+  binding slot would silently no-op every dispatch in the program).
+- NEXT (executor owner, needs iree-level debug): inspect the iree binding table
+  of a program WITH vs WITHOUT host staging (prepare_command_program +
+  bind_prepared_command_list kernel bindings); verify staged bindings resolve
+  to device buffers in the dispatch table; add iree validation (the iree
+  dispatch may be failing validation silently - enable IREE_DEVICE debug).
