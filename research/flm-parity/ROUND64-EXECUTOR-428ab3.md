@@ -167,3 +167,29 @@ clean (rc 0, nothing stale). GGML_HRX_DUMP_IR flow = unblocked. No action taken;
 by. Working tree = 10 modified files across lanes (dispatch-gated fusion, dispatch WLAYOUT
 probe, ggml-hrx.cpp, loom-jit.cpp DUMP_IR, d5694d .loom set) - all uncommitted, as the
 fleet's in-flight state.
+
+## Addendum 5 — m_mtq001xd (13:00:20) priority re-assertion: binding fix = already the code state; no-op
+
+Re-assertion claims: "the mm computes CORRECT data in the transient arena; the dispatch
+output binding targets the TRANSIENT; the external slot @2621440 never written; %wide
+scramble = strided-view artifact." Checked against the authoritative command-program dump
+(cpdump, run 12:14, same 5-token f32twin config) - per-mm output origins:
+
+  program-8  (gate_up mm, ffn_gate_up_exps 512MB, out 98304B)  output origin = GraphValue
+  program-23 (decode gate_up, out 16384B)                       output origin = GraphValue
+  program-13 (down mm, ffn_down_exps 256MB, out 49152B)         output origin = Transient
+  program-9/24/28 (down/router class)                           output origin = Transient
+
+=> the GATE_UP mm output binding = EXTERNAL at the command-program level (program-8), the
+prepared level (pddbg b4 -> compute arena @2621440), and the executed level (record =
+prepared refs). The round-66/13:00 "output binding = transient arena @1280" pddbg =
+the DOWN mm (49152B transient, consumed in-slice by the weighted-MUL path = correct
+design), misattributed as the gate_up mm. The gate_up external slot content (my capture,
+addendum 2) = deterministic kernel output: tok0 gate[0] = -1.4707 EXACT (round-36 value),
+t1-5 = 0.3435-class wrong. A never-written slot cannot hold tok0 exactly. => no correct
+data exists in any transient to copy; a transient->slot copy has no source; re-binding =
+already done. Round-67 %wide (kernel computes wrong for 5/6 experts) + round-59
+permutation search (correct t1-5 values nowhere in the region) + row_debug publish-perfect
+= mutually consistent with the gate_up COMPUTE as the defect. If the %wide read is
+suspected of stride misalignment, that is d5694d's instrument to re-verify, not a
+dispatch change. No dispatch/prepare code change is warranted; canary 563 = expected.
