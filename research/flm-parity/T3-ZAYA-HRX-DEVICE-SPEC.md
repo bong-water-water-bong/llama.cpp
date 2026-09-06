@@ -1704,3 +1704,16 @@ Round 62 (2026-09-06): exclusion chain COMPLETE - mm per-partition compute/fetch
 - Remaining belt-and-suspenders: the post_attn_norm-0 direct comparison (CPU name = fused
   naming resisted filters; HRX program-dump captured) + d5694d's row-debug kernel writes.
 - Round trail current through 62; the mm fix = the last step to the 5-token oracle.
+
+Round 63 (2026-09-06): FINAL CLOSURE - mm input CLEAN (all 6 slots) + output wrong = mm compute 100% confirmed
+- Tree restored first (broken by the interrupted row_debug threading: core template %arg21
+  mismatch vs the ops kernel.def -> loom indexing failure; core + plain .loom restored to the
+  clean 3-fix state; baseline 563/2364 confirmed).
+- post_attn_norm-0 (the gate_up mm's direct input) on the clean tree: derived CPU oracle vs
+  the HRX program dump = CLEAN on all 6 slots (mad 0.003-0.006, factors 0.986-1.006; the
+  earlier "constant 0.39 scale" + "slot-3 0.527" = artifacts of broken-tree states).
+- => mm input clean + mm output rows 1-5 wrong (round-59 permutation search) => THE GATE_UP
+  MM's per-partition compute/fetch = the bug with ZERO remaining ambiguity. All inputs,
+  ids, tables, dst = exonerated.
+- d5694d fetch review = certain target; eb4f0b's f32-router change held; n=1 drift + block-10
+  id flips = downstream of this mm bug (re-test after the fix).
