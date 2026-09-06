@@ -1546,3 +1546,14 @@ Round 47 (2026-09-06): instrument handed to d5694d (loom syntax attempt broke ke
 - Goal: 3/5 tasks complete; task-4-device: qwen fixed + committed; zaya final kernel question
   in d5694d hands.
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+Round 49 (2026-09-06): marker instrument = all-pads in my runs (row-tail overwrite corrupts); clean state restored
+- Applied d5694d's c4c4ee403 marker cleanly (plain fix in place, file byte-identical to his):
+  run = ALL PADS (tok0-7=0), no gate readbacks. The row-tail overwrite (last 4 channels of
+  each row) reliably corrupts the model in my runs - possible causes: a downstream op reading
+  the tail channels, or the 4 concurrent publishes/row racing the tail writes. Recommended
+  moving the marker to a dedicated spare buffer. Posted to d5694d (m_mtpuk6el).
+- /tmp cleaned (61G of captures freed after a disk-full incident - all intermediate .err/.bin
+  captures deleted; conclusions preserved in the committed spec).
+- Clean 3-fix state (563 baseline) restored; DUMPVIEW hook ready.
+- Goal: 3/5 tasks complete; task-4-device: qwen fixed + committed; zaya marker capture in
+  d5694d's iteration.
