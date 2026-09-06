@@ -508,3 +508,25 @@ Round 16e (2026-09-06): qwen GPU decode FIXED - GET_ROWS claim restored with sha
   (materialize_host_bindings upload_async staging vs direct host-buft binding)
   OR port zaya CPU-forced ops (conv/SCALE/partial-ROPE) to HRX kernels to reach
   an all-HRX zaya graph like qwen.
+
+Round 16f (2026-09-06): boundary sub-bugs discriminated; device-buft-only experiment reverted
+- Experiment: device_supports_buffer_type restricted to context->buft only (drop
+  host_buft + arbitrary host bufts). Results:
+  * qwen ngl99: still correct (12095); splits 4->2 (cleaner all-HRX).
+  * DISCRIMINATOR (qwen ngl99 + GGML_HRX_CPU_OPS=GET_ROWS -> embd on CPU):
+    went from ALL-ZERO logits to FINITE-WRONG logits (tok0=456). => two
+    distinct defects: (i) direct host-buft/CPU-buffer binding into device
+    kernels returns ZEROS (device never sees the CPU-written data - not
+    device-coherent); (ii) even when the sched stages a real upload, the
+    staged value is WRONG (finite, tok0=456 vs oracle 12095) - the
+    upload_async / staging path has a value defect of its own.
+  * zaya 1-layer: regressed to abort (VIEW f32[256,6,1,1]<-f32[128,2,6,1]
+    claimed, no dispatch kernel - over-claim #2117). New splits changed claim
+    patterns. => device-buft-only is NOT sufficient; REVERTED (tree clean at
+    2fb0376a0, qwen re-verified 12095).
+- Remaining work for the CPU->HRX boundary (either defect (i) or (ii) fixed):
+  defect (i) fix = never direct-bind non-HOST_COHERENT host-visible buffers in
+  materialize_host_bindings (stage them like host_data); defect (ii) fix =
+  audit upload_async chunked hrx_stream_update_buffer vs kernel-read ordering
+  and value semantics (kMaxInlineUploadBytes=63K; test a single large upload).
+  Then re-test qwen+GET_ROWS->CPU canary (expect 12095) and zaya.
