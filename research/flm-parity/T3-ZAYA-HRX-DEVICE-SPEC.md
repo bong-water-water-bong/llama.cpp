@@ -970,3 +970,21 @@ Round 16y (2026-09-06): (B) tested + reverted; known-good state confirmed
   kernel/driver owner (iree/amdgpu graph-launch writeback) or an executor
   design change (e.g., always write split-external mm outputs through a
   wave64/decode-style or explicit-copy path).
+
+Round 16z (2026-09-06): post-fix forced-op mapping - all mixed configs real-but-wrong (no oracle)
+- Post-fix measurements (qwen3-0.6B ngl99, GGML_HRX_CPU_OPS forced single op):
+  * GET_ROWS: tok0=456 (known; residual-gather crossing)
+  * RMS_NORM: tok0=103185, text "占地vincesvincesinglyionarioterdamียงircuit" (real vocab, wrong)
+  * ADD / ROPE / MUL_MAT: also real-token runs (no abort; earlier reads misled)
+- CONCLUSION: with the classification fix, EVERY mixed config produces real data
+  flow (no zeros), but NONE is numerically oracle-correct. All-HRX (single
+  split, no CPU ops) is byte-correct (12095). => the executor mixed path still
+  corrupts cross-split ACTIVATION VALUES somewhere downstream of binding
+  (staging verified byte-perfect; KV verified byte-perfect in the GET_ROWS
+  config; bindings/resolution verified correct). The residual is an
+  execution-side value error in cross-split activation flow - below ggml-hrx
+  recording (identical correct refs), requiring the iree/amdgpu graph-launch
+  writeback owner or an executor redesign (explicit-copy path for split-external
+  values).
+- State: a0af0f985 landed; working qwen 12095; zaya full 143243 (real tokens).
+  Full trail rounds 16a-16z on fix/hrx-ngl-init-order.
