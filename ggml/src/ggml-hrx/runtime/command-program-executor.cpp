@@ -858,7 +858,7 @@ static Status record_prepared_kernel_command(hrx_graph_t                  graph,
             continue;
         }
         if (std::getenv("GGML_HRX_DUMP_WRITEBIND") &&
-            (binding.ref.length == 20480 || binding.ref.length == 4096)) {
+            (binding.ref.length == 20480 || binding.ref.length == 4096 || std::getenv("GGML_HRX_DUMP_ALLBIND") != nullptr)) {
             fprintf(stderr, "[recref2] val=%d origin=%d buf=%p off=%zu len=%zu access=%d\n",
                     (int)binding.binding.value.value, (int)binding.binding.origin,
                     (void*)binding.ref.buffer, binding.ref.offset, binding.ref.length,
