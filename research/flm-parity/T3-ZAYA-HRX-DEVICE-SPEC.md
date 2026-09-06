@@ -1383,3 +1383,21 @@ Round 36 (2026-09-06): n=1 chain comparison - token-0 gate correct, token-1 wron
 - Evidence: /tmp/hrx_ffn_moe_gate-0.bin (6144 el span, token0 right/token1 wrong),
   /tmp/nodedump/r03_110 (CPU gate_up [4096,2] oracle), /tmp/hrx_router_logits-0.bin,
   /tmp/chain.err. Harness: GGML_DUMP_NODE (ngl0) + GGML_HRX_DUMPVIEW chain names (ngl99).
+
+Round 37 (2026-09-06): capacity-padding leak CONFIRMED (weighted row-0 diverges progressively by block)
+- n=1 "Paris" chain comparison, weighted row-0 CPU-vs-HRX across blocks:
+  block 0 mad=0.0009 (MATCH), 5 = 0.007, 10 = 0.45, 15 = 0.005, 20 = 0.78, 25 = 0.37,
+  30 = 0.22, 35 = 3.23, 39 = 2.18.
+- Real-token math starts clean (blocks 0-5) then diverges progressively = pad-row garbage
+  from the HRX mul_mat_id's unwritten capacity slots contaminates the real path via some
+  capacity-spanning op as depth grows (CCA recurrent state or a repeat/norm spanning the
+  padded extent).
+- At n=1 the graph carries 2 slots (1 real + 1 pad; gate ne=2048,1,2); CPU computes the full
+  extent, the HRX mul_mat_id writes only bounded_token_count (= real tokens) assignment rows
+  -> pad rows hold buffer leftovers -> leak.
+- FIX DIRECTION: HRX kernels must produce the full capacity extent like CPU (zero-fill the
+  unwritten pad rows of the gate_up base, or bounded_token_count = the graph's slot count).
+  Cheapest test: zero the base's pad rows after the mul_mat_id dispatch.
+- Evidence: weighted row-0 mad per block (this round), /tmp/hrx_ffn_moe_weighted-*.bin,
+  /tmp/nodedump/r04_* (CPU oracle), /tmp/hrx_result_norm.bin, /tmp/hrx_result_output (absent).
+- Handed to eb4f0b (m_mtpsfivk) for the fix-site call.
