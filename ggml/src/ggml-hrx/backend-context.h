@@ -52,6 +52,16 @@ struct ggml_backend_hrx_device_context {
     std::atomic<uint64_t>                          synchronous_download_fallbacks{ 0 };
     std::mutex                                     buffer_stream_mutex;
     hrx_stream_t                                   buffer_stream = nullptr;
+
+    // Retired non-host (device compute) buffer contexts, parked on gallocr
+    // buffer_free and adopted by the next buffer_alloc. ggml tensors placed by
+    // an earlier reserve keep referencing the pre-resize buffer object
+    // (ggml_gallocr_init_tensor only re-points data==NULL tensors); keeping the
+    // CONTEXT immortal lets those stale refs resolve to the live allocation
+    // after the compute arena grows (resize-stable). Generation bumps per
+    // adoption so cached bindings re-resolve.
+    std::vector<ggml_backend_hrx_buffer_context *> retired_compute;
+    std::mutex                                     retired_mutex;
 };
 
 struct ggml_backend_hrx_context {

@@ -165,11 +165,26 @@ static void buffer_free(ggml_backend_buffer_t buffer) {
     auto * context = buffer_context(buffer);
     if (context->base != reinterpret_cast<uint8_t *>(GGML_HRX_FAKE_PTR_BASE)) {
         context->device->host_buffers.remove(context->buffer);
+        if (context->buffer != nullptr) {
+            hrx_buffer_release(context->buffer);
+        }
+        delete context;
+        return;
+    }
+    // Non-host (device compute) buffer: park the context instead of deleting
+    // it (see retired_compute). The old hrx allocation is released here — the
+    // gallocr free→realloc pair is back-to-back with no dispatch in between,
+    // so no resolution can observe the parked context with buffer==nullptr.
+    if (getenv("GGML_HRX_LIFECYCLE")) {
+        fprintf(stderr, "[hrxlife] buffer_free park ctx=%p gen=%llu cap=%zu\n", (void *)context,
+                (unsigned long long)context->generation, (size_t)buffer->size);
     }
     if (context->buffer != nullptr) {
         hrx_buffer_release(context->buffer);
+        context->buffer = nullptr;
     }
-    delete context;
+    std::lock_guard<std::mutex> lock(context->device->retired_mutex);
+    context->device->retired_compute.push_back(context);
 }
 
 static void buffer_memset(ggml_backend_buffer_t buffer,
@@ -314,14 +329,37 @@ static ggml_backend_buffer_t buffer_alloc(ggml_backend_buffer_type_t buft, size_
         base = static_cast<uint8_t *>(mapped);
     }
     const uint64_t generation = g_allocation_generation.fetch_add(1);
-    auto *         context    = new (std::nothrow) ggml_backend_hrx_buffer_context{
-        type_context->device, allocation, base, generation, generation, direct_host_binding,
-    };
-    if (context == nullptr) {
-        if (allocation != nullptr) {
-            hrx_buffer_release(allocation);
+    ggml_backend_hrx_buffer_context * context = nullptr;
+    if (!host_visible) {
+        std::lock_guard<std::mutex> lock(type_context->device->retired_mutex);
+        if (!type_context->device->retired_compute.empty()) {
+            context = type_context->device->retired_compute.back();
+            type_context->device->retired_compute.pop_back();
         }
-        return nullptr;
+    }
+    if (context != nullptr) {
+        // Resize-stable adoption: same context object, fresh allocation + gen.
+        context->buffer     = allocation;
+        context->generation = generation;
+        context->identity   = generation;
+        if (getenv("GGML_HRX_LIFECYCLE")) {
+            fprintf(stderr, "[hrxlife] buffer_alloc REUSE ctx=%p gen=%llu size=%zu (adopted retired)\n",
+                    (void *)context, (unsigned long long)generation, size);
+        }
+    } else {
+        context = new (std::nothrow) ggml_backend_hrx_buffer_context{
+            type_context->device, allocation, base, generation, generation, direct_host_binding,
+        };
+        if (getenv("GGML_HRX_LIFECYCLE")) {
+            fprintf(stderr, "[hrxlife] buffer_alloc FRESH ctx=%p gen=%llu size=%zu host=%d\n",
+                    (void *)context, (unsigned long long)generation, size, host_visible ? 1 : 0);
+        }
+        if (context == nullptr) {
+            if (allocation != nullptr) {
+                hrx_buffer_release(allocation);
+            }
+            return nullptr;
+        }
     }
     if (host_visible && allocation != nullptr) {
         type_context->device->host_buffers.add(allocation, base, size);
