@@ -555,3 +555,28 @@ Round 16g (2026-09-06): staging upload flavor does not matter; defect is in stag
   materialize_host_bindings, d2h-read the staging buffer back and compare to
   host_data; dump prepared.kernel.bindings vs staging.buffer identity; check
   command_program_bindings_hash collisions across ubatch frames.
+
+Round 16h (2026-09-06): exhaustive negative set + final handoff state
+- Tested and REJECTED this round: GGML_HRX_DISABLE_GRAPH_UID_FAST_PATH=1 (no
+  change), GGML_HRX_VALIDATE_GRAPH_UID_CACHE=1 (no mismatch logs), sync staging
+  uploads (round 16g), device-buft-only buffer claims (round 16f). All leave
+  the qwen canary (ngl99 + GGML_HRX_CPU_OPS=GET_ROWS -> embd CPU) at tok0=0 and
+  zaya corrupt. Tree clean; qwen all-HRX decode correct (12095) = the ONE
+  working configuration.
+- Binding analysis (backend-buffer-binding.cpp resolve_value_buffer):
+  * HRX device buft / coherent host buft -> direct (buffer handle + offset);
+    non-coherent host allocations -> host_data (context->base + offset) ->
+    HostStagingBuffer per-exec upload. HostWeightCache (read-only weights)
+    uploads ONCE blocking and WORKS.
+  * Every individual path reads correct; the defect does not reproduce in any
+    pure-static model. Remaining suspects (device-side, need IREE tracing):
+    iree command-buffer submission ordering between per-exec upload buffers and
+    cached dispatch buffers (HRX_TRACE_ZONE machinery exists in libhrx);
+    device-side DDR_PATCH/buffer write targeting; NaN poisoning of a value.
+- HANDOFF STATE (executor owner, on-device): enable libhrx tracing
+  (HRX_TRACE_ZONE / iree tracing) and verify: (1) staging upload buffer content
+  on device (d2h readback after materialize) == host bytes; (2) submission
+  order upload-before-dispatch on the queue; (3) which external value first
+  diverges in the qwen canary (embd in vs l_out out). All canaries, repro
+  commands, and this log are in-tree (branch fix/hrx-ngl-init-order, commits
+  through 8a297e58f + this round).
