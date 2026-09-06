@@ -193,3 +193,26 @@ permutation search (correct t1-5 values nowhere in the region) + row_debug publi
 = mutually consistent with the gate_up COMPUTE as the defect. If the %wide read is
 suspected of stride misalignment, that is d5694d's instrument to re-verify, not a
 dispatch change. No dispatch/prepare code change is warranted; canary 563 = expected.
+
+## Addendum 6 — m_mtq00rlr (13:00:54) "final fix target" = view-fill theory; geometrically impossible; no-op
+
+Theory: executor rejects strided relayouts -> gate/up [2048,1,6] views never get a
+stride-honoring fill -> "interleaved base content lands in the view slots" -> rows 1-5
+wrong -> 563. Fix = option (a) stride-honoring gather in the import/view handling.
+
+Geometric disproof (same run as the content capture, [hrxext] resolution trace):
+  ffn_moe_gate_up-N: buf=0x55a199de5090 off=0x281000 (2621440) len 98304
+  ffn_moe_gate-N:    buf=0x55a199de5090 off=0x281000            (view_offs 0)
+  ffn_moe_up-N:      buf=0x55a199de5090 off=0x283000            (base + 8192 = row 2048)
+The gate/up "views" = zero-offset row-slice aliases of the mm's own write target - one
+memory object. The CPU reads them through the base's nb (plane stride); there is no
+separate view slot, no fill step, and nothing a stride-honoring gather could move
+(copying base onto itself). If the mm wrote correct per-plane content, the aliased views
+would read it by construction. Round-59's all-offset permutation search already ruled out
+correct t1-5 rows existing anywhere in that memory; round-64 row_debug rules out write
+misplacement (dst_row==token all 6); round-67 %wide (in-kernel, pre-store) = values wrong
+for 5/6 experts. Three independent read paths agree the mm's computed VALUES are wrong for
+t1-5. No option-(a) work is warranted; the tree's active dispatch-gated view-split fusion
+WIP + a137d5's classification matrix remain the live paths. (This message = the 5th
+pre-reconciliation directive in the 12:53-13:00 burst; the committed round-67 retraction
+and all executor evidence above stand.)
