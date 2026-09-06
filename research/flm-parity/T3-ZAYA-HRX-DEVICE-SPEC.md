@@ -1532,3 +1532,16 @@ Round 46 (2026-09-06): embed staleness CLOSED - the fix IS running; %token seman
   token/dst-row/assignment/expert per write into a debug region) = the only way to see the
   actual %token - requested (m_mtptmdza).
 - Build dir now uses text kernel format (cmake cache change) - note for future builds.
+
+Round 47 (2026-09-06): instrument handed to d5694d (loom syntax attempt broke kernel - reverted)
+- My marker-instrument attempt in publish_vector4 (vector.splat + scf.if) = invalid loom syntax
+  (PARSE/003 errors) -> kernel failed -> run crashed. REVERTED; tree restored (2 postops
+  kernel fixes + DUMPVIEW hook + text-format corpus build remain).
+- Handed the instrument to d5694d (m_mtptvkwk): model (~/zaya-q4nx-f32twin.gguf), runner
+  (/tmp/zgreedy), branch (fix/hrx-ngl-init-order at ~/hrx-ws/amd-hrx-graph) with his
+  cc9da925b/f06731ffe + text-format corpus = all on the same host. He implements + iterates
+  the partition-table instrument end-to-end.
+- State: the dst-ordering fix is embedded + JIT-verified; the t0-right/t1+-fragmented
+  contradiction needs the kernel-side write trace (token -> actual dst row per publish).
+- Goal: 3/5 tasks complete; task-4-device: qwen fixed + committed; zaya final kernel question
+  in d5694d hands.
