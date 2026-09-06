@@ -338,6 +338,43 @@ PreparedCommandProgramCacheExecutionResult GraphProgram::execute_with_result(
         ++prepared_stats_.builds;
     } else {
         ++prepared_stats_.hits;
+        // (eb4f0b/b30173) Device externals are baked into the recorded exec at
+        // prepare time. If the compute arena reallocated (reserve -> first real
+        // step), the live buffer handle for a device external (e.g. node_972's
+        // output) moved; the cached prepared_/recorded_ still target the stale
+        // handle and the write vanishes (rounds 17a-17c: first-batch terminal
+        // externals read zeros). Re-prepare with the current bindings + drop the
+        // recorded exec so it re-records with current handles.
+        const auto & snap = prepared_.device_external_snapshot;
+        bool changed = false;
+        size_t cur_dev = 0;
+        for (const CommandProgramBinding & b : bindings.bindings()) {
+            if (b.buffer == nullptr || b.host_data != nullptr) continue;
+            cur_dev++;
+            bool found = false;
+            for (const auto & r : snap) {
+                if (r.value == b.value.value) {
+                    found = true;
+                    if (r.buffer != b.buffer || r.generation != b.generation ||
+                        r.offset != b.offset || r.length != b.length) {
+                        changed = true;
+                    }
+                    break;
+                }
+            }
+            if (!found) changed = true;
+        }
+        if (snap.size() != cur_dev) changed = true;
+        if (changed && !bindings.bindings().empty()) {
+            fprintf(stderr, "[stale-ext] device external binding changed; re-preparing uid=%llu\n",
+                    (unsigned long long) uid_);
+            prepared_ = prepare_command_program(context, *commands_, bindings);
+            if (!prepared_.valid()) {
+                result.status.append(prepared_.status);
+                return result;
+            }
+            recorded_ = RecordedCommandGraph{};
+        }
     }
 
     const RecordedCommandGraphExecutionResult replay =

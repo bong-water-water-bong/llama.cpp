@@ -78,6 +78,19 @@ struct PreparedCommandProgram {
     std::vector<PreparedProgramConstantBuffer> program_constants;
     Status                                     status;
     uint64_t                                   bound_transient_arena_allocation_id = kInvalidTransientArenaAllocationId;
+    // Device-external snapshot at prepare time (value -> buffer handle + gen +
+    // offset). The recorded exec bakes these; if a later execution resolves a
+    // device external to a DIFFERENT handle (compute-arena realloc bumps the
+    // buffer), the recorded exec writes the stale handle -> zeros. Compare at
+    // launch and re-prepare/re-record on change. (eb4f0b/b30173, rounds 17c)
+    struct DeviceExternalRef {
+        int32_t     value      = 0;
+        hrx_buffer_t buffer    = nullptr;
+        uint64_t    generation = 0;
+        size_t      offset     = 0;
+        size_t      length     = 0;
+    };
+    std::vector<DeviceExternalRef> device_external_snapshot;
 
     bool valid() const { return status.success(); }
 };
