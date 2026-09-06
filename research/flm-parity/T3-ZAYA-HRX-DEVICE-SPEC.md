@@ -697,3 +697,28 @@ Round 16m (2026-09-06): staged uploads VERIFIED correct; embd crosses via sched 
   shape but add ONE host-staged external (e.g., force a leaf to stage) - if it
   breaks, the mixing of staged + device bindings in ONE iree command buffer is
   the trigger. All instrumentation, repros, and dumps documented.
+
+Round 16n (2026-09-06): discriminator answered + node_972 = zeros; trigger = multi-program-per-pass structure
+- DISCRIMINATOR (Q from a137d5): the WORKING single-split qwen program DOES
+  contain host-staged externals - 56 of them, including token_embd.weight
+  (127 MB, host_data binding, weight=1) read by the on-HRX get_rows kernel, and
+  leaves/mask. It decodes correctly. => staged+device binding mixing is NOT the
+  trigger (kills the round-16m last hypothesis).
+- New measurement: the CANARY split#1's own output tensor node_972 (blk.27
+  attn_output MUL_MAT result, device arena off=1572864, val=1336) reads EXACT
+  ZEROS after execute() + hrx_stream_synchronize inside the executor - i.e.
+  even with an in-execute flush, split#1's dispatches leave no bytes at their
+  declared output bindings (KV caches zero too). The kernels execute at full
+  speed (200 t/s, timing-proven) yet write nowhere readable.
+- REMAINING DIFFERENTIATOR: working = ONE HRX program per ggml graph pass
+  (single split); canary = TWO+ HRX programs per pass with CPU splits between.
+  Everything executor-side is exonerated (fresh prepare, no caches, correct
+  staging, complete programs, current bindings). The defect is the iree
+  queue/semaphore interaction when multiple HRX program launches interleave
+  with CPU work + cross-backend d2h copies in ONE ggml sched pass - likely the
+  mid-pass d2h copy of split outputs races/never-orders against the dispatch
+  submissions (iree device_transfer vs hrx stream timeline semaphore).
+- NEXT (device owner): trace iree queue ordering for the canary pass: split#1
+  dispatch submit -> node_972 d2h copy -> split#2 CPU -> split#3 dispatch.
+  Verify the d2h waits on the hrx stream semaphore. Everything else is
+  eliminated after 23 rounds (16a-16n).
