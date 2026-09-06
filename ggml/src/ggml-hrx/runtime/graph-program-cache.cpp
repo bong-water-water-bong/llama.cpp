@@ -159,12 +159,14 @@ GraphProgram::GraphProgram(uint64_t                        uid,
                            std::string                     target,
                            std::unique_ptr<Graph>          graph,
                            std::unique_ptr<CommandProgram> commands,
-                           std::string                     command_shape) :
+                           std::string                     command_shape,
+                           std::unordered_map<int32_t, std::string> generated_value_names) :
     uid_(uid),
     target_(std::move(target)),
     graph_(std::move(graph)),
     commands_(std::move(commands)),
-    command_shape_(std::move(command_shape)) {}
+    command_shape_(std::move(command_shape)),
+    generated_value_names_(std::move(generated_value_names)) {}
 
 const GraphProgramExternalSlot * GraphProgram::find_external_slot(ValueId value) const {
     const auto found = external_slot_by_value_.find(value.value);
@@ -651,9 +653,25 @@ std::unique_ptr<GraphProgram> GraphProgramCache::build_program_from_imported(uin
     for (const std::string & error : dump_status.errors()) {
         GGML_LOG_WARN("ggml_hrx: %s\n", error.c_str());
     }
+    // Thread generated-resource transient names (expert_table / partition_table /
+    // row_debug, e.g. "common.moe_routing.*") into the program so the env-gated
+    // in-program dump can name those values. They have no ggml tensor (plan
+    // ValueIds only) and no graph Value entry, so without this map the only
+    // handle is the positional bind_<index> tag.
+    std::unordered_map<int32_t, std::string> generated_value_names;
+    for (const CommandPlanTransient & transient : scheduler.plan().transients) {
+        if (!transient.name.empty()) {
+            generated_value_names.emplace(transient.value.value, transient.name);
+        }
+    }
+    for (const CommandPlanCompletionCounterRequest & counter : scheduler.plan().completion_counter_requests) {
+        if (!counter.name.empty()) {
+            generated_value_names.emplace(counter.value.value, counter.name);
+        }
+    }
     return std::make_unique<GraphProgram>(uid, target, std::make_unique<Graph>(std::move(imported_graph)),
                                           std::make_unique<CommandProgram>(std::move(commands)),
-                                          std::move(command_shape));
+                                          std::move(command_shape), std::move(generated_value_names));
 }
 
 bool can_execute_standalone_op_as_graph(const ggml_tensor * op, const std::string & target) {
@@ -716,33 +734,92 @@ void GraphProgram::dump_program_values(const CommandProgramExecutionContext & co
             if (cmd.kind != CommandKind::Kernel) continue;
             size_t bi = 0;
             for (const PreparedCommandBinding & pb : cmd.kernel.bindings) {
-                if (pb.ref.buffer == nullptr) { ++bi; continue; }
+                const size_t binding_index = bi++;
+                if (pb.ref.buffer == nullptr) continue;
                 if (seen_values.count(pb.binding.value.value)) continue;
+                // Identity name: ggml tensor name for graph externals, else the
+                // generated-resource name threaded from the plan (expert_table /
+                // partition_table / row_debug: "common.moe_routing.*"), else the
+                // positional bind_<index> tag (mm dispatch order: 0=input,
+                // 1=expert_table, 2=partition_table, 3=weight, 4=output, 5+=optional).
+                // The bind_<index> tag is a filter alias ONLY for transients /
+                // generated resources (values with no ggml tensor name), so role
+                // filters (e.g. GGML_HRX_PROGRAM_DUMP=bind_2 -> the plain mm's
+                // partition_table) select those without also grabbing every named
+                // graph tensor that happens to sit at binding index 2 of some
+                // other command.
+                std::string identity;
+                bool        from_tensor_name = false;
                 const Value * value = graph_->values().find(pb.binding.value);
-                std::string nm;
                 if (value != nullptr && value->tensor != nullptr) {
                     const char * gnm = ggml_get_name(value->tensor);
-                    if (gnm != nullptr) nm = gnm;
+                    if (gnm != nullptr && gnm[0] != '\0') {
+                        identity         = gnm;
+                        from_tensor_name = true;
+                    }
                 }
-                if (nm.empty()) {
-                    // transients / generated resources: tag by the binding INDEX so role
-                    // filters can target them (mm dispatch order: 0=input, 1=expert_table,
-                    // 2=partition_table, 3=weight, 4=output, 5+=optional).
-                    nm = "bind_" + std::to_string(bi);
+                if (identity.empty()) {
+                    const auto found = generated_value_names_.find(pb.binding.value.value);
+                    if (found != generated_value_names_.end()) identity = found->second;
                 }
                 bool want = false;
-                for (const std::string & f : filters) {
-                    if (strstr(nm.c_str(), f.c_str()) != nullptr) { want = true; break; }
+                if (!identity.empty()) {
+                    for (const std::string & f : filters) {
+                        if (strstr(identity.c_str(), f.c_str()) != nullptr) { want = true; break; }
+                    }
                 }
-                ++bi;
+                if (!want && !from_tensor_name) {
+                    const std::string bind_tag = "bind_" + std::to_string(binding_index);
+                    for (const std::string & f : filters) {
+                        if (strstr(bind_tag.c_str(), f.c_str()) != nullptr) { want = true; break; }
+                    }
+                }
                 if (!want) continue;
                 seen_values.insert(pb.binding.value.value);
-                dumps.push_back({ nm, pb.ref.buffer, pb.ref.offset, pb.ref.length });
+                dumps.push_back({ identity.empty() ? "bind_" + std::to_string(binding_index) : identity,
+                                  pb.ref.buffer, pb.ref.offset, pb.ref.length });
             }
         }
     };
+    if (std::getenv("GGML_HRX_DUMP_TABLES")) {
+        // dump the moe routing tables: the 10-binding mm command's b4/b5 (512B each)
+        // = the expert/partition tables per the prepare layout.
+        static bool tables_dumped = false;
+        if (!tables_dumped) {
+            for (const PreparedCommand & cmd : prepared_.commands) {
+                fprintf(stderr, "[tbdbg] uid=%llu cmd=%u bindings=%zu\n", (unsigned long long) uid_, cmd.ordinal, cmd.kernel.bindings.size());
+                if (cmd.kernel.bindings.size() == 10) {
+                    for (int k = 4; k <= 5; ++k) {
+                        const PreparedCommandBinding & pb = cmd.kernel.bindings[k];
+                        if (pb.ref.buffer == nullptr || pb.ref.length < 64) continue;
+                        std::vector<uint8_t> data(pb.ref.length);
+                        if (!hrx_synchronous_d2h(context.device, pb.ref.buffer, pb.ref.offset, data.data(), pb.ref.length)) continue;
+                        char path[256];
+                        snprintf(path, sizeof path, "/tmp/prg_dump/%llu_b%d_%zu.bin", (unsigned long long) uid_, k, pb.ref.length);
+                        FILE * f = fopen(path, "wb");
+                        if (f) { fwrite(data.data(), 1, data.size(), f); fclose(f); }
+                        fprintf(stderr, "[tabledump] uid=%llu b%d %zuB -> %s\n", (unsigned long long) uid_, k, pb.ref.length, path);
+                    }
+                    tables_dumped = true;
+                    break;
+                }
+            }
+        }
+    }
     scan_commands(prepared_.initialization_commands);
     scan_commands(prepared_.commands);
+    if (std::getenv("GGML_HRX_PROGRAM_DUMP_DEBUG")) {
+        for (const PreparedCommand & cmd : prepared_.commands) {
+            fprintf(stderr, "[pddbg] uid=%llu cmd=%u kind=%d bindings=%zu\n", (unsigned long long) uid_,
+                    cmd.ordinal, (int) cmd.kind, cmd.kernel.bindings.size());
+            size_t ix = 0;
+            for (const PreparedCommandBinding & pb : cmd.kernel.bindings) {
+                fprintf(stderr, "[pddbg]   b%zu val=%d buf=%p off=%zu len=%zu\n", ix, (int) pb.binding.value.value,
+                        (void*) pb.ref.buffer, pb.ref.offset, pb.ref.length);
+                ++ix;
+            }
+        }
+    }
     if (dumps.empty()) {
         return;
     }
