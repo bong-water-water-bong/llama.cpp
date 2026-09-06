@@ -1480,3 +1480,18 @@ Round 42 (2026-09-06): full dst-ordering fix (cc9da925b + f06731ffe) applied + c
   definitively. Kernel fixes = uncommitted on the branch; tree otherwise clean (DUMPVIEW
   instrument in ggml-hrx.cpp only).
 - Evidence: base region t0-correct/t1+-wrong (round 41 captures).
+
+Round 43 (2026-09-06): base CONTAINS all token data but SCATTERED at partition ordinals - dst fix not effective in executed kernel
+- Definitive base-region analysis (/tmp/base_cmp.py): all 6 tokens' gate+up heads exist in the
+  gate/up dumps at EXACT matches (t1 gate 0.2654@gate[16463], t2 1.1045@gate[3724], t3
+  -1.0146@gate[970]... 12/12 values to 4 decimals) but SCATTERED at non-token rows (t1 at
+  row ~8, t2 at ~1.8...). Token-sequential positions (t1 = element 4096) = WRONG values.
+- => the kernel writes every token's data CORRECTLY but at partition-ordinal dst rows: the
+  dst-ordering fix (cc9da925b + f06731ffe) is NOT effective in the executed kernel. Either
+  the dispatch binds a different publish/variant than the patched plain/postops/next_rmsnorm,
+  or the running kernel = stale (embedded-source vs runtime-JIT mismatch).
+- Handed to d5694d (m_mtptafg9): verify which kernel variant the zaya gate_up dispatch binds
+  + that the patched publish_vector4 runs. Fix is right in principle; the executed kernel
+  doesn't have it.
+- Evidence: /tmp/hrx_ffn_moe_gate-0.bin + up-0.bin (post-fix), /tmp/nodedump/r04_000 (CPU
+  oracle), /tmp/base_cmp.py.
