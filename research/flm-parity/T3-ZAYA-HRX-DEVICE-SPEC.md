@@ -530,3 +530,28 @@ Round 16f (2026-09-06): boundary sub-bugs discriminated; device-buft-only experi
   audit upload_async chunked hrx_stream_update_buffer vs kernel-read ordering
   and value semantics (kMaxInlineUploadBytes=63K; test a single large upload).
   Then re-test qwen+GET_ROWS->CPU canary (expect 12095) and zaya.
+
+Round 16g (2026-09-06): staging upload flavor does not matter; defect is in staging buffer binding/cache identity
+- Experiment: upload_prepared_host_staging switched to upload_synchronous
+  (blocking ordered h2d, identical to the WORKING HostWeightCache weight path).
+  Result: canary (qwen ngl99 + GGML_HRX_CPU_OPS=GET_ROWS) STILL broken (tok0=0),
+  zaya unchanged. Reverted (tree clean at 5416f922d).
+- Key contrast: HostWeightCache (device buffer + upload_synchronous ONCE, then
+  cached; kernels bind entry->buffer) WORKS - weights always correct. HostStaging
+  (per-exec device buffer + upload + bind) is broken in BOTH async and sync
+  flavors. => The upload call itself is not the defect. Remaining candidates:
+  (a) prepared-program kernel bindings for staging buffers resolve to a stale/
+      colliding buffer (identity/generation bookkeeping; staging buffers are
+      per-value-id in the cached prepared program - value-id reuse across
+      graphs with different tensors could bind the wrong staging buffer),
+  (b) the staging buffer is not what the kernel reads (bind offset/length),
+  (c) device-side: iree command buffer update/dispatch ordering across two
+      submissions is not actually FIFO on this backend.
+- token_embd.weight is CPU-resident even in the WORKING qwen case (loader:
+  "token_embd.weight ... cannot be used with preferred buffer type HRX0_HOST,
+  using CPU instead") and the HRX GET_ROWS kernel reads it via the weight-cache
+  path successfully. So table lookups work; FRESH activation uploads do not.
+- HANDOFF (needs on-device instrumentation by the executor owner): after
+  materialize_host_bindings, d2h-read the staging buffer back and compare to
+  host_data; dump prepared.kernel.bindings vs staging.buffer identity; check
+  command_program_bindings_hash collisions across ubatch frames.
