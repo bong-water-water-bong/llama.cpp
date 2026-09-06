@@ -1,6 +1,7 @@
 #include "ggml-hrx.h"
 
 #include "backend-buffer-binding.h"
+#include <algorithm>
 #include "backend-context.h"
 #include "ggml-backend-impl.h"
 #include "ggml-impl.h"
@@ -183,6 +184,10 @@ static void buffer_free(ggml_backend_buffer_t buffer) {
         hrx_buffer_release(context->buffer);
         context->buffer = nullptr;
     }
+    {
+        auto & live = context->device->live_device_buffers;
+        live.erase(std::remove(live.begin(), live.end(), context), live.end());
+    }
     std::lock_guard<std::mutex> lock(context->device->retired_mutex);
     context->device->retired_compute.push_back(context);
 }
@@ -342,6 +347,7 @@ static ggml_backend_buffer_t buffer_alloc(ggml_backend_buffer_type_t buft, size_
         context->buffer     = allocation;
         context->generation = generation;
         context->identity   = generation;
+        context->size       = size;
         if (getenv("GGML_HRX_LIFECYCLE")) {
             fprintf(stderr, "[hrxlife] buffer_alloc REUSE ctx=%p gen=%llu size=%zu (adopted retired)\n",
                     (void *)context, (unsigned long long)generation, size);
@@ -350,6 +356,9 @@ static ggml_backend_buffer_t buffer_alloc(ggml_backend_buffer_type_t buft, size_
         context = new (std::nothrow) ggml_backend_hrx_buffer_context{
             type_context->device, allocation, base, generation, generation, direct_host_binding,
         };
+        if (context != nullptr) {
+            context->size = size;
+        }
         if (getenv("GGML_HRX_LIFECYCLE")) {
             fprintf(stderr, "[hrxlife] buffer_alloc FRESH ctx=%p gen=%llu size=%zu host=%d\n",
                     (void *)context, (unsigned long long)generation, size, host_visible ? 1 : 0);
@@ -363,6 +372,9 @@ static ggml_backend_buffer_t buffer_alloc(ggml_backend_buffer_type_t buft, size_
     }
     if (host_visible && allocation != nullptr) {
         type_context->device->host_buffers.add(allocation, base, size);
+    }
+    if (!host_visible && context != nullptr) {
+        type_context->device->live_device_buffers.push_back(context);
     }
     return ggml_backend_buffer_init(buft, buffer_i, context, size);
 }
@@ -526,12 +538,61 @@ static const char * status_first_error(const ggml::hrx::Status & status) {
     return status.errors().empty() ? "" : status.errors().front().c_str();
 }
 
+static void arena_forensic_dump(ggml_backend_hrx_context * context) {
+    static bool dumped = false;
+    if (dumped) {
+        return;
+    }
+    const char * dir = getenv("GGML_HRX_ARENA_DUMP");
+    if (dir == nullptr) {
+        return;
+    }
+    // One-shot, after the first graph (prefill) executed. Dump mid-sized
+    // non-host device buffers (compute arena ~78MB, KV 29MB; skip 390MB
+    // weights + tiny host buffers) to <dir>/arena_<size>_<gen>.bin
+    for (const ggml_backend_hrx_buffer_context * c : context->device->live_device_buffers) {
+        if (c == nullptr || c->buffer == nullptr || c->size < (16u << 20) || c->size > (256u << 20)) {
+            continue;
+        }
+        char path[512];
+        snprintf(path, sizeof path, "%s/arena_%zu_%llu.bin", dir, c->size,
+                 (unsigned long long)c->generation);
+        FILE * f = fopen(path, "rb");
+        if (f != nullptr) {
+            fclose(f);
+            continue;  // already dumped
+        }
+        void * host = malloc(c->size);
+        if (host == nullptr) {
+            continue;
+        }
+        ggml::hrx::Status st =
+            context->host_transfers.download_synchronous(context->stream, c->buffer, 0, host, c->size);
+        if (st.success()) {
+            f = fopen(path, "wb");
+            if (f != nullptr) {
+                fwrite(host, 1, c->size, f);
+                fclose(f);
+                fprintf(stderr, "[hrxdump] wrote %s (%zu bytes)\n", path, c->size);
+            }
+        } else {
+            fprintf(stderr, "[hrxdump] download failed for gen=%llu\n",
+                    (unsigned long long)c->generation);
+        }
+        free(host);
+    }
+    dumped = true;
+}
+
 static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * graph) {
     auto *                                context  = static_cast<ggml_backend_hrx_context *>(backend->context);
     const ggml::hrx::GraphExecutor        executor = ggml::hrx::GraphExecutor(*context);
     const ggml::hrx::GraphExecutionResult result   = executor.execute(*graph);
     if (!result.success()) {
         GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(result.status));
+    }
+    if (result.code == GGML_STATUS_SUCCESS) {
+        arena_forensic_dump(context);
     }
     return result.code;
 }

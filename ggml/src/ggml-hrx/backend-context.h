@@ -34,6 +34,7 @@ struct ggml_backend_hrx_buffer_context {
     uint64_t                          identity;
     uint64_t                          generation;
     bool                              direct_host_binding;
+    size_t                            size = 0;  // allocation length (bytes)
 };
 
 struct ggml_backend_hrx_device_context {
@@ -52,6 +53,10 @@ struct ggml_backend_hrx_device_context {
     std::atomic<uint64_t>                          synchronous_download_fallbacks{ 0 };
     std::mutex                                     buffer_stream_mutex;
     hrx_stream_t                                   buffer_stream = nullptr;
+
+    // Live non-host (device compute) buffer contexts, for the
+    // GGML_HRX_ARENA_DUMP forensic (post-graph device-memory readback).
+    std::vector<ggml_backend_hrx_buffer_context *> live_device_buffers;
 
     // Retired non-host (device compute) buffer contexts, parked on gallocr
     // buffer_free and adopted by the next buffer_alloc. ggml tensors placed by
