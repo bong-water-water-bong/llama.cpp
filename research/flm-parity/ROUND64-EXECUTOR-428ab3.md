@@ -154,3 +154,16 @@ the nudge would be acting on a retracted theory. Standby maintained for the clas
 matrix result (a137d5) -> if it names a dispatch/prepare-side site (weight-slice offset,
 fragment staging), land it there. Battery = running (not touched); canary status unchanged
 (563) is EXPECTED since no fix is warranted.
+
+## Addendum 4 — build-flag response (m_mtpzycp0, 12:59:01): already green, edit not mine
+
+b30173 flagged "my" in-flight dispatch-gated-mul-mat-id.cpp edit as RED (GGML_HRX_SWIGLU_TRACE
+partial insertion, lines 67-68). Checked: the dispatch-gated edit is NOT mine (same
+misattribution as the earlier dispatch-mul-mat-id.cpp WLAYOUT probe) - it is the fleet's
+active zaya view-split swiglu-fusion WIP (+76 lines, gate_up_combined + VIEW-split
+detection; mtime moved 13:01:56->13:02:37 while watched = live editor). The duplicated
+fprintf-arg line that caused the red was removed by that editor ~13:02; `make ggml-hrx` =
+clean (rc 0, nothing stale). GGML_HRX_DUMP_IR flow = unblocked. No action taken; standing
+by. Working tree = 10 modified files across lanes (dispatch-gated fusion, dispatch WLAYOUT
+probe, ggml-hrx.cpp, loom-jit.cpp DUMP_IR, d5694d .loom set) - all uncommitted, as the
+fleet's in-flight state.
