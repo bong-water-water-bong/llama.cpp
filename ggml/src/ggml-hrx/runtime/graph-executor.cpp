@@ -120,6 +120,47 @@ GraphExecutionResult GraphExecutor::execute(const ggml_cgraph & graph) const {
         }
     }
 
+    if (getenv("GGML_HRX_DUMP_WRITEBIND")) {
+        // Leaf-vs-external discriminator: which graph leaves (cross-split /
+        // CPU-produced inputs consumed by this HRX graph) are NOT in the
+        // binding_match external list. If embd / node_973 show as
+        // consumed-but-unlisted -> cache-hit slot mismatch confirmed.
+        std::vector<const ggml_tensor *> leaves;
+        for (int i = 0; i < graph.n_nodes; i++) {
+            const ggml_tensor * node = graph.nodes[i];
+            if (node == nullptr) continue;
+            for (int j = 0; j < GGML_MAX_SRC; j++) {
+                const ggml_tensor * src = node->src[j];
+                if (src == nullptr) continue;
+                const ggml_tensor * root = src->view_src ? src->view_src : src;
+                bool in_graph = false;
+                for (int k = 0; k < graph.n_nodes && !in_graph; k++) {
+                    const ggml_tensor * n2 = graph.nodes[k];
+                    if (n2 == src || (n2->view_src && n2->view_src == root)) in_graph = true;
+                }
+                if (!in_graph) {
+                    bool seen = false;
+                    for (const ggml_tensor * L : leaves) if (L == src || L == root) seen = true;
+                    if (!seen) leaves.push_back(root);
+                }
+            }
+        }
+        for (const ggml_tensor * leaf : leaves) {
+            bool is_external = false;
+            for (const GraphProgramExternalBinding & ext : binding_match.external_bindings) {
+                const ggml_tensor * rt = ext.tensor->view_src ? ext.tensor->view_src : ext.tensor;
+                if (rt == leaf) { is_external = true; break; }
+            }
+            ggml_backend_buffer_t lb = leaf ? leaf->buffer : nullptr;
+            fprintf(stderr, "[hrxleaf] %s external=%d buf=%p data=%p nbytes=%zu\n",
+                    leaf ? ggml_get_name(leaf) : "?", is_external ? 1 : 0, (void*) lb,
+                    (void*) (leaf ? leaf->data : nullptr), leaf ? (size_t) ggml_nbytes(leaf) : 0u);
+        }
+        fprintf(stderr, "[hrxleaf] externals_total=%zu leaves_total=%zu\n",
+                binding_match.external_bindings.size(), leaves.size());
+        fflush(stderr);
+    }
+
     CommandProgramBindings bindings = bind_external_value_buffers(binding_match);
     if (!bindings.valid()) {
         result.status.append(bindings.status);
