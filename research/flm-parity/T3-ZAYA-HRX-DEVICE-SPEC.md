@@ -1737,3 +1737,20 @@ Round 64 (2026-09-06): ROW_DEBUG capture - publish PERFECT (token==dst_row==assi
   the fragment staging, or the activation fetch for non-first partitions).
 - Fleet: d5694d = the value-level compute review (can extend the instrument to %values).
 - Battery (a137d5) = green baseline; re-run cells 4-5 after the fix.
+
+Round 64b (2026-09-06T15:16Z): follow-up — HEAD moved ae0590115 -> 68b9f89f0 (fix: program-dump naming unit + preserve moe routing tables for captures). Build RE-CHECK at 68b9f89f0 = GREEN (llama-cli built; dirty set now includes 428ab3's dispatch-mul-mat-id.cpp + new mul_mat_id_f32_f32_wmma_core.loom motif + manifest.json, all compile clean). No alert.
+- Duty-3 CLOSED (no verdict owed): coordinator confirms d5694d's descriptor derivation landed; all used-expert partition fields = 0 by construction -> route_tile_base = 0 -> watcher cross-check condition (route_tile_base != 0) NOT met; fetch correct on paper AND at runtime (row_debug tuples: token==dst_row==assignment, experts [3,5,12,7,2,4]). Live target = wmma compute values for y=1..5 workgroups (wave-scheduling / fragment staging).
+- Watch list updated: (a) d5694d wave-scheduling review or value-level trace; (b) 428ab3 executor edits landing (tree-dirty now; ROUND64-EXECUTOR-428ab3.md untracked); (c) fix commit -> a137d5 battery re-run cells 4-5 vs the 9079 oracle.
+- Corpus regen quirk VERIFIED: build depfiles do not track .loom (kernel-corpus-sources.inc 10.9MB, not in *.d); red-after-loom-edit remedy = rm build/ggml/src/ggml-hrx/kernel-corpus-sources.inc && make ggml-hrx-kernel-corpus.
+- Captures: no new files (/tmp/nodedump 9/9 preserved; /tmp/prg_dump empty).
+
+Round 65 (2026-09-06): weight-layout hypothesis CLOSED - [K,N,n_expert] row-major matches the kernel's expert_byte_base exactly
+- WLAYOUT probe: ffn_gate_up_exps.weight = ne=[2048,4096,16,1] nb=[4,8192,33554432,536870912]
+  = [K,N,n_expert] with the expert plane contiguous at e*33554432 = e*(K*N*4) = the kernel's
+  expert_byte_base. Down weights = [2048,2048,16] = 16.7MB planes, same layout.
+- => the weight fetch = RUNTIME-VERIFIED correct; the layout hypothesis = dead. The entire
+  fetch/metadata/routing/store layer = correct end-to-end (tuples + weight layout + input +
+  ids).
+- Remaining = the wmma COMPUTE for the y=1..5 workgroups (fragment staging / wave-scheduling
+  across the 64x16 grid / a codegen defect for non-first partitions). Next = the %values-head
+  marker or the static core review (d5694d).
