@@ -1418,3 +1418,15 @@ Round 38 (2026-09-06): ROOT CAUSE CONVERGED - mul_mat_id dst rows at expert-part
   kernel writes dst at the token index resolved from the assignment table. d5694d to implement.
 - MILESTONE: qwen externalization fixed + committed (rounds 21-31); zaya = this dst-ordering
   bug in the MoE routing bundle. Evidence: all rounds 32-37 captures.
+
+Round 39 (2026-09-06): count-mismatch hypothesis OUT (ids 0..15, expert_count 16 consistent); dst-ordering #2 stands
+- The "id 16" from round-35's argmax-over-17 = a misread: router_logits = [17,6] (17 logit
+  slots) but the CONT before routing slices to ffn_moe_probs [16,6]; the ARGSORT over those
+  yields routing ids 0..15 only.
+- Actual routing ids (argsort-0, r04_108, 5-token prompt): token 0->3, 1->5, 2->12, 3->7,
+  4->2, 5->4 (all within 0..15). Weight = [K, N, 16] per byte math (512MiB = 2048x4096x16x4).
+- CONFIRMED: expert_count=16 consistent; d5694d's #1 CLEAN verdict stands; the count-mismatch
+  hypothesis is out. Root cause = #2 (dst rows at expert-partition ordinals
+  partition<<5+local vs CPU token-sequential) - fix in the MoE routing bundle dst ordering,
+  in d5694d's hands. Battery armed.
+- Evidence: /tmp/nodedump/r04_108 (argsort ids [16,6]).
