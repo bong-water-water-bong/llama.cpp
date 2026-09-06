@@ -1672,3 +1672,13 @@ Round 59 (2026-09-06): permutation search - tokens 1-5 content GENUINELY WRONG (
 - => the per-row compute/fetch (activation or weight for partitions > 0) = the confirmed bug
   (NOT the runtime dst placement). Directs d5694d's fetch review.
 - Evidence: CPU r04_000 gate_up oracle vs /tmp/hrx_gate0.bin on strixhalo.
+
+Round 60 (2026-09-06): node_153 re-measured correctly - attention UNIFORMLY fine (mad 0.034-0.039 all tokens); FFN origin stands
+- node_153 re-measured with the correct [128,8,6] strided layout: all 6 tokens mad 0.034-0.039
+  (uniform fp-level attention noise, no token-specific divergence). The attention/conv path
+  does NOT carry the t1-5 corruption.
+- With input_norm-0 all-6-slots bit-identical + node_153 uniformly fine + prefill ids
+  identical: the ffn/gate_up origin stands (rounds 58-59). Attention/CCA exonerated for the
+  first divergence.
+- Remaining forks: post_attn_norm-0 (mm input, in-program) or the mm compute/fetch =
+  d5694d's dedicated-buffer instrument (executor plumbing recipe handed off, m_mtpvlxd9).
