@@ -32,6 +32,31 @@ static bool tensor_is_external(const ggml_tensor *                              
     return produced_here.find(tensor) == produced_here.end();
 }
 
+// Full-graph use count for a tensor. The cgraph handed to graph_compute is a
+// ggml_graph_view slice of the scheduler's full graph and SHARES the full
+// graph's use_counts / visited_hash_set (ggml_graph_view aliases
+// cgraph0->use_counts). A produced value whose FULL use count exceeds its
+// in-slice use count is consumed by a node in a LATER split (e.g. a
+// CPU-forced residual add) that reads its ggml-buffer slot after this slice
+// computes. Those values must stay External (written to the ggml slot) even
+// when they also have in-slice consumers; otherwise the post-slice reader gets
+// a never-written slot (round 21: l_out-26 all-zeros at gen-4@0,
+// split-externalization gap; node_972 externalized because it has no in-slice
+// consumers).
+static int32_t full_graph_use_count(const struct ggml_cgraph & graph, const ggml_tensor * tensor) {
+    if (tensor == nullptr || graph.use_counts == nullptr || graph.visited_hash_set.used == nullptr) {
+        return 0;
+    }
+    const size_t pos = ggml_hash_find(&graph.visited_hash_set, tensor);
+    if (pos >= graph.visited_hash_set.size) {
+        return 0;
+    }
+    if (!ggml_bitset_get(graph.visited_hash_set.used, pos)) {
+        return 0;
+    }
+    return graph.use_counts[pos];
+}
+
 }  // namespace
 
 GraphIndex GraphIndex::build(const Graph & graph) {
@@ -165,8 +190,12 @@ GraphImportResult import_ggml_graph(const ggml_cgraph & graph) {
             inputs.push_back(values.get_or_add_tensor_value(source, kind));
         }
 
+        const auto        local_use   = use_counts.find(node);
+        const bool        consumed_outside =
+            full_graph_use_count(graph, node) > (local_use == use_counts.end() ? 0 : local_use->second);
         const ValueKind output_kind =
-            tensor_is_external(node, use_counts, produced_here) ? ValueKind::External : ValueKind::Transient;
+            (tensor_is_external(node, use_counts, produced_here) || consumed_outside) ? ValueKind::External
+                                                                                      : ValueKind::Transient;
         const ValueId   output      = values.get_or_add_tensor_value(node, output_kind);
         GraphNode &     graph_node  = result.graph.add_node(node->op, output, std::move(inputs));
         graph_node.params           = import_op_params(*node);
