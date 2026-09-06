@@ -193,6 +193,17 @@ GraphImportResult import_ggml_graph(const ggml_cgraph & graph) {
         const auto        local_use   = use_counts.find(node);
         const bool        consumed_outside =
             full_graph_use_count(graph, node) > (local_use == use_counts.end() ? 0 : local_use->second);
+        if (std::getenv("GGML_HRX_TRACE_EXT")) {
+            const char * nm = ggml_get_name(node);
+            if (nm != nullptr && (strstr(nm, "ffn_moe_gate") != nullptr || strstr(nm, "ffn_moe_up") != nullptr ||
+                                  strstr(nm, "l_out") == nm || strstr(nm, "node_") == nm)) {
+                const auto  lu = use_counts.find(node);
+                const auto  fu = full_graph_use_count(graph, node);
+                fprintf(stderr, "[ext] name=%s ext=%d consumed_outside=%d local_use=%d full_use=%d\n",
+                        nm, tensor_is_external(node, use_counts, produced_here) ? 1 : 0,
+                        consumed_outside ? 1 : 0, (int)(lu == use_counts.end() ? 0 : lu->second), (int)fu);
+            }
+        }
         const ValueKind output_kind =
             (tensor_is_external(node, use_counts, produced_here) || consumed_outside) ? ValueKind::External
                                                                                       : ValueKind::Transient;
