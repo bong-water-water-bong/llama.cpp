@@ -7,8 +7,13 @@
 
 #include <cstddef>
 #include <cstdlib>
+#include <cstring>
 #include <sstream>
+#include <unordered_set>
+#include <sys/stat.h>
 #include <utility>
+
+#include "hrx-interop-utils.h"
 
 namespace ggml::hrx {
 namespace {
@@ -670,6 +675,96 @@ bool can_execute_standalone_op_as_graph(const ggml_tensor * op, const std::strin
         return false;
     }
     return DispatchScheduler::supports_node(graph, &node, { target });
+}
+
+
+void GraphProgram::dump_program_values(const CommandProgramExecutionContext & context) const {
+    const char * env = std::getenv("GGML_HRX_PROGRAM_DUMP");
+    if (env == nullptr || env[0] == '\0' || !has_prepared_ || !prepared_.valid()) {
+        return;
+    }
+    if (context.device == nullptr || context.stream == nullptr) {
+        return;
+    }
+    std::vector<std::string> filters;
+    {
+        std::string list = env;
+        size_t      pos  = 0;
+        while ((pos = list.find(',')) != std::string::npos) {
+            std::string f = list.substr(0, pos);
+            if (!f.empty()) filters.push_back(f);
+            list.erase(0, pos + 1);
+        }
+        if (!list.empty()) filters.push_back(list);
+    }
+    if (filters.empty()) {
+        return;
+    }
+    // Per-uid execution ordinal: the program sequence per forward pass is
+    // deterministic for a fixed prompt + backend split, so (uid, ordinal)
+    // aligns across HRX vs CPU runs.
+    static uint64_t ordinal_counter = 0;
+    static std::unordered_map<uint64_t, uint64_t> uid_ordinals;
+    const uint64_t ordinal = ++uid_ordinals[uid_];
+
+    // Collect (name, ref) for every kernel-bound value whose ggml name matches.
+    struct DumpRef { std::string name; hrx_buffer_t buffer; size_t offset; size_t length; };
+    std::vector<DumpRef> dumps;
+    std::unordered_set<int32_t> seen_values;
+    auto scan_commands = [&](const std::vector<PreparedCommand> & commands) {
+        for (const PreparedCommand & cmd : commands) {
+            if (cmd.kind != CommandKind::Kernel) continue;
+            for (const PreparedCommandBinding & pb : cmd.kernel.bindings) {
+                if (pb.ref.buffer == nullptr) continue;
+                if (seen_values.count(pb.binding.value.value)) continue;
+                const Value * value = graph_->values().find(pb.binding.value);
+                if (value == nullptr || value->tensor == nullptr) continue;
+                const char * nm = ggml_get_name(value->tensor);
+                if (nm == nullptr) continue;
+                bool want = false;
+                for (const std::string & f : filters) {
+                    if (strstr(nm, f.c_str()) != nullptr) { want = true; break; }
+                }
+                if (!want) continue;
+                seen_values.insert(pb.binding.value.value);
+                dumps.push_back({ nm, pb.ref.buffer, pb.ref.offset, pb.ref.length });
+            }
+        }
+    };
+    scan_commands(prepared_.initialization_commands);
+    scan_commands(prepared_.commands);
+    if (dumps.empty()) {
+        return;
+    }
+
+    if (ErrorResult err = take_status(hrx_stream_synchronize(context.stream))) {
+        fprintf(stderr, "[prgdump] sync failed: %s\n", err->c_str());
+        return;
+    }
+    static bool mkdir_done = false;
+    if (!mkdir_done) {
+        mkdir("/tmp/prg_dump", 0755);
+        mkdir_done = true;
+    }
+    for (const DumpRef & d : dumps) {
+        std::vector<uint8_t> data(d.length);
+        if (ErrorResult err = take_status(
+                hrx_synchronous_d2h(context.device, d.buffer, d.offset, data.data(), d.length))) {
+            fprintf(stderr, "[prgdump] d2h %s failed: %s\n", d.name.c_str(), err->c_str());
+            continue;
+        }
+        char path[512];
+        snprintf(path, sizeof(path), "/tmp/prg_dump/%llu_%03llu_%s.bin", (unsigned long long) uid_,
+                 (unsigned long long) ordinal, d.name.c_str());
+        FILE * f = fopen(path, "wb");
+        if (f != nullptr) {
+            fwrite(data.data(), 1, d.length, f);
+            fclose(f);
+        }
+        fprintf(stderr, "[prgdump] uid=%llu ord=%llu %s %zuB -> %s\n", (unsigned long long) uid_,
+                (unsigned long long) ordinal, d.name.c_str(), d.length, path);
+    }
+    (void) ordinal_counter;
 }
 
 }  // namespace ggml::hrx

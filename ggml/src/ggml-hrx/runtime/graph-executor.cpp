@@ -347,6 +347,9 @@ GraphExecutionResult GraphExecutor::execute(const ggml_cgraph & graph) const {
             }
         }
     }
+    if (execution.success && use_graph_prepared && lookup.program->has_prepared_program()) {
+        lookup.program->dump_program_values(execution_context);
+    }
     result.code = GGML_STATUS_SUCCESS;
     return result;
 }

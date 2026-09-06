@@ -78,6 +78,15 @@ class GraphProgram {
     PreparedCommandProgramCacheExecutionResult execute_with_result(const CommandProgramExecutionContext & context,
                                                                    const CommandProgramBindings &         bindings);
 
+    // Env-gated (GGML_HRX_PROGRAM_DUMP=<comma-separated name substrings>)
+    // post-execution dump of in-program value regions (external ggml slots +
+    // transient-arena regions), keyed by program uid + per-uid execution
+    // ordinal so cross-run comparisons align on (uid, ordinal) instead of the
+    // scheduler's divergent run counters. Writes
+    // /tmp/prg_dump/<uid>_<ordinal>_<name>.bin. (eb4f0b, round 57: readbacks
+    // cannot reach in-program values; this is the executor-side mechanism.)
+    void dump_program_values(const CommandProgramExecutionContext & context) const;
+
   private:
     const GraphProgramExternalSlot * find_external_slot(ValueId value) const;
     const ggml_tensor *              resolve_external_slot(const ggml_cgraph &              graph,
