@@ -904,3 +904,29 @@ Round 16v (2026-09-06): wave64-for-prefill BROKEN (all-zero); wmma stays; node_9
   test: make node_972 ride the host-staged path (copy to host at the split
   boundary) so the CPU split#2 reads a consistent copy regardless of the wmma
   write.
+
+Round 16w (2026-09-06): matcher-only CPU-demotion aborts (claim mismatch); demotion needs claim-level graph context
+- Experiment (reverted; tree clean at 052046a49): gated the wmma MUL_MAT
+  dispatch matcher (dispatch-mul-mat.cpp match_mul_mat_dispatch) to return
+  false when the output Value is External (ValueKind::External), intending
+  node_972 to fall to wave64 (1-token) or CPU (multi-token). Result: 6-token
+  canary ABORTS ("unsupported HRX node 971: MUL_MAT output=1336 f32[1024,5]
+  q4_K[2048,1024]x f32[2048,5]") - the ggml sched already assigned the node to
+  HRX0 via device_supports_op (op-level claim, NO graph context), so the
+  dispatch matcher finding no kernel = hard error, not CPU fallback. 1-token
+  Paris unchanged (7435).
+- CONCLUSION: routing one node to CPU requires claim-level (device_supports_op)
+  knowledge of whether the mm's output is a terminal split-external - but the
+  ggml-backend claim API (device_supports_op(device, op)) has no graph context.
+  Options: (a) thread graph context into claims (invasive), (b) accept the
+  execution-side wmma-terminal-external vanish and investigate at the
+  kernel/driver layer (a137d5: replay-launch final writeback; eb4f0b's libhrx
+  hook on the graph-launch path), (c) executor-side: after a wmma program with
+  a zero-read terminal external, re-issue just that mm on CPU as a repair
+  (hacky), (d) test whether the terminal external's DIFFERENT buffer (compute
+  arena vs transient arena) is the trigger - if the wmma kernel writes outputs
+  relative to the transient arena base, an external in the compute arena at
+  off=1572864 would be written at arena-relative 1572864 of the WRONG buffer.
+  (d) is testable by moving node_972-class externals into the transient arena.
+- State unchanged: fix a0af0f985 landed; canary prefill byte-correct KV; ONE
+  lost write (node_972 wmma terminal external). Full trail 16a-16w.
