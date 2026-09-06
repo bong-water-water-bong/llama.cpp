@@ -1582,3 +1582,14 @@ Round 51 (2026-09-06): input_norm-0 slot-0 BIT-IDENTICAL; divergence from token-
 - REMAINING DISCRIMINATORS (eb4f0b's #3/#4): cache_s_l0 write/read + block-0 ffn residual
   output per token. Offered the DUMPVIEW chain extension; awaiting the go.
 - Fleet: eb4f0b (localization) + d5694d (kernel instrument) both active.
+
+Round 52 (2026-09-06): expert selection IDENTICAL ([3,5,12,7,2,4] both runs, all 6 tokens) - router hypothesis OUT
+- HRX-run block-0 argsort top-1 ids = [3,5,12,7,2,4] = CPU-run ids (r36_000 vs r04_108) -
+  ALL 6 TOKENS MATCH. eb4f0b's expert-selection hypothesis ruled out (the CPU topk picks
+  the same experts from the HRX router logits).
+- Remaining: node_153 (attention output + residual) all-tokens fine + ids same + (apparently)
+  right inputs -> the gate_up mm rows 1-5 disjoint = d5694d's fetch/compute lane (per-row
+  weight-slice or activation fetch for partitions/tokens beyond the first in a multi-token
+  launch). input_norm-1 slots-1-5 = downstream of the block-0 output assembly.
+- Evidence: /tmp/nodedump/r36_000 (HRX argsort), r04_108 (CPU argsort) - both [3,5,12,7,2,4].
+- Fleet: eb4f0b (localization) + d5694d (kernel fetch/compute lane).
