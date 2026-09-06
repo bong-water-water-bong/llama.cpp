@@ -1446,3 +1446,21 @@ Round 40 (2026-09-06): ZEROPAD test NEGATIVE - unwritten-pad mechanism ruled out
   each breaking the build with the out-of-scope 'bindings' error) - purged again; tree = my 2
   env-gated instruments only (ggml-hrx.cpp DUMPVIEW, command-program-executor.cpp ZEROPAD).
 - Awaiting d5694d's routing-bundle dst-ordering fix; battery armed.
+
+Round 41 (2026-09-06): kernel dst fix (cc9da925b) VERIFIED ACTIVE but insufficient - view-fill is the remaining site
+- Applied d5694d's cc9da925b (mul_mat_id publish writes output_view[token*route_count+route])
+  to the current branch + forced the kernel-corpus rebuild (make ggml-hrx-kernel-corpus +
+  touch .loom). Output unchanged (563) BUT the gate_up data REARRANGED (row-head sequence
+  changed vs pre-fix) => the fix is ACTIVE at the base level.
+- Post-fix gate rows vs CPU oracle heads: row-0 = cpu t0 within fp noise; rows 1-5
+  (-0.1617/0.3435/0.2013/0.1693/-1.7598) still != cpu t1-5 (0.265/1.105/-1.015/0.188/0.565).
+- SYNTHESIS: the observable the CPU consumes = the gate/up VIEW readbacks; the views are
+  SEPARATE externals with their own 49152B write bindings, filled by an executor-side
+  view-materialization that appears stride-blind (buffer_copy fires ZERO times - round 36).
+  The kernel's dst fix writes the base token-sequentially; the VIEW FILL = the remaining
+  stride-blind suspect. Round-34's buffer_get gather changed the readback but the fill stayed
+  wrong; ZEROPAD irrelevant.
+- OPEN: which executor mechanism fills the gate/up view slots (the 49152 GraphValue write
+  bindings) and does it honor view strides? eb4f0b executor read (m_mtpsxxkv). d5694d's fix
+  confirmed active (m_mtpsy23c).
+- Evidence: /tmp/hrx_ffn_moe_gate-0.bin (post-fix rows), /tmp/nodedump/r04_000 (CPU oracle).
