@@ -652,3 +652,27 @@ Round 16k (2026-09-06): prepared-program caching exonerated - bug survives ALWAY
   consumer input is host-staged. All cache/replay/staging-upload/buffer-claim
   mechanisms eliminated (rounds 16f-16k). The defect sits inside graph->program
   matching or the iree dispatch of the mixed-shape program.
+
+Round 16l (2026-09-06): matcher exonerated - programs are COMPLETE; defect is per-execution binding/constant values
+- Used the built-in command-program dump (GGML_HRX_DUMP_COMMAND_PROGRAM_DIR ->
+  kernels.txt per unique shape): the CANARY split#1 program contains the FULL
+  pipeline (program-2 decode: 387 lines, main 0 rmsnorm, mms, attention
+  postprocess, flash_attention_decode_split x N, binary/rmsnorm tail = all 28
+  layers + KV-writing flash kernels present). Working program-0 (401 lines) is
+  the same pipeline PLUS ggml_get_rows_f32 at the head (embd on HRX). => the
+  graph->program matcher does NOT drop nodes for mixed graphs.
+- CONCLUSION after rounds 16f-16l: dispatches complete + full execution speed +
+  exact-zero writes => kernels execute but receive WRONG per-execution
+  binding/constant values for their write targets (KV cache rows / result
+  buffer) in mixed/multi-split programs. Suspects narrowed to: (a) per-frame
+  position/n_past constants or leaf values bound into the program (the flash-
+  attn KV write index math depends on them), (b) the external write-binding
+  offset for cache views resolved from a stale tensor->data at bind time,
+  (c) iree command buffer / binding table slot mismatch when the program has
+  staged externals (the canary differs from working only by: embd staged vs
+  on-device get_rows + mid-graph CPU GET_ROWS split).
+- NEXT: instrument the ACTUAL iree dispatch of one KV-writing flash kernel in
+  the canary program: dump its binding buffer refs + constants at launch vs
+  the working program; verify the cache view offset + n_past value on device.
+  Dumps: /tmp/hrxdump (working) and /tmp/hrxdump2 (canary) - program.json +
+  kernels.txt per shape.
