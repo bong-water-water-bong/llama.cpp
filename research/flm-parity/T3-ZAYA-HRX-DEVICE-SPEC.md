@@ -1664,3 +1664,11 @@ Round 58 (2026-09-06): input_norm-0 ALL 6 SLOTS BIT-IDENTICAL (mad 0.000000) - g
   = the one unmeasurable link (HRX-internal) but all surroundings clean.
 - d5694d target: the mm's per-partition compute fetch (activation row or weight slice for
   partition_ordinal > 0). Evidence: /tmp/hrx_input_norm-0.bin vs the CPU r04_000.
+
+Round 59 (2026-09-06): permutation search - tokens 1-5 content GENUINELY WRONG (not misplaced)
+- Full 2048-wide gate rows searched anywhere in the HRX dump (/tmp/perm_search.py): token 0
+  = intact (mad 0.005 at offset 0); tokens 1-5 = NOT found intact (best-offset full-row mad
+  0.44-0.67). Content = genuinely wrong for tokens 1-5, not misplaced.
+- => the per-row compute/fetch (activation or weight for partitions > 0) = the confirmed bug
+  (NOT the runtime dst placement). Directs d5694d's fetch review.
+- Evidence: CPU r04_000 gate_up oracle vs /tmp/hrx_gate0.bin on strixhalo.
