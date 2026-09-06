@@ -1249,3 +1249,27 @@ Round 28 (2026-09-06): gate-slot SET_ROWS write = origin GraphValue bound to wro
   (reresolve or the command-binding resolution for GraphValue-origin outputs) is at fault -
   NOT the transient/two-home case (fix = dual-write) and NOT the fusion case.
 - Evidence: /tmp/o5.err. Handed to eb4f0b (m_mtppnr3a).
+
+Round 29-30 (2026-09-06): gate_up root cause + alias-consumer fix attempt (validated direction, regression found)
+- ROOT CAUSE (round 29): ffn_moe_gate_up-N (MUL_MAT_ID output, 98304B = 4096x6x4) is consumed
+  in-slice ONLY by VIEW nodes ([ffn_moe_gate-N/VIEW] [ffn_moe_up-N/VIEW] - the gate/up row
+  split) -> produced+consumed -> Transient -> 98304B transient-arena binding (program-8
+  val=3 origin=1). The VIEW outputs (ffn_moe_gate-N etc., External, read back 90112B by the
+  CPU swiglu) alias to gate_up's value -> the CPU readback samples the ggml home (gallroc
+  placed the view/parent in the compute arena) which the transient write never touches -> zero.
+- FIX ATTEMPT (round 30): exclude layout-alias consumers (VIEW/RESHAPE/PERMUTE/TRANSPOSE)
+  from use_counts so alias-only-consumed produced values classify External (terminal rule).
+  Result: zaya ngl99 tok0 75615 (53335-collapse -> VARIED tokens; gate/up readbacks REAL
+  4096/4096; ZERO zero-reads anywhere) but NOT oracle 9079. QWEN REGRESSED exactly as
+  eb4f0b warned (canary 24095, working qwen 104) - mid-program alias chains feeding IN-SLICE
+  real ops (Kcur->permuted views->flash-attn) flipped External -> fused path broken.
+- REVERTED graph.cpp to committed state; qwen restored (12095 both); zaya ngl0 9079 intact.
+- CORRECT RULE (for eb4f0b): (1) transitive fixpoint - consumption through alias chains
+  propagates; alias chains reaching an in-slice real op stay Transient; only chains leaving
+  the slice (no in-slice real consumer) go External; (2) the consumed_outside delta needs
+  consistent bases (raw full use_counts count alias uses -> false-positive External for Kcur).
+- Remaining zaya divergence (75615 vs 9079) after the (uncommitted) fix = likely a second
+  same-class instance or the capacity-tail (write covers rows 0-5 of an 11-row base per
+  eb4f0b's 180224B-vs-98304B arithmetic).
+- Evidence: /tmp/za_fix.log (75615 varied), /tmp/zrt3.err (no zero reads), /tmp/big.err
+  (gate_up consumers = views only), /tmp/pm.err. Handed to eb4f0b (m_mtpqb2qt).
