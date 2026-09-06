@@ -1653,3 +1653,14 @@ Round 57 (2026-09-06): measurement ceiling - readback-based CCA comparisons hit 
   error-prone. Precise remaining measurements need d5694d's kernel instrument or an
   executor-side in-program dump keyed to the program.
 - Fleet aligned; battery + aligned captures on demand for any landed fix.
+
+Round 58 (2026-09-06): input_norm-0 ALL 6 SLOTS BIT-IDENTICAL (mad 0.000000) - gate_up mm = confirmed origin
+- input_norm-0 (block-0 own input norm, 5-token, exact r04_000 [2048,6] pick): mad 0.000000
+  on ALL 6 slots (earlier "slots 2-5 zero" = wrong-file pick; all 6 slots real). The
+  pre-block path (embeddings/state) = CLEAN.
+- With node_153 (post-conv attention output) fine + prefill ids identical + input_norm-0
+  identical => the chain to the gate_up mm input = clean at every measurable stage => THE
+  GATE_UP MM ITSELF = the origin (kernel lane confirmed). post_attn_norm-0 (direct mm input)
+  = the one unmeasurable link (HRX-internal) but all surroundings clean.
+- d5694d target: the mm's per-partition compute fetch (activation row or weight slice for
+  partition_ordinal > 0). Evidence: /tmp/hrx_input_norm-0.bin vs the CPU r04_000.
