@@ -460,3 +460,28 @@ Round 16c (2026-09-06): split trace + shared-arena coherence finding (best root-
       kernel reading it, compare; ditto device->CPU. Establishes the mechanism.
 - zaya-m1 lane still takes the NPU in bursts; cells run in gaps (see round16.sh).
   Commits: 4705403..HEAD.
+
+Round 16d (2026-09-06): qwen GPU decode is ALSO broken (zero logits) - shared device-path bug, not zaya-specific
+- qwen3-0.6B Q4_K_M ngl99 via zgreedy: top5 step0 = all 0.000, tok0=0 repeated,
+  llama-cli prints NOTHING. The RESULTS-qwen3-roster doc (task-1/2 evidence) used
+  llama-bench pp512/tg128 = THROUGHPUT ONLY; "coherent NaN-free output" was never
+  validated on the GPU path with a token gate. Tasks 1-3 evidence predates the
+  round-15 commits (09:45 vs 10:08) - GPU-output correctness at that time is
+  UNVERIFIED either way (llama-cli text is template-confounded, see round 16).
+- qwen ngl99 graph = 4 splits: CPU embd -> HRX0 layers (0 inputs) -> CPU output
+  (output_norm + lm_head) consuming l_out-26 via ONE cross-backend input copy.
+  All-zero logits => the HRX->CPU handoff of l_out-26 is zeros: either the device
+  kernel never wrote the tensor the sched reads, or the d2h copy/staging zeroes.
+- Signature contrast: zaya logits = FINITE garbage (16745@19.0), qwen = all ZERO.
+  zayas last CPU ops read device outputs via the shared HRX0_HOST arena (stale
+  garbage), qwens last CPU op reads via a staged input copy (zeros). Unifying
+  hypothesis: device kernels write into different/stale buffer locations than
+  the CPU/sched reads - a buffer generation/identity or arena-reuse defect in
+  the executor/program-cache path (bindings carry identity+generation; cache
+  keys on them; stale generation across sched buffer reuse => kernels bind stale
+  handles => current buffers stay zero; arena reads see stale contents).
+- NEXT (executor owner): (1) minimal d2h test: compute one device tensor, read
+  it back via backend get vs buffer get - are they equal? (2) audit generation
+  bumps vs ggml buffer reuse in graph-program-cache/prepared-program paths;
+  (3) check whether device kernels write where the sched expects (bind l_out-26
+  after a 1-layer qwen decode, dump device buffer bytes).
