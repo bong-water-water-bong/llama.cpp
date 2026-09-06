@@ -378,3 +378,26 @@ Round 15 (2026-09-05): two more fixes + issues filed
   #2116 (zaya ngl99 mixed-split corrupt, task-4 blocker), #2117 (ggml-hrx
   over-claims ops -> hard errors no CPU fallback).
 - Commits: 7ac6a8e (ngl0 gate + buft probe). Branch fix/hrx-ngl-init-order.
+
+Round 16 (2026-09-06): CPU oracle re-verified via RAW-TOKEN probe; GPU matrix staged; NPU contended by zaya-m1 lane
+- METHODOLOGY FIX: llama-cli text output is NOT a valid oracle signal for this
+  model - llama-cli wraps -p in the zaya chat template, so CPU decode prints
+  "<think>We need to respond..." while the raw continuation is " Paris.\n```\nWe".
+  Earlier round text comparisons (llama-cli "Paris" vs "restrictionrapra") are
+  confounded; the token-level gate must use a raw-completion probe.
+- Added research/zgreedy.cpp (raw tokenize, greedy 8 steps, prints prompt tokens,
+  per-step top-1 ids + step0 top-5 argmax sanity). Build:
+  g++ -std=c++17 -O2 -I ggml/include -I include research/zgreedy.cpp \
+      -L build/bin -Wl,-rpath,$PWD/build/bin -lllama -lggml -lggml-base \
+      -lggml-cpu -lpthread -o /tmp/zgreedy   (/tmp = tmpfs; rebuild after reboot)
+- CPU ORACLE RE-VERIFIED (current tree, GGML_HRX_DISABLE=1, F32 dequant, raw
+  prompt "The capital of France is"): tok0=9079 (top5 9079/528/107/5213/506,
+  argmax sane), 236761, 107, 2717, 108, 1882, 735, 1156; text " Paris.\n```\nWe
+  have two" - matches the stale-fork oracle token-for-token. CPU path intact.
+- GPU matrix staged as research/flm-parity/round16.sh (cells B-E: ngl99 F16 dev
+  weights; +FLASH_ATTN_EXT->CPU; +GGML_HRX_NO_FLASH_ATTN; F32 dev weights) with
+  the zgreedy token gate. NOT RUN: NPU is single-tenant and the zaya-m1 lane
+  (npu_engine_zr1 from ~/wt/zaya-m1, engine/npu/build) holds the device with
+  recurring jobs (PIDs 611764/617112/624546, 22:07-22:4x); flm serve (35b-a3b)
+  idle since 22:10. Run cells in a quiet gap; each is ~1-2 min + load.
+- Branch fix/hrx-ngl-init-order. Commits: aab33c1..HEAD (this doc + tools).
