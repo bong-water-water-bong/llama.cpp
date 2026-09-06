@@ -137,3 +137,20 @@ binding theory is already resolved/void at HEAD (post-2824946b5 alias-only exter
    Files: /tmp/prg_dump/10866_001_ffn_moe_gate_up-0.bin + ~/zaya-captures-428ab3/.
 4. Lane status: dispatch STANDBY per round 67 - no dispatch/prepare code change warranted
    until the classification matrix (a137d5) names a concrete dispatch-side site.
+
+## Addendum 3 — priority nudge (m_mtpzu4iw, 12:55:44) evaluated: deliberately NOT implemented
+
+Nudge: "bind the mm's output to the external slot or add the transient->slot copy;
+numpy = transient correct mad 0.003; after the fix expect near-oracle."
+Verdict: no action. The nudge's premise (a correct transient exists, mad 0.003) = the
+round-66 correlation that round 67 RETRACTED as a provenance error (committed 20c57fa32
+at 12:57:43, two minutes after the nudge was sent). Independent dispatch-side evidence
+(addendum 2, commit 63fcd4598): the gate_up mm output binding is ALREADY external at HEAD
+(pddbg b4 -> compute arena @2621440), and the external slot content = the kernel's own
+deterministic output (tok0 gate[0] = -1.4707 EXACT; t1-5 wrong-class), NOT leftovers. The
+kernel's in-kernel %values (round 67) = wrong for 5/6 experts -> there is NO correct
+transient anywhere to copy; a transient->slot copy would copy wrong values. Implementing
+the nudge would be acting on a retracted theory. Standby maintained for the classification
+matrix result (a137d5) -> if it names a dispatch/prepare-side site (weight-slice offset,
+fragment staging), land it there. Battery = running (not touched); canary status unchanged
+(563) is EXPECTED since no fix is warranted.
