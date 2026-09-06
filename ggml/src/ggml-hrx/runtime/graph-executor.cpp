@@ -6,6 +6,7 @@
 #include <stdlib.h>
 
 #include "backend-buffer-binding.h"
+#include "hrx-interop-utils.h"
 #include "ggml-impl.h"
 #include "runtime/kernel-executable-cache.h"
 #include "runtime/prepared-command-program-cache.h"
@@ -83,6 +84,15 @@ CommandProgramBindings GraphExecutor::bind_external_value_buffers(const GraphPro
                     tb ? (ggml_backend_buffer_is_host(tb) ? 1 : 0) : -1,
                     (void*) (t ? t->data : nullptr),
                     (void*) (tb ? ggml_backend_buffer_get_base(tb) : nullptr));
+            fflush(stderr);
+        }
+        if (getenv("GGML_HRX_TRACE_1336") &&
+            (external.value.value == 1336 || (binding.length == 20480 && binding.offset == 1572864))) {
+            fprintf(stderr,
+                    "[trA] ext value=%d buf=%p(iree) host=%p off=%zu len=%zu gen=%llu id=%llu tensor=%s wrapper=%p\n",
+                    external.value.value, (void*)binding.buffer, (void*)binding.host_data, binding.offset,
+                    binding.length, (unsigned long long)binding.generation, (unsigned long long)binding.identity,
+                    external.tensor ? ggml_get_name(external.tensor) : "?", (void*)external.tensor);
             fflush(stderr);
         }
         bindings.push_back(binding);
@@ -219,6 +229,75 @@ GraphExecutionResult GraphExecutor::execute(const ggml_cgraph & graph) const {
         return result;
     }
 
+
+    // [b30173 2026-09-06] GGML_HRX_WINDOWSCAN probe: post-execute forensic on the
+    // FIRST program execution (batch-0 prefill). node_972's terminal write reads
+    // exact zero at its bound slot (gen-4 @1572864) though the kernel is configured
+    // identically to working mms. H1: the wmma store lands at a DELTA address
+    // (stale offset/base in the wmma launch path). Dump +-4MB around the slot and
+    // scan 20480B-aligned windows for plausible mm-output patterns (nonzero,
+    // not-constant, sane f32). Also persist the window to /tmp/window.bin so an
+    // offline CPU-oracle correlation can run without re-running the device.
+    if (std::getenv("GGML_HRX_WINDOWSCAN") && execution.success) {
+        static int window_scans = 0;
+        if (window_scans == 0) {
+            window_scans = 1;
+            const CommandProgramBinding * slot = nullptr;
+            for (const CommandProgramBinding & b : bindings.bindings()) {
+                if (b.buffer != nullptr && b.length == 20480 && !b.weight) {
+                    slot = &b;  // node_972's 5-token prefill output
+                    break;
+                }
+            }
+            if (slot != nullptr) {
+                fprintf(stderr, "[win] slot buf=%p off=%zu len=%zu identity=%llu gen=%llu\n",
+                        (void*)slot->buffer, slot->offset, slot->length,
+                        (unsigned long long)slot->identity, (unsigned long long)slot->generation);
+                const size_t half = 4194304;  // +-4MB
+                const size_t win_base = slot->offset > half ? slot->offset - half : 0;
+                const size_t win_size = (slot->offset - win_base) + half + slot->length;
+                std::vector<uint8_t> win(win_size);
+                if (ErrorResult error = take_status(hrx_synchronous_d2h(
+                        context_.device->device, slot->buffer, win_base, win.data(), win_size))) {
+                    fprintf(stderr, "[win] d2h window failed: %s\n", error->c_str());
+                } else {
+                    FILE * wf = fopen("/tmp/window.bin", "wb");
+                    if (wf) { fwrite(win.data(), 1, win_size, wf); fclose(wf); }
+                    fprintf(stderr, "[win] window saved /tmp/window.bin base=%zu size=%zu\n", win_base, win_size);
+                    const size_t step = slot->length;  // 20480
+                    size_t hits = 0, cand = 0;
+                    for (size_t base = 0; base + step <= win_size; base += step, ++cand) {
+                        const float * f = (const float *)(win.data() + base);
+                        const size_t nf = step / sizeof(float);
+                        float sum = 0.f, maxv = 0.f, minv = 0.f;
+                        bool any = false, all_same = true;
+                        sum = f[0]; maxv = minv = f[0];
+                        for (size_t i = 1; i < nf; ++i) {
+                            sum += f[i];
+                            if (f[i] != f[0]) all_same = false;
+                            if (f[i] > maxv) maxv = f[i];
+                            if (f[i] < minv) minv = f[i];
+                            if (f[i] != 0.f) any = true;
+                        }
+                        const float mean = sum / (float)nf;
+                        float var = 0.f;
+                        for (size_t i = 0; i < nf; ++i) var += (f[i]-mean)*(f[i]-mean);
+                        var /= (float)nf;
+                        if (any && !all_same && var > 1e-6f && var < 1e6f) {
+                            const long long delta = (long long)base - (long long)(slot->offset - win_base);
+                            if (hits < 20) {
+                                fprintf(stderr, "[win] HIT cand=%zu delta=%+lld f32=%.5g %.5g %.5g %.5g %.5g %.5g var=%.3g\n",
+                                        cand, delta, f[0], f[1], f[2], f[3], f[4], f[5], var);
+                            }
+                            ++hits;
+                        }
+                    }
+                    fprintf(stderr, "[win] scan done: %zu candidates, %zu plausible hits\n", cand, hits);
+                }
+                fflush(stderr);
+            }
+        }
+    }
     result.code = GGML_STATUS_SUCCESS;
     return result;
 }
