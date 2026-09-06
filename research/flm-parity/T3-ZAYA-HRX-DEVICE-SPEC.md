@@ -631,3 +631,24 @@ Round 16j (2026-09-06): recorded-replay path exonerated; invariant = staged-inpu
   bind_prepared_command_list kernel bindings); verify staged bindings resolve
   to device buffers in the dispatch table; add iree validation (the iree
   dispatch may be failing validation silently - enable IREE_DEVICE debug).
+
+Round 16k (2026-09-06): prepared-program caching exonerated - bug survives ALWAYS-FRESH prepare+execute
+- Experiment: execute() bypassed BOTH prepared-program caches and ran a fresh
+  prepare_command_program + bind + execute per call (execute_command_program).
+  Canary STILL tok0=0 (exact zeros), working qwen unchanged. => not stale
+  external bindings, not replay, not cache reuse of any kind. The freshly-built
+  canary split#1 program (host-staged embd in, KV SET_ROWS write targets out)
+  writes NOTHING; the freshly-built working program writes correctly.
+- Note: leaf/position and attn-mask tensors ARE host-staged in the WORKING
+  program and it works => "staged inputs" per se are not fatal; the canary
+  program differs structurally (its first op consumes the staged embd; output
+  head is a second program).
+- Remaining unknowns (all need interactive instrumentation by the executor
+  owner): (1) does the canary split#1 graph->program match actually CONTAIN the
+  SET_ROWS/FLASH_ATTN KV-write dispatches, or does the dispatch registry
+  silently drop them for this graph shape? (2) iree dispatch validation/
+  binding table for the canary program. (3) why the working programs staged
+  embd works. (4) whether the matcher drops nodes for graphs whose first
+  consumer input is host-staged. All cache/replay/staging-upload/buffer-claim
+  mechanisms eliminated (rounds 16f-16k). The defect sits inside graph->program
+  matching or the iree dispatch of the mixed-shape program.
