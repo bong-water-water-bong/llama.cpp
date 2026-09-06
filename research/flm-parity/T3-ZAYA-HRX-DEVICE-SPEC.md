@@ -1366,3 +1366,20 @@ Round 35 (2026-09-06): divergence DEFINITIVELY localized to the expert-mm kernel
   route_count 1, output_size 4096.
 - Handed to d5694d (loom kernel review, m_mtps4tje) + eb4f0b. Tools: GGML_DUMP_NODE +
   GGML_DUMP_FILTER (ngl0 CPU dumps), GGML_HRX_DUMPVIEW (HRX readback dumps, keep-first).
+
+Round 36 (2026-09-06): n=1 chain comparison - token-0 gate correct, token-1 wrong (view fill mechanism unknown)
+- n=1 "Paris" chain harness (CPU GGML_DUMP_NODE vs HRX GGML_HRX_DUMPVIEW chain dumps):
+  * router_logits-0: fp noise only (~0.005), argmax matches.
+  * gate_up: token-0 gate = CORRECT (hrx -1.4707 vs cpu -1.4651 = fp noise); token-1 gate
+    reads -0.2756 vs cpu -1.4620 = WRONG. 5-token: region rms 2.1 vs 0.88 (many rows wrong).
+  => slot-0 lands right, subsequent slots wrong = stride-blind contiguous copy of the base
+    region fills the view slots (interleaved [t0gate|t0up|t1gate...] data), not per-stride.
+- buffer_copy fired ZERO times for gate_up names -> the base->view fill does NOT go through
+  ggml_backend_buffer copy. The 49152-len GraphValue write bindings (externalized views from
+  ALLBIND) = the view slots are filled by another executor mechanism (copy command? fill?)
+  that must be stride-aware but likely is not.
+- OPEN: which mechanism fills the gate/up view slots from gate_up (record shows per-view
+  49152 write bindings) and does it honor view strides - eb4f0b executor read (m_mtps81yj).
+- Evidence: /tmp/hrx_ffn_moe_gate-0.bin (6144 el span, token0 right/token1 wrong),
+  /tmp/nodedump/r03_110 (CPU gate_up [4096,2] oracle), /tmp/hrx_router_logits-0.bin,
+  /tmp/chain.err. Harness: GGML_DUMP_NODE (ngl0) + GGML_HRX_DUMPVIEW chain names (ngl99).
