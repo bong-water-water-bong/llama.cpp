@@ -1557,3 +1557,17 @@ Round 49 (2026-09-06): marker instrument = all-pads in my runs (row-tail overwri
 - Clean 3-fix state (563 baseline) restored; DUMPVIEW hook ready.
 - Goal: 3/5 tasks complete; task-4-device: qwen fixed + committed; zaya marker capture in
   d5694d's iteration.
+
+Round 50 (2026-09-06): corruption localized BETWEEN attention output and next block input (CCA recurrent state prime)
+- input_norm-1 (block-1 attention input): slot 0 matches CPU (mad 0.001); slots 1-5 DIVERGE
+  (mad 0.2-0.7) => corruption upstream of the gate mm (eb4f0b's call confirmed).
+- node_153 (block-0 raw attention output [128,8,6]): LOW mad across all 6 tokens (0.03-0.06,
+  approx due to layout skew) => block-0 attention looks fine for every token.
+- => the corruption enters BETWEEN block-0's attention output and block-1's input norm: the
+  residual-add / CCA recurrent-state path. cache_s_l1 = "a copy of input_norm-1 (cont)" per
+  the CPU dump naming (CCA state feeds from the block input). eb4f0b's round-37 CCA suspect
+  (recurrent state crossing CPU via GET_ROWS, 313KB/layer) = the prime mechanism.
+- NEXT PROBE: cache_s_l0/l1 + CCA conv output rows 0-5 HRX-vs-CPU. /tmp disk-full incident
+  resolved (d5694d's /tmp/zadump arena capture = 61GB - cleaned; his capture is running).
+- Handed to eb4f0b (m_mtpuulsg). Goal: 3/5 complete; qwen fixed+committed; zaya = CCA-state
+  path in active localization.
