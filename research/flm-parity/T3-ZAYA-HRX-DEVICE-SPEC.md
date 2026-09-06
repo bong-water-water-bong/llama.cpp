@@ -1593,3 +1593,15 @@ Round 52 (2026-09-06): expert selection IDENTICAL ([3,5,12,7,2,4] both runs, all
   launch). input_norm-1 slots-1-5 = downstream of the block-0 output assembly.
 - Evidence: /tmp/nodedump/r36_000 (HRX argsort), r04_108 (CPU argsort) - both [3,5,12,7,2,4].
 - Fleet: eb4f0b (localization) + d5694d (kernel fetch/compute lane).
+
+Round 53 (2026-09-06): fetch/store/routing source EXONERATED - runtime wave-scheduling/race in d5694d lane
+- eb4f0b narrowed scope: with ids identical ([3,5,12,7,2,4] both runs) + right inputs +
+  correct-on-paper fetch/store (core lines 180-220 verified), the disjoint rows-1-5 = a
+  RUNTIME/codegen issue: (a) multi-partition wave scheduling (scf.for %active_partition step
+  %launch_partition_count) or (b) builder->mm race. His partition-table-tail instrument
+  resolves (a) vs (b). Passed to d5694d (m_mtpv0jve).
+- Capture limitation: cache_s/cca_state activations are HRX-internal (never cross) -> the
+  cache_s/conv-output readback diffs (eb4f0b's #3/#4) are not capturable via DUMPVIEW. The
+  crossable signals captured: input_norm-0 (slot-0 bit-identical, slot-1 mid-row divergence),
+  input_norm-1 (slots 1-5 wrong), node_153 (all-tokens fine).
+- 122-file HRX-side capture on strixhalo. Awaiting d5694d's instrument results.
