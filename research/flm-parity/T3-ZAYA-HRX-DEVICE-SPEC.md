@@ -1795,3 +1795,24 @@ Round 68 (2026-09-06): entire chain exonerated through the residual - divergence
   dispatch = deadlock OR the capture's 1MB fwrite = the hang (428ab3's lane).
 - Fleet: 428ab3 (the out mm's binding/split - the 262272 vocab = the zaya-specific), d5694d
   (the logits oracle + the correlation on the capture), a137d5/fb904d (standby/watch).
+Round 64c (2026-09-06T15:2xZ): DEVICE-ALERT investigation (GPU init code=3 for every process; b30173 alert). VERDICT: root cause isolated — NOT a device wedge, NOT the 14:38 wrapper build.
+- Evidence 1: /opt/hrx (Sep-3, self-contained incl. own libhrx.so.0.1.0) inits the GPU fine at alert time (only b66-era GET_ROWS op-gap, unrelated).
+- Evidence 2 (correction to alert): /tmp/norm_hrx.log mtime 14:51 = successful DEV-stack run (init OK, device_count=1, HRX0 buffers match expectation) — AFTER the 14:38:52 libggml-hrx.so rebuild, on the same 05:30 libhrx. The 14:38 wrapper rebuild did NOT break init.
+- Evidence 3 (isolation matrix, dev wrapper build/bin): + dev libhrx (deps build 05:30) => code=3 (HRX_STATUS_INVALID_ARGUMENT); + /opt/hrx libhrx (copied to /tmp/hrx-old-runtime) => clean model load, no code=3.
+- Conclusion: failing component = dev libhrx.so.0.1.0 (built 05:30, unchanged by 14:38 build); worked at 14:51, fails now while Sep-3 libhrx works => its init validation rejects current device state; change window = capture-deadlock kill ~14:5x. KFD proc empty (no process hold). libhrx impl NOT in-tree (prebuilt dep; only bindings under deps-build). /dev/dri shows card0 only (no renderD*).
+- Fleet workaround logged: LD_LIBRARY_PATH=/tmp/hrx-old-runtime (old libhrx inits; wrapper-level fixes unaffected). Keep /tmp/hrx-old-runtime (do not churn). Suggested next: dmesg ~14:5x for amdgpu/kfd faults (root), amdgpu reset / driver reload, or refresh the libhrx dep pin.
+Round 69 (2026-09-06): mma instruction EXONERATED by the on-device repro sweep - bug = the real kernel's fragment path/codegen
+- The ggml_mma_repro_f16_f32 op (d5694d's minimal 16x16x16 f32-accumulate mma, the
+  ops/mma_repro_f16_f32.loom) = fixed to the loom conventions (kernel.def + launch region +
+  template.return/kernel.return + the launch.config) + registered in the corpus manifest +
+  the catalog; the host driver (/tmp/mma_repro_driver.cpp) = written with the 428ab3 launch
+  incantation (hrx_stream_dispatch + the DEVICE_LOCAL + the HRX_BUFFER_USAGE_DEFAULT).
+- The sweep (expert-3 vs expert-5 tiles x 6 magnitudes 2^-126..2^24):
+  - 2^0 (the real magnitudes): expert-3 maxerr 4.66e-10, expert-5 5.24e-10 = CLEAN both.
+  - 2^12: ~1e-7 relative = the f32 rounding. 2^-126: the dev = 0 = the f16 denormal flush
+    (the expected f16 input behavior).
+  - => NO magnitude-dependent divergence, NO expert asymmetry, NO hardware defect.
+- Verdict = outcome (c): the bug = the REAL mul_mat_id kernel's fragment path/codegen (the
+  K-loop accumulation, the y>0 wave schedule, or the fragment offsets), NOT the mma
+  instruction. The device workaround = LD_LIBRARY_PATH=/tmp/hrx-old-runtime (the old libhrx
+  inits while the 05:30 dev libhrx = the INVALID_ARGUMENT).
