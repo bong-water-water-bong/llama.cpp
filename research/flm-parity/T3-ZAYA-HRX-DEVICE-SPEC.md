@@ -485,3 +485,26 @@ Round 16d (2026-09-06): qwen GPU decode is ALSO broken (zero logits) - shared de
   bumps vs ggml buffer reuse in graph-program-cache/prepared-program paths;
   (3) check whether device kernels write where the sched expects (bind l_out-26
   after a 1-layer qwen decode, dump device buffer bytes).
+
+Round 16e (2026-09-06): qwen GPU decode FIXED - GET_ROWS claim restored with shape cap; CPU->HRX boundary proven corrupt
+- BISECT: qwen3-0.6B ngl99 zero-logits first appears at 98b2bcc (removed the
+  eager GET_ROWS claim). Base tree hrx-graph-develop-v2 (and c80f41f) decode
+  qwen correctly. Root commit identified by checkout+rebuild+test per commit.
+- BASE GRAPH (working, GGML_SCHED_DEBUG): qwen ngl99 = ONE all-HRX0 split -
+  token-embd GET_ROWS, layers, output_norm, lm_head ALL on device. Zero CPU
+  ops in the graph. llama logits readback (HRX->CPU) works.
+- MECHANISM (proven on demand): any CPU op producing data consumed by an HRX
+  subgraph corrupts decode. Reproduce: GGML_HRX_CPU_OPS=GET_ROWS on qwen ngl99
+  (embd -> CPU) => all-zero logits. Base qwen worked because its graph was
+  single-split all-HRX; zaya cannot be single-split (conv/SCALE/recr ops are
+  CPU-forced mid-graph), hence zaya stays corrupt while qwen is clean.
+- FIX (committed): device_supports_op claims GGML_OP_GET_ROWS for 2D embd-style
+  tables with rows <= 262144 (qwen vocab 151936; base-era kernel worked) and
+  keeps zaya table slices (ne0==1) + huge vocab (262272) on CPU.
+- AFTER FIX: qwen Q4_K_M ngl99 tok0=12095 = CPU argmax, coherent text
+  ("Paris. The capital of France is also"). zaya 1-layer no longer aborts on
+  GET_ROWS but still corrupt (28453->101018 routing shift; mid-graph CPU ops).
+- NEXT for zaya (task-4): fix the CPU->HRX boundary data path in the executor
+  (materialize_host_bindings upload_async staging vs direct host-buft binding)
+  OR port zaya CPU-forced ops (conv/SCALE/partial-ROPE) to HRX kernels to reach
+  an all-HRX zaya graph like qwen.

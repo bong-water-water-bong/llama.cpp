@@ -875,6 +875,24 @@ static bool device_supports_op(ggml_backend_dev_t device, const ggml_tensor * op
     if (op->op == GGML_OP_ROPE) {
         return supported_rope_tensor(op);
     }
+    if (op->op == GGML_OP_GET_ROWS) {
+        // Embedding/table lookups: the loom GET_ROWS kernels cover tables up to
+        // 262144 rows (qwen3 vocab 151936 OK). Larger lookups (zaya vocab
+        // 262272) split to CPU. 98b2bcc removed the eager claim entirely, which
+        // forced qwen token-embd GET_ROWS to CPU; its output then crossed
+        // CPU->HRX into the layer subgraphs, and CPU->HRX boundaries corrupt
+        // decode (round 16e: HRX subgraphs take 0 input copies; host-buft
+        // shared-arena reads are not device-coherent). Cap restores qwen.
+        // Base-era (develop-v2) qwen ran the whole graph incl. token-embd
+        // GET_ROWS as ONE HRX split and was correct; forcing embd to CPU broke
+        // it (round 16e). Claim embd-style lookups (2D table, rows <= 262144)
+        // but keep zaya table gathers (ne0==1 slices) and the huge vocab
+        // (262272) on CPU.
+        if (op->src[0] != nullptr && op->src[0]->ne[0] > 1 && op->src[0]->ne[1] <= 262144) {
+            return true;
+        }
+        return false;
+    }
     if (op->op == GGML_OP_MUL_MAT) {
         // The mm kernels cap the dense output size at 262144 rows (only the
         // huge-vocab lm_head exceeds it, zaya vocab 262272) and take F32
