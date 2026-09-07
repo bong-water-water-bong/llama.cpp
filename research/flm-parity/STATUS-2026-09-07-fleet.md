@@ -1,0 +1,46 @@
+# Fleet status vs ORIGINAL task contracts (2026-09-07, agent-2e3971 audit lane)
+
+Read-only consolidation for the record. Box: strixhalo. Repo branch
+fix/hrx-ngl-init-order @ fa5d59f2b. Peer lanes: b30173 = HRX llama.cpp mm1 fix
+executor (rounds 66-70, uncommitted loom WIP in tree); 5d742a = engine-NPU
+two-stream fused decode (1bit-MONSTER repo, feat/hrx-gfx1151-build @ ffb6af90).
+
+## Task status vs ORIGINAL contracts
+
+- task-1 [x] flm-bench harness + same-box FLM baseline (research/flm-parity/).
+- task-2 [x] qwen3 roster HRX-device decode >= FLM, no DISABLE flags:
+  0.6B 249.6 vs 88, 1.7B 122.4 vs 40.4, 4B 57.0 vs 19.2 t/s (raw log in repo).
+- task-3 [x] llama-server cont batching agg 219/141/103 t/s at conc 1/2/4 vs
+  FLM 88/30/22 (FLM serializes; our aggregate stays high). batched-bench -npl
+  blocked by HRX empty-batch GET_ROWS (documented).
+- task-4-device [ ] ORIGINAL CONTRACT UNSATISFIED: zaya Q4NX decode ON the HRX
+  device (ngl>0) with oracle numerics. Round-70 closure (ROUND70-BISECTION.md):
+  divergence pinned to ffn_moe_gate_up MUL_MAT_ID output for tokens 1-5 (t0
+  correct, mad 0.005); lm-head routed to CPU (262272 > 262144 dispatch cap,
+  explains no-hang). Fix target: mm1 per-partition compute (wmma lane), WIP
+  uncommitted in tree (dispatch-mul-mat-id.cpp, mul_mat_id loom ops, loom-jit).
+  The earlier ngl0 rescope doc is SUPERSEDED metadata, not the contract.
+- task-5-report [ ] depends on task-4 zaya device numbers. This doc is the
+  skeleton; zaya HRX-device rows intentionally blank until mm1 fix lands.
+
+## Box state (post two NPU-recovery reboots ~23:04/23:48 UTC by 5d742a)
+- flm-35b restored and active (port 8098); /tmp wiped (tmpfs) so fix-era
+  /tmp captures (fix_gu.bin, fix_sw.bin) are gone. Survives on disk:
+  ~/zaya-decode/{ffn_oracle,out_oracle,norm_oracle}/ CPU oracles (full r03/r04
+  per-block set), ~/zaya-captures-428ab3/ routing tables + swiglu/weighted/
+  moe_out bins + hrx_gate0/up0. fix_gu/fix_sw NOT backed up in ~/zaya-captures
+  (round-70 file note overstated) — regenerable once tree builds.
+
+## Annex: engine-NPU two-stream fused decode (5d742a) — audited by 2e3971
+CLAIM SUBSTANTIATED (read-only, files live on strixhalo): two concurrent full
+zaya decodes on ONE NPU, col-halves 0-3 | 4-7, single-context fused kernels.
+- /tmp/wA.log wB.log finish 20:51:04.85/.55 (0.3 s apart = concurrent windows):
+  A 6.7 t/s (8 tok/1187 ms), B 5.7 t/s (1393 ms); clean rerun two_A/B 8.7+8.6.
+- Both corr=0.892429 (MoE L1 single-layer dbg, int8 fused vs CPU fp32), logits
+  sane, IDENTICAL token stream both halves = deterministic, same decode.
+- Controls c1/c2: 2x GU half-probes concurrent 5/5+5/5 sane. h0/h1 xclbins +
+  insts differ (md5) = genuine col-sliced artifacts. Launcher
+  tools/two_stream_decode.sh manages the flm window; commit ffb6af90 pushed.
+Caveats: corr 0.892 is the engine fused-path bar (NOT a full-model oracle-token
+gate); aggregate 17.3 t/s clean vs FLM zaya 16.8 single = real but thin on this
+stack; the structural win = 2 co-scheduled streams FLM cannot run at all.
