@@ -971,6 +971,15 @@ static bool device_supports_op(ggml_backend_dev_t device, const ggml_tensor * op
             return false;
         }
     }
+    // ADD/CLAMP/DIV are NOT claimed standalone (#2147, SUM_ROWS/CLAMP
+    // convention of 8000c0925): fused registrations (attention-output,
+    // routed-ffn reduce, MoE-router) claim their own chains; standalone
+    // occurrences — VIEW-wrapped residual ADDs in qwen3moe prefill AND
+    // decode, norm_topk renorm tails — split to CPU instead of orphaning
+    // at dispatch (claimed but no standalone registration).
+    if (op->op == GGML_OP_ADD || op->op == GGML_OP_CLAMP || op->op == GGML_OP_DIV) {
+        return false;
+    }
     const bool supported_binary = supported_binary_f32_tensor(op);
     if (supported_binary) {
         return true;
