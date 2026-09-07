@@ -978,7 +978,13 @@ static bool device_supports_op(ggml_backend_dev_t device, const ggml_tensor * op
     // decode, norm_topk renorm tails — split to CPU instead of orphaning
     // at dispatch (claimed but no standalone registration).
     if (op->op == GGML_OP_ADD || op->op == GGML_OP_CLAMP || op->op == GGML_OP_DIV) {
-        return false;
+        // A/B switch (f49062): GGML_HRX_ALLOW_ADD=1 re-enables the standalone
+        // claims to measure the roster-speed effect vs the zaya stale-read
+        // corruption; default stays excluded.
+        const char * allow = std::getenv("GGML_HRX_ALLOW_ADD");
+        if (allow == nullptr || allow[0] == '\0' || strcmp(allow, "1") != 0) {
+            return false;
+        }
     }
     const bool supported_binary = supported_binary_f32_tensor(op);
     if (supported_binary) {
