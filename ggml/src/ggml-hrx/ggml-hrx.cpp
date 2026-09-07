@@ -978,15 +978,16 @@ static bool device_supports_op(ggml_backend_dev_t device, const ggml_tensor * op
     // decode, norm_topk renorm tails — split to CPU instead of orphaning
     // at dispatch (claimed but no standalone registration).
     if (op->op == GGML_OP_ADD || op->op == GGML_OP_CLAMP || op->op == GGML_OP_DIV) {
-        // Blanket exclusion (e130977af / b2975bb1d family, restored f49062):
-        // standalone ADD claims corrupt the zaya (recurrent router_eda ADD,
-        // 22-eda-finding) and break qwen3moe fused-chain composition (their
-        // claims steal nodes from fused chains -> downstream MUL_MATs orphan).
-        // Dense-qwen3 pays ~5x decode (48.9 vs 242.9 t/s tg128, A/B-verified
-        // 88d4912df). Reclaim requires dispatch-priority work: fused chains
-        // must claim before standalone binaries AND the zaya EDA/residual
-        // ADDs need the round-16f host-ordering fix. GGML_HRX_ALLOW_ADD=1
-        // forces ALL ADDs claimed (A/B instrument).
+        // Blanket exclusion restored (f49062, f799b66f1 REVERTED): a
+        // conditional claim (direct MUL_MAT src, no MUL_MAT_ID src) restored
+        // the dense-qwen3 roster (227.8 t/s) and kept zaya correct, but the
+        // qwen3moe MoE models (30B-Coder, 35B-A3B) fail with
+        // "value alias target N is not transient" - their fused chains claim
+        // the ADD and alias-relayout a subgraph-external. The dispatch
+        // coverage (fused-vs-standalone registration order) must be fixed
+        // before any ADD reclaim; until then the roster pays ~5x decode
+        // (48.9 vs 242.9 t/s tg128, A/B-verified).
+        // GGML_HRX_ALLOW_ADD=1 forces ALL ADDs claimed (A/B instrument).
         const char * allow = std::getenv("GGML_HRX_ALLOW_ADD");
         if (allow == nullptr || allow[0] == '\0' || strcmp(allow, "1") != 0) {
             return false;
