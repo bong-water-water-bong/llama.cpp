@@ -1035,10 +1035,13 @@ static bool device_supports_op(ggml_backend_dev_t device, const ggml_tensor * op
         // The mm kernels cap the dense output size at 262144 rows (only the
         // huge-vocab lm_head exceeds it, zaya vocab 262272) and take F32
         // activations (f16xBOTH-SIDES mms, e.g. the zaya CCA f16 path, are not
-        // in the corpus). Route those to CPU.
+        // in the corpus). Route those to CPU. Batched 4-dim mms (ne[3] > 1,
+        // e.g. per-head QK mms in Qwen3.6-35B) have no dispatch registration
+        // either - claiming them orphans the graph (unsupported HRX node).
         if ((op->src[0] != nullptr && op->src[0]->ne[1] > 262144) ||
             op->type != GGML_TYPE_F32 ||
-            (op->src[1] != nullptr && op->src[1]->type != GGML_TYPE_F32)) {
+            (op->src[1] != nullptr && op->src[1]->type != GGML_TYPE_F32) ||
+            op->ne[2] != 1 || op->ne[3] != 1) {
             return false;
         }
     }
