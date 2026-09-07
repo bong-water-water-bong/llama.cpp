@@ -977,30 +977,19 @@ static bool device_supports_op(ggml_backend_dev_t device, const ggml_tensor * op
     // occurrences — VIEW-wrapped residual ADDs in qwen3moe prefill AND
     // decode, norm_topk renorm tails — split to CPU instead of orphaning
     // at dispatch (claimed but no standalone registration).
-    if (op->op == GGML_OP_CLAMP || op->op == GGML_OP_DIV) {
-        return false;
-    }
-    // ADD: conditional standalone claim (replaces the b2975bb1d blanket
-    // exclusion which cost the dense-qwen3 roster ~5x decode). Claim only
-    // residual ADDs that directly consume a MUL_MAT output (dense-qwen3
-    // attention/ffn residuals: the mm output feeds the ADD with no wrap, and
-    // the chain is covered by the fused/qwen dispatchers - 242.9 t/s tg128
-    // with claims vs 48.9 excluded, A/B-verified 88d4912df). NOT claimed:
-    // - zaya residual ADDs consume rescaled MUL products (their inputs cross
-    //   the CPU conv islands; claimed standalone they corrupt - tok0 563,
-    //   A/B-verified) -> stay CPU, oracle-exact.
-    // - qwen3moe VIEW-wrapped residual ADDs (no direct mm src; would orphan
-    //   at dispatch for batch>1 shapes, #2147) -> stay CPU.
-    // GGML_HRX_ALLOW_ADD=1 forces ALL ADDs claimed (A/B instrument).
-    if (op->op == GGML_OP_ADD) {
+    if (op->op == GGML_OP_ADD || op->op == GGML_OP_CLAMP || op->op == GGML_OP_DIV) {
+        // Blanket exclusion restored (f49062, f799b66f1 REVERTED): a
+        // conditional claim (direct MUL_MAT src, no MUL_MAT_ID src) restored
+        // the dense-qwen3 roster (227.8 t/s) and kept zaya correct, but the
+        // qwen3moe MoE models (30B-Coder, 35B-A3B) fail with
+        // "value alias target N is not transient" - their fused chains claim
+        // the ADD and alias-relayout a subgraph-external. The dispatch
+        // coverage (fused-vs-standalone registration order) must be fixed
+        // before any ADD reclaim; until then the roster pays ~5x decode
+        // (48.9 vs 242.9 t/s tg128, A/B-verified).
+        // GGML_HRX_ALLOW_ADD=1 forces ALL ADDs claimed (A/B instrument).
         const char * allow = std::getenv("GGML_HRX_ALLOW_ADD");
-        if (allow != nullptr && allow[0] != '\0' && strcmp(allow, "1") == 0) {
-            return true;
-        }
-        const bool direct_mm_src =
-            (op->src[0] != nullptr && op->src[0]->op == GGML_OP_MUL_MAT) ||
-            (op->src[1] != nullptr && op->src[1]->op == GGML_OP_MUL_MAT);
-        if (!direct_mm_src) {
+        if (allow == nullptr || allow[0] == '\0' || strcmp(allow, "1") != 0) {
             return false;
         }
     }
