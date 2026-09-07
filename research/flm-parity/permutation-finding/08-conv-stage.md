@@ -51,3 +51,20 @@ b. Compare the DECODE (1-token) QK_dw (2 rows = 10240B) against numpy from the d
    cur + state-after-prefill: clean => multi-token conv path is the discriminator.
 c. Inspect the cca state buffer allocation/zeroing (llama-memory-hybrid / build_rs /
    get_s_l) for the zaya recr cache at n_past=0.
+
+## Addendum (same session): the conv_state garbage is UNIVERSAL (decode too)
+- Decode-path QK_dw (1-token steps, uid 11930 zone, all 8 steps): row 0 rms 1.20-1.20
+  (the token row = sane) but row 1 rms 75.4-76.0 = GARBAGE in EVERY step. The conv
+  state-derived output row is garbage in the decode path as well as the prefill
+  (rows 5-6, rms 81-85).
+- The garbage rms ~75-85 is far above the qk scale (~1-2) => the recurrent conv_state
+  cache content (or its view/offset into the s_l buffer) is garbage at ALL times, not
+  just at n_past=0. The prev_hs half of the same state row appears fine (token-0 chains
+  are exact and V2 uses prev_hs).
+- Consequence: the conv token rows that mix in the state are corrupted; the state
+  update loop (last_conv_states = the conv tail rows) re-writes garbage into the cache,
+  sustaining the corruption.
+- The decode text (" is used to hide the problem. The") is coherent BUT that only proves
+  the token-row q/k of the decode conv is usable; the decode may still be subtly wrong
+  vs the CPU continuation of tok0=563 (no CPU oracle for the 563-continuation exists -
+  the r30 series vanished). Do not treat "grammatical text" as decode-correctness.
