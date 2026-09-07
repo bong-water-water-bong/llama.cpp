@@ -977,12 +977,30 @@ static bool device_supports_op(ggml_backend_dev_t device, const ggml_tensor * op
     // occurrences — VIEW-wrapped residual ADDs in qwen3moe prefill AND
     // decode, norm_topk renorm tails — split to CPU instead of orphaning
     // at dispatch (claimed but no standalone registration).
-    if (op->op == GGML_OP_ADD || op->op == GGML_OP_CLAMP || op->op == GGML_OP_DIV) {
-        // A/B switch (f49062): GGML_HRX_ALLOW_ADD=1 re-enables the standalone
-        // claims to measure the roster-speed effect vs the zaya stale-read
-        // corruption; default stays excluded.
+    if (op->op == GGML_OP_CLAMP || op->op == GGML_OP_DIV) {
+        return false;
+    }
+    // ADD: conditional standalone claim (replaces the b2975bb1d blanket
+    // exclusion which cost the dense-qwen3 roster ~5x decode). Claim only
+    // residual ADDs that directly consume a MUL_MAT output (dense-qwen3
+    // attention/ffn residuals: the mm output feeds the ADD with no wrap, and
+    // the chain is covered by the fused/qwen dispatchers - 242.9 t/s tg128
+    // with claims vs 48.9 excluded, A/B-verified 88d4912df). NOT claimed:
+    // - zaya residual ADDs consume rescaled MUL products (their inputs cross
+    //   the CPU conv islands; claimed standalone they corrupt - tok0 563,
+    //   A/B-verified) -> stay CPU, oracle-exact.
+    // - qwen3moe VIEW-wrapped residual ADDs (no direct mm src; would orphan
+    //   at dispatch for batch>1 shapes, #2147) -> stay CPU.
+    // GGML_HRX_ALLOW_ADD=1 forces ALL ADDs claimed (A/B instrument).
+    if (op->op == GGML_OP_ADD) {
         const char * allow = std::getenv("GGML_HRX_ALLOW_ADD");
-        if (allow == nullptr || allow[0] == '\0' || strcmp(allow, "1") != 0) {
+        if (allow != nullptr && allow[0] != '\0' && strcmp(allow, "1") == 0) {
+            return true;
+        }
+        const bool direct_mm_src =
+            (op->src[0] != nullptr && op->src[0]->op == GGML_OP_MUL_MAT) ||
+            (op->src[1] != nullptr && op->src[1]->op == GGML_OP_MUL_MAT);
+        if (!direct_mm_src) {
             return false;
         }
     }
