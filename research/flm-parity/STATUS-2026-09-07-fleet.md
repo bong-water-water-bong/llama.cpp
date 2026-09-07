@@ -80,3 +80,16 @@ npu_engine_zr1 (with the 1-ctx NPU_FUSED decode patch) under identical driver
 state before either the N=4 record or the x2-stall becomes lore. Candidate
 delias: the decode patch / rebuild from a different tree state, or driver
 state. Not resolved here — engine lane owns it.
+
+## Half-slice corr defect ROOT-CAUSED (5d742a, 00:07 UTC) — confirmed both sides
+The fused contract has the 8-col geometry baked in on BOTH sides:
+- kernel reads gs' at c*(4*32768)+cg*32768 with 4 = n_cg_gu@8cols hardcoded
+  (n1_core_fused_gu_silu_d.py line 262);
+- engine host pack hardcodes the same (FUSED_AIE_COLS=8, FUSED_GS_TILE=4*32768
+  in npu_engine_i8ctx_inc.h:613/615 - weight-BO sizing + per-token update
+  loops all over c<8).
+At 4 cols the per-col gs' slice count doubles (n_cg_gu=8) so cols 1-3 and
+groups >= 4 collide -> ~half the scale headers wrong -> corr 0.892.
+Fix (5d742a, next discrete task): thread a col-count through host constants +
+kernel stride, rebuild both. Corr-0.998 full-8col fused remains solo-only;
+co-schedulable 4-col halves carry this defect until the fix lands.
