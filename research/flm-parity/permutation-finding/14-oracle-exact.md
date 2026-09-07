@@ -40,3 +40,20 @@ The route_stride fix (540e9815e) remains necessary for the block-0 routing.
 - Next: (a) fused/on-device residual-ADD coverage with proper dependency
   ordering (the qwen fused-attention pattern), (b) attention/flash-attn on-device
   claims, (c) llama-bench batch fix for the official flm-parity numbers.
+
+## Addendum: qwen3-roster decode-speed regression from e130977af
+- qwen3-0.6B tg128: 49.09 t/s now vs 249.6 t/s at task-2 (2026-09-05 build) -
+  the ADD/CLAMP/DIV standalone-claim exclusion also forces the dense-qwen3
+  per-layer residual ADDs to CPU (their ffn-residual adds are not chain-fused),
+  and at 0.6B scale the per-token CPU add + cross-boundary cost dominates.
+- Correctness on the roster remains fine (no errors; coherent smoke output);
+  speed regressed ~5x.
+- The zaya needed the exclusion because its standalone-claimed ADDs read
+  CPU-produced attention outputs stale (round-16e missing-ordering class).
+  Dense-qwen3 ADDs read HRX-produced inputs, so they were correct AND fast when
+  claimed - the blanket exclusion is the wrong instrument for them.
+- Proper fix (next session): fused residual-ADD coverage for the ffn tail
+  (postops/next_rmsnorm registrations already exist for the mul_mat_id family)
+  so ADDs ride their chains on-device, plus the executor host-binding ordering
+  fix (round-16e round-16f: materialize_host_bindings upload staging) so
+  standalone claims become safe again for CPU-produced inputs.
