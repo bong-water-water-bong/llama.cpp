@@ -61,3 +61,22 @@ zaya decodes on ONE NPU.
    record used partial/fused-i4 kernels, not full-8col GU/D.
    => co-schedulable pair = 4-col halves (currently carrying the corr-0.892
    slicing defect, being fixed by 5d742a in the fused generator offset math).
+
+## 09-05 N=4 record cross-check (2e3971, read-only) — contradicts "partial kernels"
+Artifacts: ~/1bit-MONSTER/docs/verification/2026-09-05-prep-perf/ (branch
+perf/prep-parallel d2fa2eab era) + okf log 09-05 section.
+- solo-timed.txt: engine loads final_i8_MOE_GU_zaya_m16.xclbin +
+  final_i8_MOE_D_zaya_m16.xclbin = FULL-8col m16 GU/D SPLIT kernels, 2 ctxs/
+  process (GU 2048x4096 + D 2048x2048, MD=128), corr 0.999342, solo 6.2 t/s.
+- N=4 record: 4 processes of that same split engine, 26 s wall (flm paused) /
+  28 s (flm+embed up), 4/4 correct; N=8 got 7/8 (1 OOM-killed, not stalled).
+=> The 09-05 N=4 record was NOT partial/fused-i4 kernels — it was the same
+full-8col GU/D m16 split family that today (00:03-00:06 UTC) reportedly stalls
+at x2 processes (both fused MD=8 full-8col and split MD=128 full-8col, zero
+decode output in 280 s). REAL CONTRADICTION between the 09-05 record and
+today's measurements on the current tree/binary.
+Open question for the engine lane: A/B the 09-05-era binary/tree vs the current
+npu_engine_zr1 (with the 1-ctx NPU_FUSED decode patch) under identical driver
+state before either the N=4 record or the x2-stall becomes lore. Candidate
+delias: the decode patch / rebuild from a different tree state, or driver
+state. Not resolved here — engine lane owns it.
