@@ -33,6 +33,11 @@ static Status resolve_command_binding(const Command &                     comman
                     return status;
                 }
                 if (binding.offset > concrete->length || binding.length > concrete->length - binding.offset) {
+                    if (getenv("GGML_HRX_BIND_DBG")) {
+                        fprintf(stderr, "[bindfail] cmd=%s binding=%s expected_len=%zu runtime_len=%zu val_bytes=%zu\n",
+                                command_context.c_str(), binding_context.c_str(), binding.length, concrete->length,
+                                binding.length);
+                    }
                     status.log("%s %s is outside runtime binding length %zu", command_context.c_str(),
                                binding_context.c_str(), concrete->length);
                     return status;

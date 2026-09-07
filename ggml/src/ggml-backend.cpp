@@ -1491,7 +1491,48 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
 
     // set ids for all splits
     for (int i = 0; i < sched->n_splits; ++i) {
-        sched->splits[i].graph.uid = ggml_graph_next_uid();
+        // (f49062) The HRX backend keys its graph-program cache by the split
+        // graph uid; a fresh counter here means the cache NEVER hits across
+        // compute calls (the zaya decode rebuilt ~640 subgraph programs per
+        // token = ~180 ms). Use a structural hash of the split (op + ne +
+        // src pattern over the nodes) so repeated same-shape splits share a
+        // uid. The HRX side verifies with a structural match before reuse;
+        // the CPU/CUDA backends do not key on the uid.
+        uint64_t h = 1469598103934665603ull;
+        auto mix = [&h](uint64_t v) { h ^= v; h *= 1099511628211ull; };
+        mix((uint64_t) sched->splits[i].graph.n_nodes);
+        mix((uint64_t) sched->splits[i].graph.n_leafs);
+        // Leaf tensors carry the external value shapes (e.g. the activation
+        // token count differs between prefill and decode) - they must be in
+        // the key or a prefill program gets replayed for a decode subgraph
+        // (binding-length mismatch).
+        for (int li = 0; li < sched->splits[i].graph.n_leafs; ++li) {
+            const struct ggml_tensor * lf = sched->splits[i].graph.leafs[li];
+            if (lf == NULL) { mix(0xfeedfaceull); continue; }
+            mix((uint64_t) lf->type);
+            for (int d = 0; d < GGML_MAX_DIMS; ++d) mix((uint64_t) lf->ne[d]);
+        }
+        for (int ni = 0; ni < sched->splits[i].graph.n_nodes; ++ni) {
+            const struct ggml_tensor * n = sched->splits[i].graph.nodes[ni];
+            if (n == NULL) { mix(0xdeadbeefull); continue; }
+            mix((uint64_t) n->op);
+            for (int d = 0; d < GGML_MAX_DIMS; ++d) mix((uint64_t) n->ne[d]);
+            for (int s = 0; s < GGML_MAX_SRC; ++s) {
+                if (n->src[s] != NULL) {
+                    // srcs are the split externals (the sched copies nodes
+                    // only; n_leafs = 0 on splits) - their type/shape must be
+                    // keyed or prefill (6-token) and decode (1-token)
+                    // subgraphs collide.
+                    mix((uint64_t) n->src[s]->op);
+                    mix((uint64_t) n->src[s]->type);
+                    for (int d = 0; d < GGML_MAX_DIMS; ++d) mix((uint64_t) n->src[s]->ne[d]);
+                }
+            }
+            for (int ip = 0; ip < GGML_MAX_OP_PARAMS / (int) sizeof(int32_t); ++ip) {
+                mix((uint64_t) n->op_params[ip]);
+            }
+        }
+        sched->splits[i].graph.uid = h;
     }
 }
 
