@@ -666,7 +666,7 @@ static Status prepare_kernel_command(const CommandProgramExecutionContext & cont
     if (getenv("GGML_HRX_CONVDUMP")) {
         fprintf(stderr, "[kres] id=%llx name=%s\n",
                 (unsigned long long) dispatch.kernel.kernel_id,
-                kernel_definition_name(*resolved.definition).c_str());
+                kernel_definition_name_or_id(resolved.definition, dispatch.kernel.kernel_id).c_str());
     }
     prepared       = make_prepared_command_shape(command);
     executable_ref = context.kernel_executables->get_or_compile(
