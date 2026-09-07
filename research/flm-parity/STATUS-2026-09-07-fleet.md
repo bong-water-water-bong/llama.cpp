@@ -51,5 +51,13 @@ zaya decodes on ONE NPU.
    solo). So the earlier caveat "0.892 = engine fused-path bar" was wrong as a
    generalization; the halves' two-stream numbers stand as-measured but carry
    that defect.
-3. PENDING: two concurrent FULL-8col fused decodes (1 ctx/process, no halves)
-   co-schedule test in flight at 00:05 UTC - f1/f2 outcome not yet captured.
+3. RESOLVED (00:06 UTC, f1/f2): two FULL-8col fused decodes do NOT
+   co-schedule - both stalled at ctx start (log ends after "creating bC",
+   4 npu_engine procs stuck, 280 s, zero decode output; same signature as
+   every full-array x2-process test). FULL-8col fused corr 0.998 = SOLO-ONLY.
+4. ARCHITECTURE PATTERN (all clean tests): concurrent decode works iff
+   kernels touch <= 4 cols (halves/probes: N>=4 fine); any 2 processes with
+   8-col kernels stall in the runqueue. Suggests the 09-05 N=4 "engine"
+   record used partial/fused-i4 kernels, not full-8col GU/D.
+   => co-schedulable pair = 4-col halves (currently carrying the corr-0.892
+   slicing defect, being fixed by 5d742a in the fused generator offset math).
