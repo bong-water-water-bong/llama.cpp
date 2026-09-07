@@ -44,3 +44,22 @@ argsort or a reused allocator buffer - observed values mix block-0 argsort ranks
 3. Candidate minimal fix: add the route_ids (and all CPU-produced externals) to the
    program's dependency list so each replay binds fresh addresses; or disable program
    replay for programs with CPU-produced external inputs.
+
+## Update (same session): SYNC_EACH test + race conclusion
+- GGML_HRX_SYNC_EACH=1 does NOT fix the block-1+ mis-routing (tables unchanged:
+  [7,6,2,9,15,15] vs CPU [7,10,2,9,13,15]) => not an HRX-stream ordering issue.
+- The mis-read values mix CORRECT block-1 top-1s (tokens 0/2/3/5) with stale values
+  at tokens 1/4 => the table-build read the argsort-1 buffer MID-WRITE or from a
+  reused arena slot whose tail was not yet written - a CPU-write vs HRX-read race on
+  the shared ids buffer. Block 0 is always correct because the first argsort write
+  precedes the first HRX program by construction.
+- The ggml sched cannot order a dependency it does not know: the table-build is an
+  HRX-generated command, and if the per-block route_ids value is not recognized as an
+  input dependency of the mm program (round-16e class: CPU-produced activation inputs
+  missing from binding lists), the table-build can start while the CPU argsort write
+  is still in flight (arena slots are reused across the 40 blocks).
+- Next: audit the mm dispatch graph-value dependency list for route_ids (dispatch-
+  mul-mat-id-common.h match + graph-program-cache external binding); candidate fixes:
+  (a) declare the ids value as a graph input dependency of the mm program,
+  (b) force an explicit h2d of the ids before the table-build command, or
+  (c) allocate the argsort outside the reused arena (ggml_cont the ids before the mm).
