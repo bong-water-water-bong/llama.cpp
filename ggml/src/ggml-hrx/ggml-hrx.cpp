@@ -206,10 +206,17 @@ static void buffer_set(ggml_backend_buffer_t buffer,
     GGML_ASSERT(destination_offset <= buffer->size && size <= buffer->size - destination_offset);
     if (context->base != reinterpret_cast<uint8_t *>(GGML_HRX_FAKE_PTR_BASE)) {
         std::memcpy(context->base + destination_offset, data, size);
-        return;
-    }
-    if (!HRX_CHECK(hrx_synchronous_h2d(context->device->device, data, context->buffer, destination_offset, size))) {
+    } else if (!HRX_CHECK(hrx_synchronous_h2d(context->device->device, data, context->buffer, destination_offset, size))) {
         GGML_LOG_ERROR("%s: HRX buffer upload failed\n", __func__);
+    }
+    if (std::getenv("GGML_HRX_TRACE_SET")) {
+        const char * tn = ggml_get_name(tensor);
+        fprintf(stderr, "[set] name=%s off=%zu size=%zu\n", tn ? tn : "?", destination_offset, size);
+        if (size >= 32) {
+            const float * fp = (const float *) data;
+            fprintf(stderr, "[set-vals] %s: [%.4f %.4f %.4f %.4f] [%.4f %.4f %.4f %.4f]\n",
+                    tn ? tn : "?", fp[0], fp[1], fp[2], fp[3], fp[4], fp[5], fp[6], fp[7]);
+        }
     }
 }
 
@@ -226,12 +233,19 @@ static void buffer_get(ggml_backend_buffer_t buffer,
     GGML_ASSERT(source_offset <= buffer->size && size <= buffer->size - source_offset);
     const bool strided = tensor->view_src != nullptr && !ggml_is_contiguous(tensor);
     if (!strided) {
+        const char * tn0 = ggml_get_name(tensor);
         if (context->base != reinterpret_cast<uint8_t *>(GGML_HRX_FAKE_PTR_BASE)) {
             std::memcpy(data, context->base + source_offset, size);
-            return;
-        }
-        if (!HRX_CHECK(hrx_synchronous_d2h(context->device->device, context->buffer, source_offset, data, size))) {
+        } else if (!HRX_CHECK(hrx_synchronous_d2h(context->device->device, context->buffer, source_offset, data, size))) {
             GGML_LOG_ERROR("%s: HRX buffer download failed\n", __func__);
+        }
+        if (std::getenv("GGML_HRX_TRACE_GET")) {
+            fprintf(stderr, "[get] name=%s off=%zu size=%zu\n", tn0 ? tn0 : "?", source_offset, size);
+            if (size >= 32) {
+                const float * fp = (const float *) data;
+                fprintf(stderr, "[get-vals] %s: [%.4f %.4f %.4f %.4f] [%.4f %.4f %.4f %.4f]\n",
+                        tn0 ? tn0 : "?", fp[0], fp[1], fp[2], fp[3], fp[4], fp[5], fp[6], fp[7]);
+            }
         }
     } else {
         // Strided view readback: serve the view's MEMORY EXTENT (rows at their
@@ -693,7 +707,12 @@ static bool eager_capability_declared(enum ggml_op op) {
         // ARGSORT is not eager-claimed: the loom kernel only covers the qwen
         // top-k MoE-router argsort (inside the fused router dispatches). Other
         // sorts (e.g. the zaya 16-expert full argsort) split to CPU.
-        case GGML_OP_CLAMP:
+        // CLAMP is not eager-claimed: no standalone loom kernel exists; the
+        // only coverage is inside the fused qwen MoE-router dispatch (router
+        // norm_topk renorm chain). Orphaned CLAMP nodes (prefill-batch shapes
+        // where the fused pattern does not form) previously landed in HRX
+        // splits with no dispatch = graph compute -1 (qwen3moe 30B prefill,
+        // #2147). Unclaimed shapes now split to CPU.
         case GGML_OP_FLASH_ATTN_EXT:
         // GET_ROWS is NOT eager-claimed: the loom kernels only cover the qwen
         // attention-projection pattern (claimed via
@@ -718,7 +737,12 @@ static bool eager_capability_declared(enum ggml_op op) {
         // shapes (e.g. the zaya 17-slot router softmax) have no loom kernel and
         // must split to CPU. Dense qwen3 (served models) has no standalone
         // SOFT_MAX (attention softmax is inside FLASH_ATTN_EXT).
-        case GGML_OP_SUM_ROWS:
+        // SUM_ROWS is not eager-claimed: no standalone loom kernel exists; the
+        // only coverage is inside the fused qwen MoE-router dispatch. Orphaned
+        // SUM_ROWS nodes (batch>1 prefill where the fused pattern does not
+        // form) previously landed in HRX splits with no dispatch = graph
+        // compute -1 (qwen3moe 30B prefill, #2147). Unclaimed shapes now split
+        // to CPU.
         case GGML_OP_VIEW:
             return true;
         default:
