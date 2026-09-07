@@ -277,6 +277,9 @@ GraphExecutionResult GraphExecutor::execute(const ggml_cgraph & graph) const {
         }
         return result;
     }
+    if (getenv("GGML_HRX_SYNC_EACH")) {
+        hrx_stream_synchronize(context_.stream);
+    }
 
 
     // [b30173 2026-09-06] GGML_HRX_WINDOWSCAN probe: post-execute forensic on the
@@ -289,16 +292,29 @@ GraphExecutionResult GraphExecutor::execute(const ggml_cgraph & graph) const {
     // offline CPU-oracle correlation can run without re-running the device.
     if (std::getenv("GGML_HRX_WINDOWSCAN") && execution.success) {
         static int window_scans = 0;
+        if (getenv("GGML_HRX_WINDOWSCAN_DBG")) {
+            static int dbg_n = 0;
+            if (dbg_n++ < 40) {
+                fprintf(stderr, "[windbg] uid=%llu nb=%zu:", (unsigned long long) lookup.program->uid(), bindings.bindings().size());
+                for (const auto & b : bindings.bindings()) {
+                    fprintf(stderr, " %zu%s", b.length, b.weight ? "w" : "");
+                }
+                fprintf(stderr, "\n");
+            }
+        }
         if (window_scans == 0) {
-            window_scans = 1;
             const CommandProgramBinding * slot = nullptr;
+            uint64_t uid_now = lookup.program->uid();
             for (const CommandProgramBinding & b : bindings.bindings()) {
-                if (b.buffer != nullptr && b.length == 20480 && !b.weight) {
-                    slot = &b;  // node_972's 5-token prefill output
-                    break;
+                fprintf(stderr, "[winscan] uid=%llu buf=%p len=%zu wt=%d\n",
+                        (unsigned long long) uid_now, (void*) b.buffer, b.length, (int) b.weight);
+                if (uid_now == 10846 && b.buffer != nullptr && b.length == 35840 && !b.weight) {
+                    slot = &b;  // f49062: conv fallback input region
                 }
             }
+            fprintf(stderr, "[winscan] uid=%llu slot=%p\n", (unsigned long long) uid_now, (void*) slot);
             if (slot != nullptr) {
+                window_scans = 1;
                 fprintf(stderr, "[win] slot buf=%p off=%zu len=%zu identity=%llu gen=%llu\n",
                         (void*)slot->buffer, slot->offset, slot->length,
                         (unsigned long long)slot->identity, (unsigned long long)slot->generation);

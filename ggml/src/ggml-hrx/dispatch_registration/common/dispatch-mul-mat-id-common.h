@@ -283,8 +283,27 @@ inline bool common_mul_mat_id_ensure_moe_routing_bundle(const DispatchMatchConte
     const size_t  expert_table_bytes = common_mul_mat_id_expert_table_size(match.token_count, match.expert_count);
     const size_t  partition_table_bytes =
         common_mul_mat_id_partition_table_size(match.token_count, match.route_count, match.expert_count);
-    const int64_t route_stride     = match.route_count;
-    const size_t  route_ids_length = static_cast<size_t>(match.token_count * route_stride) * sizeof(int32_t);
+    // The route_ids may be a dense [route_count, token_count] tensor or a strided
+    // sub-view of a larger tensor (e.g. the top-1 slice of an argsort over the
+    // expert dimension). The expert-table kernel indexes the ids as a token-major
+    // view<[token_count]x[route_stride]>, so for strided views the stride must
+    // come from the value's row pitch (nb[1]), not the dense route count --
+    // otherwise every token reads token 0's experts (token r reads rank r of
+    // token 0's sorted list instead of its own top-1).
+    int64_t route_stride = match.route_count;
+    if (!match.route_ids->contiguous) {
+        const size_t nb0 = match.route_ids->nb[0];
+        const size_t nb1 = match.route_ids->nb[1];
+        if (nb0 != sizeof(int32_t) || nb1 < static_cast<size_t>(match.route_count) * sizeof(int32_t) ||
+            nb1 % sizeof(int32_t) != 0) {
+            return false;  // layout not representable by the table kernels - fall back
+        }
+        route_stride = static_cast<int64_t>(nb1 / sizeof(int32_t));
+    }
+    const size_t route_ids_length = match.route_ids->contiguous
+                                        ? static_cast<size_t>(match.token_count * match.route_count) * sizeof(int32_t)
+                                        : static_cast<size_t>(match.token_count - 1) * match.route_ids->nb[1] +
+                                              static_cast<size_t>(match.route_count) * match.route_ids->nb[0];
 
     dispatch_match.transients.push_back(
         { expert_table_value, "common.moe_routing.expert_table", expert_table_bytes, 256 });

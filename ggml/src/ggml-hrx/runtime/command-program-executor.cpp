@@ -663,6 +663,11 @@ static Status prepare_kernel_command(const CommandProgramExecutionContext & cont
         return status;
     }
 
+    if (getenv("GGML_HRX_CONVDUMP")) {
+        fprintf(stderr, "[kres] id=%llx name=%s\n",
+                (unsigned long long) dispatch.kernel.kernel_id,
+                kernel_definition_name(*resolved.definition).c_str());
+    }
     prepared       = make_prepared_command_shape(command);
     executable_ref = context.kernel_executables->get_or_compile(
         { context.device, context.target }, *resolved.definition, dispatch, prepared.kernel.constants);
@@ -700,8 +705,11 @@ static bool execute_prepared_kernel_command(const CommandProgramExecutionContext
         executable.launch.subgroup_size,
     };
     if (getenv("GGML_HRX_DUMP_WRITEBIND")) {
-        fprintf(stderr, "[hrxbind2] dispatch ord=%u bindings=%zu cmd=%s\n",
-                (unsigned) executable.export_ordinal, refs.size(), command_context.c_str());
+        fprintf(stderr, "[hrxbind2] dispatch ord=%u bindings=%zu cmd=%s wg=%llux%llux%llu\n",
+                (unsigned) executable.export_ordinal, refs.size(), command_context.c_str(),
+                (unsigned long long) executable.launch.workgroup_count[0],
+                (unsigned long long) executable.launch.workgroup_count[1],
+                (unsigned long long) executable.launch.workgroup_count[2]);
         for (size_t bi = 0; bi < refs.size(); ++bi)
             fprintf(stderr, "[hrxbind2]   b%zu buf=%p off=%" PRIu64 " len=%" PRIu64 "\n",
                     bi, (void*) refs[bi].buffer, (uint64_t) refs[bi].offset, (uint64_t) refs[bi].length);
@@ -871,6 +879,22 @@ static Status record_prepared_kernel_command(hrx_graph_t                  graph,
     }
 
     const KernelExecutable & executable = *command.kernel.executable;
+    if (getenv("GGML_HRX_CONVDUMP")) {
+        fprintf(stderr, "[recnode] ord=%u wg=%llux%llux%llu wsize=%llux%llux%llu sg=%u nb=%zu\n",
+                (unsigned) executable.export_ordinal,
+                (unsigned long long) executable.launch.workgroup_count[0],
+                (unsigned long long) executable.launch.workgroup_count[1],
+                (unsigned long long) executable.launch.workgroup_count[2],
+                (unsigned long long) executable.launch.workgroup_size[0],
+                (unsigned long long) executable.launch.workgroup_size[1],
+                (unsigned long long) executable.launch.workgroup_size[2],
+                (unsigned) executable.launch.subgroup_size,
+                command.kernel.bindings.size());
+        for (const PreparedCommandBinding & b : command.kernel.bindings) {
+            fprintf(stderr, "[recnode]   buf=%p off=%zu len=%zu\n",
+                    (void*) b.ref.buffer, b.ref.offset, b.ref.length);
+        }
+    }
     hrx_graph_kernel_node_attrs_t attrs = {
         executable.executable,
         executable.export_ordinal,

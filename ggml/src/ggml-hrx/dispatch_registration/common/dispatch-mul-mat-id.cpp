@@ -200,16 +200,10 @@ static bool match_mul_mat_id_dispatch(const DispatchMatchContext & context, Disp
         }
     }
     dispatch.bindings.push_back({ match.output->id, 0, match.output->byte_count });
-    {
-        // [b30173/d5694d] dedicated row-debug buffer: {token, dst_row, assignment, expert}
-        // per publish. Kernel side writes it; host dumps post-run. 256 i32 slots.
-        const ValueId row_debug_value(context.next_plan_value.value +
-                                      static_cast<int32_t>(dispatch_match.transients.size()));
-        constexpr size_t kRowDebugBytes = 256 * sizeof(int32_t);
-        dispatch_match.transients.push_back(
-            { row_debug_value, "common.moe_routing.row_debug", kRowDebugBytes, 256 });
-        dispatch.bindings.push_back({ row_debug_value, 0, kRowDebugBytes });
-    }
+    // NOTE(agent-f49062): row_debug binding removed - the committed kernel ABI
+    // has no row_debug parameter (b30173's kernel-side WIP was never landed and
+    // fails the loom SUBRANGE proof for token_count=20/25). Re-add together
+    // with the kernel half once the WIP kernels compile for all zaya shapes.
 
     dispatch_match.covered_nodes.push_back(context.root_index);
     dispatch_match.dispatches.push_back(std::move(dispatch));

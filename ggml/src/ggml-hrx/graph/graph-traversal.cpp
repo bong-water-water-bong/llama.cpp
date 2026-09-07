@@ -17,7 +17,11 @@ static bool is_root_op(ggml_op op) {
         case GGML_OP_CONV_2D_DW:
         case GGML_OP_CONV_TRANSPOSE_2D:
         case GGML_OP_SSM_CONV:
-            return true;
+            // f49062 2026-09-07: SSM_CONV has NO loom kernel and was being
+            // mis-dispatched to the generic binary_bc kernel (35x1 workgroups,
+            // wrong values). Exclude it from HRX root-op claiming so the conv
+            // family stays CPU-side (the recurrent state is CPU-pinned anyway).
+            return false;
         default:
             return false;
     }

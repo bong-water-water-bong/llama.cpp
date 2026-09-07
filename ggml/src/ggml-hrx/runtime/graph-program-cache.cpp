@@ -820,6 +820,40 @@ void GraphProgram::dump_program_values(const CommandProgramExecutionContext & co
             }
         }
     }
+    // f49062: conv fallback input capture (uid 10846 = prefill conv, block 0)
+    if (getenv("GGML_HRX_CONVDUMP") && uid_ == 10846) {
+        if (ErrorResult err = take_status(hrx_stream_synchronize(context.stream))) {
+            fprintf(stderr, "[convdbg] sync failed: %s\n", err->c_str());
+        }
+        for (const PreparedCommand & cmd : prepared_.commands) {
+            fprintf(stderr, "[convdbg] uid=%llu cmd kind=%d nb=%zu kernel_id=%d\n",
+                    (unsigned long long) uid_, (int) cmd.kind, cmd.kernel.bindings.size(),
+                    (int) cmd.kernel.specialization.kernel_id);
+            size_t bi = 0;
+            for (const PreparedCommandBinding & pb : cmd.kernel.bindings) {
+                fprintf(stderr, "[convdbg]   b%zu buf=%p off=%zu len=%zu val=%d\n", bi++,
+                        (void*) pb.ref.buffer, pb.ref.offset, pb.ref.length,
+                        (int) pb.binding.value.value);
+                if (pb.ref.buffer != nullptr && pb.ref.length == 35840) {
+                    std::vector<uint8_t> data(pb.ref.length);
+                    bool ok = false;
+                    if (ErrorResult err2 = take_status(hrx_synchronous_d2h(
+                            context.device, pb.ref.buffer, pb.ref.offset, data.data(), pb.ref.length))) {
+                        fprintf(stderr, "[convdbg] d2h b%zu failed: %s\n", bi - 1, err2->c_str());
+                    } else {
+                        ok = true;
+                    }
+                    if (ok) {
+                        char path[128];
+                        snprintf(path, sizeof path, "/tmp/conv_%zu.bin", pb.ref.length);
+                        FILE * f = fopen(path, "wb");
+                        if (f) { fwrite(data.data(), 1, data.size(), f); fclose(f); }
+                        fprintf(stderr, "[convdbg] saved %s\n", path);
+                    }
+                }
+            }
+        }
+    }
     if (dumps.empty()) {
         return;
     }

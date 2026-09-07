@@ -731,16 +731,14 @@
     "expert_table",
     "partition_table",
     "weight",
-    "output",
-    "row_debug"
+    "output"
    ],
    "binding_access": [
     "read",
     "read",
     "read",
     "read",
-    "read_write",
-    "write"
+    "read_write"
    ],
    "target_selector": "",
    "compile_recipe": {

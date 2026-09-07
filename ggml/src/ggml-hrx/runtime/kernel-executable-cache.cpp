@@ -394,6 +394,11 @@ std::shared_ptr<KernelExecutable> KernelExecutableCache::prepare(const KernelExe
                                                                  const Dispatch &                       dispatch,
                                                                  std::vector<uint8_t> &                 constants) {
     const KernelExecutableRef ref = get_or_compile(context, definition, dispatch, constants);
+    if (getenv("GGML_HRX_CONVDUMP")) {
+        fprintf(stderr, "[kprep] name=%s id=%llx\n",
+                kernel_definition_name(definition).c_str(),
+                (unsigned long long) definition.id);
+    }
     return materialize(context, ref, constants);
 }
 

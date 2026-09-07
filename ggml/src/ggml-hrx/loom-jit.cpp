@@ -948,6 +948,23 @@ hrx_status_t ggml_hrx_loom_jit_amdgpu_compile(ggml_hrx_loom_jit_amdgpu *        
     if (!hrx_status_is_ok(hrx_status)) {
         return hrx_status;
     }
+    if (const char * ir_dir = std::getenv("GGML_HRX_DUMP_IR")) {
+        static int ir_seq = 0;
+        char path[512];
+        snprintf(path, sizeof path, "%s/ir_%03d_%s.loom.txt", ir_dir, ir_seq, options->root_symbol);
+        FILE * f = fopen(path, "wb");
+        if (f != nullptr && out_result->final_module_text != nullptr) {
+            fwrite(out_result->final_module_text, 1, out_result->final_module_text_size, f);
+            fclose(f);
+        }
+        snprintf(path, sizeof path, "%s/ir_%03d_%s.report.json", ir_dir, ir_seq, options->root_symbol);
+        f = fopen(path, "wb");
+        if (f != nullptr && out_result->compile_report_json != nullptr) {
+            fwrite(out_result->compile_report_json, 1, out_result->compile_report_json_size, f);
+            fclose(f);
+        }
+        ++ir_seq;
+    }
     if (options->evaluate_launch_config) {
         const char * launch_config_symbol = options->launch_config_symbol;
         if (launch_config_symbol == nullptr || launch_config_symbol[0] == '\0') {
