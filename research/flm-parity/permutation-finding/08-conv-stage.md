@@ -68,3 +68,23 @@ c. Inspect the cca state buffer allocation/zeroing (llama-memory-hybrid / build_
   the token-row q/k of the decode conv is usable; the decode may still be subtly wrong
   vs the CPU continuation of tok0=563 (no CPU oracle for the 563-continuation exists -
   the r30 series vanished). Do not treat "grammatical text" as decode-correctness.
+## Addendum 2 (same session): SSM_CONV = CPU fallback inside the HRX graph
+- The loom corpus has NO conv kernel (ops/ list + manifest: zero conv entries) and no
+  SSM_CONV op-params/dispatch handling, yet QK_dw/QK_grp are bound+dumped as
+  3-binding kernel commands (out/weight/in). => the conv-family ops execute as CPU
+  fallbacks (graph_replay_should_fallback machinery) with host-visible buffers.
+- The conv weight binding = 5120B @ the model tensor offset = the F16-converted
+  ssm_conv1d.weight [2,1280] (2560 f16 = 5120B) - confirms the F16 device-weight path.
+- The conv input binding (b2) = 35840B = 7 rows x 1280 f32 - one row short of the
+  8-row [conv_state(2) + QKraw(6)] concat; the fallback's input assembly (cross-backend
+  concat of the CPU-pinned zeroed state cache + the HRX QKraw via d2h) is the suspect
+  for the corrupted rows (output rows 0-4 value-wrong vs every numpy reconstruction;
+  rows 5-6 = rms 81-85 garbage; decode row 1 = rms 75).
+- The recurrent cache (cache_s_l0) = CPU buffer, zeroed at alloc (buffer_clear 0) with
+  the explicit comment pinning it to CPU because HRX lacks SCALE/conv kernels.
+
+=> Next probe (decisive): capture the conv fallback input region (the value bound as
+   b2 of uid 10846 / 11930, likely the materialized cca_conv_input) and compare against
+   [zeros(2,1280) ; QKraw] - distinguishes "state upload corrupt" vs "QKraw d2h corrupt"
+   vs "fallback assembly wrong". The 10843_001_Qraw/Kraw dumps prove the HRX-side
+   projections are correct; the copy path is unverified.
