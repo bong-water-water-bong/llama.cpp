@@ -29,18 +29,27 @@ two-stream fused decode (1bit-MONSTER repo, feat/hrx-gfx1151-build @ ffb6af90).
   ~/zaya-decode/{ffn_oracle,out_oracle,norm_oracle}/ CPU oracles (full r03/r04
   per-block set), ~/zaya-captures-428ab3/ routing tables + swiglu/weighted/
   moe_out bins + hrx_gate0/up0. fix_gu/fix_sw NOT backed up in ~/zaya-captures
-  (round-70 file note overstated) — regenerable once tree builds.
+  (round-70 file note overstated) - regenerable once tree builds.
 
-## Annex: engine-NPU two-stream fused decode (5d742a) — audited by 2e3971
+## Annex: engine-NPU concurrent decode (5d742a) - audited by 2e3971
 CLAIM SUBSTANTIATED (read-only, files live on strixhalo): two concurrent full
-zaya decodes on ONE NPU, col-halves 0-3 | 4-7, single-context fused kernels.
-- /tmp/wA.log wB.log finish 20:51:04.85/.55 (0.3 s apart = concurrent windows):
-  A 6.7 t/s (8 tok/1187 ms), B 5.7 t/s (1393 ms); clean rerun two_A/B 8.7+8.6.
-- Both corr=0.892429 (MoE L1 single-layer dbg, int8 fused vs CPU fp32), logits
-  sane, IDENTICAL token stream both halves = deterministic, same decode.
+zaya decodes on ONE NPU.
+- Half-sliced fused runs (ffb6af90 era): /tmp/wA.log wB.log finish 20:51:04.85/
+  .55 (0.3 s apart = concurrent windows): A 6.7 t/s (8 tok/1187 ms), B 5.7 t/s
+  (1393 ms); clean rerun two_A/B 8.7+8.6. IDENTICAL token stream both halves.
 - Controls c1/c2: 2x GU half-probes concurrent 5/5+5/5 sane. h0/h1 xclbins +
   insts differ (md5) = genuine col-sliced artifacts. Launcher
   tools/two_stream_decode.sh manages the flm window; commit ffb6af90 pushed.
-Caveats: corr 0.892 is the engine fused-path bar (NOT a full-model oracle-token
-gate); aggregate 17.3 t/s clean vs FLM zaya 16.8 single = real but thin on this
-stack; the structural win = 2 co-scheduled streams FLM cannot run at all.
+
+### CORRECTIONS (5d742a session 00:02-00:05 UTC, same day)
+1. Ceiling question RESOLVED: clean-state recheck N=3 (6/6,6/6,6/6) + N=4
+   (5/5x4) single-ctx probes ALL complete - no ~2-active-ctx cap exists
+   (earlier 3rd-probe stall = degraded-state artifact, #2128 family).
+   Logged: okf/systems/1bit-monster/log.md 21:02 entry.
+2. corr 0.892 on the HALF-SLICED fused runs was a SLICING BUG in the h0/h1
+   generators - full-8col fused measures corr 0.998 (near-oracle, 9.1 t/s
+   solo). So the earlier caveat "0.892 = engine fused-path bar" was wrong as a
+   generalization; the halves' two-stream numbers stand as-measured but carry
+   that defect.
+3. PENDING: two concurrent FULL-8col fused decodes (1 ctx/process, no halves)
+   co-schedule test in flight at 00:05 UTC - f1/f2 outcome not yet captured.
