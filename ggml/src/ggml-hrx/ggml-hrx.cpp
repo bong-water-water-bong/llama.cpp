@@ -874,8 +874,7 @@ static bool supported_qwen_attention_residual_add_tensor(const ggml_tensor * op)
     if (op == nullptr || op->op != GGML_OP_ADD || op->src[0] == nullptr || op->src[1] == nullptr ||
         op->type != GGML_TYPE_F32 || op->src[0]->type != GGML_TYPE_F32 || op->src[1]->type != GGML_TYPE_F32 ||
         !ggml_is_contiguous(op) || !ggml_is_contiguous(op->src[0]) || !ggml_is_contiguous(op->src[1]) ||
-        !ggml_are_same_shape(op, op->src[0]) || !ggml_are_same_shape(op, op->src[1]) ||
-        op->ne[1] != 1) {   // fused attention-residual coverage is decode-shaped; prefill batches split to CPU (#2147)
+        !ggml_are_same_shape(op, op->src[0]) || !ggml_are_same_shape(op, op->src[1])) {
         return false;
     }
 
@@ -887,7 +886,7 @@ static bool supported_qwen_routed_ffn_reduce_add_tensor(const ggml_tensor * op) 
     if (op == nullptr || op->op != GGML_OP_ADD || op->src[0] == nullptr || op->src[1] == nullptr ||
         op->type != GGML_TYPE_F32 || op->src[0]->type != GGML_TYPE_F32 || op->src[1]->type != GGML_TYPE_F32 ||
         !ggml_is_contiguous(op) || !ggml_are_same_shape(op, op->src[0]) || !ggml_are_same_shape(op, op->src[1]) ||
-        op->ne[0] != 2048 || op->ne[3] != 1 || op->ne[1] != 1 ||
+        op->ne[0] != 2048 || op->ne[3] != 1 ||
         !((op->ne[1] > 0 && op->ne[2] == 1) || (op->ne[1] == 1 && op->ne[2] > 0))) {
         return false;
     }
