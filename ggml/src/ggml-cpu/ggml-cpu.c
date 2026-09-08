@@ -2324,6 +2324,9 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             tensor->src[0] != NULL && tensor->src[0]->data != NULL &&
             tensor->src[0]->name != NULL && strstr(tensor->src[0]->name, "cca_conv_input-0") != NULL) {
             const struct ggml_tensor * s0 = tensor->src[0];
+            fprintf(stderr, "[convsrc-meta] ne=%lld,%lld,%lld,%lld nb=%zu,%zu,%zu,%zu view_src=%p data=%p\n",
+                    (long long) s0->ne[0], (long long) s0->ne[1], (long long) s0->ne[2], (long long) s0->ne[3],
+                    s0->nb[0], s0->nb[1], s0->nb[2], s0->nb[3], (void*) s0->view_src, (void*) s0->data);
             char sp[512];
             snprintf(sp, sizeof sp, "/tmp/nodedump/convsrc_%lldx%lldx%lldx%lld.bin",
                      (long long) s0->ne[0], (long long) s0->ne[1], (long long) s0->ne[2], (long long) s0->ne[3]);
