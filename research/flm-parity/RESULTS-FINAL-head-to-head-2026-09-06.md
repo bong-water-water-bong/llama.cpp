@@ -94,3 +94,16 @@ t/s — launch/subgraph-bound; open lane = SSM_CONV + CONV_1D_GROUPED loom kerne
 + launch collapse (owner: f49062 speed lane, in flight). (2) device-path
 multi-seq fails on an unmatched SET_ROWS dispatch (batched recurrent conv-state
 shape) — executor gap, newly documented.
+
+## ADDENDUM 2 (2026-09-08, agent-ec8072) — zaya device decode at 1k/4k ctx (task-5 report rows)
+
+llama-bench on the HRX device (ngl99, GGML_ZAYA_DEQUANT_F16=1, -r 1), zaya-q4nx-c43.gguf:
+
+| ctx | prefill (t/s) | decode tg (t/s) | notes |
+|---|---|---|---|
+| ~1k (p768/n256) | pp768 265.31 | tg256 7.14 | oracle-exact single-seq path |
+| ~4k (p3840/n256) | pp3840 279.82 | tg256 6.91 | oracle-exact single-seq path |
+
+TTFT ≈ prompt/pp + 1 token decode ≈ 2.9 ms/k tok prefill + ~145 ms first token at both ctx (launch-bound decode: ctx has negligible effect).
+
+Multi-seq zaya WITH throughput: not yet demonstrated on any path — ngl0 batched-bench rc=0/no-SEGV but prints no rows (fork batched-bench printer suppresses hybrid-arch rows); device-path batched decode fails on the SET_ROWS dispatch gap (see CHECKPOINT-2026-09-08-ec8072.md). Single-slot serving on the device path works (single-seq decode is oracle-exact ~7 t/s).
