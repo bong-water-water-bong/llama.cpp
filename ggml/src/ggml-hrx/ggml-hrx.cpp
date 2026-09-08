@@ -597,6 +597,24 @@ static const char * status_first_error(const ggml::hrx::Status & status) {
 static enum ggml_status graph_compute(ggml_backend_t backend, ggml_cgraph * graph) {
     auto *                                context  = static_cast<ggml_backend_hrx_context *>(backend->context);
     const ggml::hrx::GraphExecutor        executor = ggml::hrx::GraphExecutor(*context);
+    if (getenv("GGML_HRX_EXECTIME")) {
+        static uint64_t calls = 0, nanos = 0;
+        struct timespec ts0, ts1;
+        clock_gettime(CLOCK_MONOTONIC, &ts0);
+        const ggml::hrx::GraphExecutionResult result = executor.execute(*graph);
+        clock_gettime(CLOCK_MONOTONIC, &ts1);
+        uint64_t dt = (uint64_t)(ts1.tv_sec - ts0.tv_sec) * 1000000000ull + (uint64_t)(ts1.tv_nsec - ts0.tv_nsec);
+        calls++; nanos += dt;
+        if (calls % 200 == 0) {
+            fprintf(stderr, "[hrxtime] calls=%llu avg_us=%.1f total_ms=%.1f\n",
+                    (unsigned long long) calls, (double) nanos / (double) calls / 1000.0,
+                    (double) nanos / 1000000.0);
+        }
+        if (!result.success()) {
+            GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(result.status));
+        }
+        return result.code;
+    }
     const ggml::hrx::GraphExecutionResult result   = executor.execute(*graph);
     if (!result.success()) {
         GGML_LOG_ERROR("%s: %s\n", __func__, status_first_error(result.status));
