@@ -39,3 +39,20 @@ difference or a cur (rmsnorm input) subtlety. Next: diff the tile-byte-order
 between the attn_q and the gate_up raw planes against the gguf spec, or
 validate QKraw via the graph's own Qraw/Kraw dumps (they are named nodes)
 instead of the concat output.
+
+## Addendum 2: QKraw layout resolved; conv state capture pending
+The QKraw numpy reference is EXACT (row mads 0.00025) once the dump layout
+is read as token-major 1280-chunks (reshape(6,1280) - the earlier mismatch
+was a reshape error, not a dequant issue). The conv-output comparison still
+shows ~0.1-12 mads: the QK_dw capture (r04_000) is the conv subgraphs
+
+## Addendum 2: QKraw layout resolved; conv state capture pending
+The QKraw numpy reference is EXACT (row mads 0.00025) once the dump layout
+is read as token-major 1280-chunks (reshape(6,1280) - the earlier mismatch
+was a reshape error, not a dequant issue). The conv-output comparison still
+shows ~0.1-12 mads: the QK_dw capture (r04_000) is the conv subgraph's
+execution but the conv-state at that point needs confirmation (row-0 = state
+x w should be exactly 0 with a zeroed state; observed ~0.096). Next: align
+the dump-run numbering with the sched subgraph order (GGML_HRX_GRAPHCOUNT)
+to capture the true first conv execution with the zero state, then lock the
+tap order (A: y[i]=w0x[i]+w1x[i+1] vs B: flipped).
