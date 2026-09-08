@@ -94,3 +94,35 @@ dispatch matches the multi-seq KV-view form - mirrors the fleet's per-op claim
 work), or (b) extend the flash dispatch/loom kernel to per-seq KV views.
 CPU-side multi-seq oracle (same 4 prompts, llama-server -np 4 ngl0) is clean and
 correct, so numerics targets exist for the round.
+
+## ROUND RESULT 2 (2026-09-08, agent-ec8072): batched-flash CPU-split is blocked by KV-cache placement, not the flash claim
+
+Attempted the shape-conditional flash claim (device_supports_op gate: claim
+FLASH_ATTN_EXT only for ne[3]==1 single-seq shapes so multi-seq flash splits to
+CPU). Single-seq stays oracle-exact with the gate (ne3=1 flash unchanged), but
+the -np 4 server ctx build still ABORTS:
+
+    ggml-backend.cpp:898: pre-allocated tensor (cache_v_l0 (view) (permuted)
+    (transposed)) in a buffer (HRX0) that cannot run the operation (TRANSPOSE)
+    (ggml_backend_sched_backend_id_from_cur during sched_reserve)
+
+Root cause: the V cache (cache_v_l0) is allocated on the HRX0 buffer (layers
+offloaded at ngl99). CPU flash-attn needs the transposed V-cache view, so the
+TRANSPOSE must run on CPU - but the pre-allocated (persistent) tensor sits in an
+HRX buffer and the ggml sched refuses (can't copy a pre-allocated leaf). Env-
+forcing flash to CPU showed the same abort (this is why GGML_HRX_CPU_OPS=FLASH
+works only at ngl0 where the KV cache is CPU-resident anyway).
+Reverted (tree back at the SET_ROWS-fix state c633916f4; single-seq device
+decode re-verified oracle-exact 9079/.../1156).
+
+Next-round options for device multi-seq (in order of size):
+  1. KV-cache buffer placement for the flash/V path: allocate cache_v (and the
+     transposed-view machinery) on the HRX host buft (HRX0_HOST, UMA/coherent)
+     when the graph needs CPU flash, so CPU TRANSPOSE/view ops can read it -
+     mirrors how llama_kv_cache chooses buft per backend; the host buft is
+     device-visible so HRX flash (single-seq) must remain on device - needs a
+     per-context conditional, not a blanket host buft.
+  2. Batched flash dispatch/loom kernel for ne[3]>1 (real kernel project).
+  3. Serve multi-seq on the CPU path only (works: -np 4 ngl0 correct, ~33 t/s
+     aggregate) and keep device multi-seq as a documented follow-on - this is
+     the honest interim for task-5 rows.
