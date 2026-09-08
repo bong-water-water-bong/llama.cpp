@@ -2319,6 +2319,17 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
     }
 
     if (getenv("GGML_DUMP_NODE") && params->ith == 0 && tensor->op != GGML_OP_NONE) {
+        // f49062: also dump the ssm-conv src0 (the real conv input buffer)
+        if (getenv("GGML_DUMP_CONVSRC") && tensor->op == GGML_OP_SSM_CONV &&
+            tensor->src[0] != NULL && tensor->src[0]->data != NULL &&
+            tensor->src[0]->name != NULL && strstr(tensor->src[0]->name, "cca_conv_input-0") != NULL) {
+            const struct ggml_tensor * s0 = tensor->src[0];
+            char sp[512];
+            snprintf(sp, sizeof sp, "/tmp/nodedump/convsrc_%lldx%lldx%lldx%lld.bin",
+                     (long long) s0->ne[0], (long long) s0->ne[1], (long long) s0->ne[2], (long long) s0->ne[3]);
+            FILE * sf = fopen(sp, "wb");
+            if (sf) { fwrite(s0->data, 1, (size_t) ggml_nelements(s0) * sizeof(float), sf); fclose(sf); }
+        }
         const char * filter = getenv("GGML_DUMP_FILTER");
         bool want = filter == NULL || filter[0] == '\0';
         if (!want) {
