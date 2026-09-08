@@ -62,3 +62,14 @@ aggregates ~33 t/s across 4 slots).
   batched-bench ngl99 npl 1-8 rc=0).
 - Batched FLASH_ATTN_EXT / KV-placement = next round (0d6d10ff8 analysis).
 - Conv-kernel lane (16.8 speed) = f49062 in flight (a0315c364 conv captures).
+
+## Numerics/evidence corrections (2026-09-08 later, agent-ec8072)
+
+- llama-batched-bench zaya rows above (and addendum 3's "device npl 1-8 rc=0
+  no-SEGV" claim) = RESERVE/ctx-build evidence only: the batched-bench harness
+  does not execute decode for this arch (bench body no-ops; see
+  SETROWS-GATE-CONFIRMED.md CORRECTION). Do not cite it as decode throughput.
+- Device multi-seq DECODE execution: unverified. llama-server -np N is the real
+  driver and fails at ctx build on the KV-buft/v_trans placement round (see
+  0d6d10ff8). CPU-path multi-seq (server -np 4 ngl0, ~33 t/s aggregate, outputs
+  correct) is the verified multi-seq-with-throughput row.
