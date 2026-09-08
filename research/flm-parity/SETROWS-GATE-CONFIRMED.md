@@ -217,3 +217,20 @@ with the seq dim = active slots. The single-seq decode-split kernel
 form = the stream-dim extension target. Per-stream KV spans are implicit in
 the mask (f16[256,4,1,2] = kv x tokens per seq). Kernel contract recorded here
 for the loom-authoring round; no dispatch exists for this shape today.
+
+## ROUTE CLOSURE (2026-09-08, agent-ec8072): GGML_HRX_NO_FLASH_ATTN=1 corrupts device decode too
+
+Tested the non-flash attention path (round-16 diagnostic env) on single-seq
+device decode (ngl99): CORRUPT (tok0=236751 vs oracle 9079, garbage text; same
+signature as the KV_HOST test). No crash - silent value corruption in the
+non-flash attention path on device (kq/mask/v path external-binding class).
+=> Disabling flash does NOT bypass the batched-flash wall; the non-flash path
+is not device-correct in this tree either.
+
+Complete env/flag closure list for device zaya decode (all tested 2026-09-08):
+flash claimed single-seq = oracle-exact 6.98-7.14 t/s (THE working config);
+FA off = corrupt; flash CPU-forced = abort/corrupt; KV host-buft = corrupt;
+UNIFIED_MEMORY direct bindings = corrupt; multi-process = 31s/2-token
+contention; batched flash ne3>1 = no dispatch (kernel contract captured
+bb14eb5a0). Every route to multi-seq device decode = the batched-flash loom
+kernel or coherence machinery. Nothing else remains to test.
