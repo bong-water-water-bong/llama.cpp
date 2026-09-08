@@ -52,3 +52,25 @@ WEIGHT-LAYOUT WARNING (same trap as ssm_conv1d): cca_conv_grp.weight [2,128,
 Raw flat read: W[oc][kk] = file[256*oc + kk] with kk = k + 2*ic -> use
 raw.reshape(1280, 256)[oc_range] per group (NOT reshape(2,128,1280) row-major).
 Verify against r02_000/r02_001 before writing the kernel.
+
+## CONV_1D_GROUPED closed form VERIFIED (2026-09-08, agent-ec8072) - corr 1.0 vs graph capture
+
+    QK_grp[ol][g*128 + oc] = SUM_{k=0..1} SUM_{ic=0..127} QK_dw[ol+k][g*128 + ic]
+                                 * W[k][ic][g*128 + oc] + grp_bias[g*128 + oc]
+    ol = 0..L-2 (L=7 input tokens -> 6 outputs, valid conv, s=1), g = 0..9 groups
+    (10 groups x 128 channels over the 1280-wide q||k QK)
+
+Verified against same-run captures (r02_000 QK_dw input 7x1280, r02_001 QK_grp
+output 6x1280, blk.0.cca_conv_grp weights): corr 1.000000, mad ~0.16 = f16
+accumulation (ggml_conv_1d emits im2col as F16 -> f16 mm - confirms the mm path).
+
+Weight memory (tap-fastest, [ne0=2 taps, ne1=128 ic, ne2=1280 oc]):
+    W[k][ic][oc] = flat[k + 2*ic + 256*oc]  ==  raw.reshape(1280, 128, 2)[oc][ic][k]
+Group g reads QK_dw channels [g*128,(g+1)*128) and writes output channels
+[g*128,(g+1)*128). Bias per output channel. Derivation from zaya.cpp:27 helper +
+ggml.c:4596 conv_1d (im2col col = ic*2+k, mm contracts over 256, output permute
+-> [ol, oc] after concat).
+
+Verification script: /tmp/conv_grp_check.py (captures in /tmp/nodedump).
+Kernel contract for CONV_1D_GROUPED now fully specified - ready for the second
+loom kernel.
