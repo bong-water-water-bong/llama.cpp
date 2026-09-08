@@ -56,3 +56,20 @@ x w should be exactly 0 with a zeroed state; observed ~0.096). Next: align
 the dump-run numbering with the sched subgraph order (GGML_HRX_GRAPHCOUNT)
 to capture the true first conv execution with the zero state, then lock the
 tap order (A: y[i]=w0x[i]+w1x[i+1] vs B: flipped).
+
+## Addendum 3: same-run conv capture - output row 0 nonzero vs zero state
+With the comma-filter both tensors now capture from the same execution
+(r04_000 conv_input, r04_001 QK_dw). The conv input state rows are exactly
+zero, yet the QK_dw output row 0 is mostly nonzero (1057/1280 channels after
+bias removal). This rules out a simple valid-conv interpretation where the
+output rows index the 8-row input with a 2-tap window over the zero state.
+The output-row semantics or the dst orientation must differ: candidates -
+(a) the ssm_conv dst rows are per-token with the state window folded
+differently, (b) the ADD (QK_dw = conv + bias reshape) operates on a
+transposed/interleaved layout, or (c) the zaya conv uses the full d_conv
+state (the output[t] = sum over the taps of x[t-k]) with the state occupying
+the tail. Next: read ggml_compute_forward_ssm_conv_f32 again against these
+exact dumps and derive the closed form from the ADD inputs (dump the bias-add
+srcs too via the comma filter: QK_dw,ssm_conv1d.bias would not match - the
+bias tensor is a weight; instead dump the conv output pre-bias by filtering
+the ssm_conv node name).
