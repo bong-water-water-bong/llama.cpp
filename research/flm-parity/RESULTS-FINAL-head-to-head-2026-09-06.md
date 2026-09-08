@@ -107,3 +107,9 @@ llama-bench on the HRX device (ngl99, GGML_ZAYA_DEQUANT_F16=1, -r 1), zaya-q4nx-
 TTFT ≈ prompt/pp + 1 token decode ≈ 2.9 ms/k tok prefill + ~145 ms first token at both ctx (launch-bound decode: ctx has negligible effect).
 
 Multi-seq zaya WITH throughput: not yet demonstrated on any path — ngl0 batched-bench rc=0/no-SEGV but prints no rows (fork batched-bench printer suppresses hybrid-arch rows); device-path batched decode fails on the SET_ROWS dispatch gap (see CHECKPOINT-2026-09-08-ec8072.md). Single-slot serving on the device path works (single-seq decode is oracle-exact ~7 t/s).
+
+## ADDENDUM 3 (2026-09-08, agent-ec8072) - zaya multi-seq rows: CPU aggregate + device structural status
+
+llama-server -np 4, concurrent raw completions (4 distinct prompts, temp 0):
+- CPU (ngl0): all 4 correct (" Paris.\n```...", " the Pacific Ocean...", " chemical energy...", " 12..."), 20 tok each, ~2.43 s/req -> ~8.2 t/s per seq, ~33 t/s aggregate across 4 concurrent slots (multi-seq scales; ngl0 path).
+- Device (ngl99): KV-store SET_ROWS abort FIXED (c633916f4) - batched-bench npl 1/2/4/8 rc=0 no-SEGV; server multi-slot now blocked on the next unmatched shape = batched FLASH_ATTN_EXT (2 seq x 2 tok, per-seq KV views) - see SETROWS-GATE-CONFIRMED.md follow-on. Single-seq device decode stays oracle-exact (7 t/s).
