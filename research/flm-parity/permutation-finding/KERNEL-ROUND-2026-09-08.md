@@ -38,3 +38,31 @@ path). Files: ggml/src/ggml-hrx/.../ops/concat_f32.loom + dispatch-concat.{cpp,h
    binding/HRX->CPU d2h for concat outputs).
 Both are pre-conditions for the launch-collapse conv-speed path; neither is a
 quick fix. Ground-truth speed stands at ~6.4-7 t/s until the collapse lands.
+## CONCAT kernel isolation results (2026-09-08 05:30, agent-ec8072) - WIP, needs loom-tooling round
+
+Follow-on to KERNEL-ROUND-2026-09-08.md. Isolation A/B with the claim gated by
+GGML_HRX_CONCAT_COLS:
+
+- cols=6 concats (QKraw [1024,6]+[256,6] etc., ALL-HRX inputs): kernel compiles +
+  fires (dumps prove CONCAT_QKraw execution) but decode CORRUPT (tok0=48873/236751,
+  no fault). Two memory-layout hypotheses tested: (a) flat [src0|src1] block copy
+  - wrong; (b) ne0-fastest strided with view<[cols]x[rows]> [ch,pos] - still wrong.
+- The earlier all-concats AMDGPU fault = attributed to the conv_input concat
+  (cols=1280, src0 = CPU-pinned recurrent state) - CPU-input staging/binding for
+  newly claimed dispatches suspected (round-16e class).
+
+Remaining suspect set (not yet discriminated):
+1. ggml concat compute for THIS graph may not be plain dim-0 row stacking (zaya
+   concats feed reshape/transpose chains; prefill vs decode shapes differ), or
+2. the dispatch matcher's rows_a/rows_b/cols derivation is off for the graph
+   values (e.g., src ne dims vs ggml concat op semantics), or
+3. the concat OUTPUT value handoff HRX->CPU corrupts (concats feed the CPU conv
+   region; dump tooling only captures CPU-executed ops so device-side output
+   verification needs a device-side read-back harness).
+
+NEXT (needs a loomc-diagnostics-capable session): verify the kernel math against
+a CPU numpy ref of ONE captured concat (device dump unavailable for HRX-executed
+nodes - add a GGML_HRX-side dump or run the concat CPU-forced and diff the sched
+placement), then re-test. Both ssm_conv (indexing) and concat (values/fault)
+block the launch-collapse conv-speed path. Files: ops/concat_f32.loom +
+dispatch-concat.{cpp,h} = untracked WIP.
