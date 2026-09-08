@@ -28,3 +28,15 @@
 ## Current state
 Branch fix/hrx-ngl-init-order HEAD eb004cc20: blanket ADD exclusion; zaya
 oracle-exact 5.6 t/s; roster 48.9 (242.9 behind GGML_HRX_ALLOW_ADD).
+
+## Update (checkpoint 2026-09-07): EDA corruption persists with stable uids
+Re-tested GGML_HRX_ALLOW_ADD=1 on the current tree (stable split uids
+c7b726ffd + alias-skip + conditional claim 15ff48549): tok0=563 still - the
+claimed EDA ADD output corruption is NOT a stale-reuse artifact of the uid
+handling; it is intrinsic to executing the cross-block-live prev_router term
+in a claimed ADD. The conditional claim (MUL-wrapped + MUL_MAT_ID-src ADDs to
+CPU) remains the correct policy: zaya oracle-exact at 6.3 t/s (up from 5.7 -
+the direct-MM bias ADDs are now safely claimed), dense roster 228 t/s, 30B
+clean. The residual-ADDs were verified correct when claimed; only the EDA
+(prev_router x eda_scale term) corrupts - its cross-block fan-out value
+handling in the executor is the open fix surface (round-17/16f class).
