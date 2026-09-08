@@ -268,6 +268,14 @@ GraphImportResult import_ggml_graph(const ggml_cgraph & graph) {
         const ValueId   output      = values.get_or_add_tensor_value(node, output_kind);
         GraphNode &     graph_node  = result.graph.add_node(node->op, output, std::move(inputs));
         graph_node.params           = import_op_params(*node);
+        // SET_ROWS mutates its dst operand (ggml src2 = the cache) in place:
+        // share the produced value's storage with the dst input so the
+        // standalone set_rows dispatch can fire (its in-place guard requires
+        // same storage) and the kernel writes the real cache buffer, not a
+        // ghost slot of an unconsumed result. (1bit-MONSTER zaya multi-seq)
+        if (node->op == GGML_OP_SET_ROWS && graph_node.inputs.size() >= 3) {
+            values.share_inplace_storage(output, graph_node.inputs[2]);
+        }
         // Pure relayout ops never produce data: when the ggml view_src chain
         // does not directly name the in-graph input (cont->reshape->view
         // chains, e.g. zaya flash-attn Vcur), alias the output to its single

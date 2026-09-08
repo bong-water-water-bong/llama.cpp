@@ -221,6 +221,41 @@ Status ValueMap::force_alias_relayout(ValueId target, ValueId source, size_t off
     return status;
 }
 
+Status ValueMap::share_inplace_storage(ValueId target, ValueId source) {
+    Status status;
+    Value *       target_value = find_mutable(target);
+    const Value * source_value = find(source);
+    if (target_value == nullptr || source_value == nullptr || target == source) {
+        status.log("share_inplace_storage: invalid target/source");
+        return status;
+    }
+    if (target_value->storage == source_value->storage) {
+        return status;
+    }
+    if (target_value->type != source_value->type || target_value->byte_count != source_value->byte_count ||
+        target_value->element_count != source_value->element_count ||
+        target_value->contiguous != source_value->contiguous) {
+        status.log("share_inplace_storage: target %d incompatible with source %d", target.value, source.value);
+        return status;
+    }
+    for (int i = 0; i < GGML_MAX_DIMS; ++i) {
+        if (target_value->ne[i] != source_value->ne[i] || target_value->nb[i] != source_value->nb[i]) {
+            status.log("share_inplace_storage: target %d has a different layout than source %d", target.value, source.value);
+            return status;
+        }
+    }
+    if (target_value->alias_source.value >= 0 && target_value->alias_source != source) {
+        status.log("share_inplace_storage: target %d already aliases source %d", target.value, target_value->alias_source.value);
+        return status;
+    }
+    target_value->storage            = source_value->storage;
+    target_value->storage_root       = source_value->storage_root;
+    target_value->alias_source       = source;
+    target_value->storage_offset     = source_value->storage_offset;
+    target_value->storage_byte_count = source_value->storage_byte_count;
+    return status;
+}
+
 ValueId ValueMap::storage_root(ValueId id) const {
     const Value * value = find(id);
     return value == nullptr ? ValueId() : value->storage_root;

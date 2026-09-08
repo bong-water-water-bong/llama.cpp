@@ -112,6 +112,12 @@ class ValueMap {
     // in-graph input (cont->reshape->view chains). layout ops never produce
     // data, so giving them their own storage is never correct.
     Status                            force_alias_relayout(ValueId target, ValueId source, size_t offset);
+    // In-place ops (e.g. SET_ROWS): the op mutates its dst operand's storage,
+    // so the produced value must share the dst input value's storage even when
+    // the produced value is External (no in-graph consumers). The ordinary
+    // alias helpers reject External targets, so this variant exists for the
+    // graph import to model in-place semantics. Layout must match exactly.
+    Status                            share_inplace_storage(ValueId target, ValueId source);
     ValueId                           storage_root(ValueId id) const;
     bool                              same_storage(ValueId lhs, ValueId rhs) const;
 
