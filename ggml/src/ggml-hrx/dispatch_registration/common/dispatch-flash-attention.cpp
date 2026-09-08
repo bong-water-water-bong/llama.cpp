@@ -146,6 +146,7 @@ struct DecodeSplitFlashAttentionMatch {
     int64_t           key_value_capacity    = 0;
     int64_t           query_head_count      = 0;
     int64_t           key_value_head_count  = 0;
+    int64_t           stream_count          = 0;
 
     bool matched() const {
         return query != nullptr && key != nullptr && value != nullptr && mask != nullptr && output != nullptr;
@@ -312,6 +313,91 @@ static DecodeSplitFlashAttentionMatch match_decode_split_flash_attention_f32_f16
     return match;
 }
 
+// #2153 batched decode-split flash (ne3>1, multi-seq decode). The stream dim
+// packs active sequences; for contiguous tensors each stream's slice is bytes
+// [s*nb[3], s*nb[3]+nb[3]) with the SAME intra-stream layout the single-seq
+// kernel compiles against, so the existing kernel runs per (stream,row) with
+// offset rebinding (BATCHED-FLASH-OFFSET-PROPOSAL.md). No kernel change.
+static DecodeSplitFlashAttentionMatch match_decode_split_flash_attention_f32_f16_batched(const Graph &     graph,
+                                                                                         const GraphNode * node) {
+    DecodeSplitFlashAttentionMatch match;
+    if (node == nullptr || node->op != GGML_OP_FLASH_ATTN_EXT || node->inputs.size() != 4) {
+        return match;
+    }
+
+    const Value * query  = graph_value(graph, node->inputs[0]);
+    const Value * key    = graph_value(graph, node->inputs[1]);
+    const Value * value  = graph_value(graph, node->inputs[2]);
+    const Value * mask   = graph_value(graph, node->inputs[3]);
+    const Value * output = graph_value(graph, node->output);
+    if (query == nullptr || key == nullptr || value == nullptr || mask == nullptr || output == nullptr) {
+        return {};
+    }
+    if (query->type != GGML_TYPE_F32 || key->type != GGML_TYPE_F16 || value->type != GGML_TYPE_F16 ||
+        mask->type != GGML_TYPE_F16 || output->type != GGML_TYPE_F32) {
+        return {};
+    }
+
+    const int64_t head_size = query->ne[0];
+    if (!is_supported_head_size(head_size) || !has_flash_attention_params(*node, head_size)) {
+        return {};
+    }
+    if (key->ne[0] != head_size || value->ne[0] != head_size || output->ne[0] != head_size) {
+        return {};
+    }
+    // Batched: stream dim present, uniform across all five tensors, mask
+    // single-layer (ne[2]==1).
+    const int64_t stream_count = query->ne[3];
+    if (stream_count < 2 || key->ne[3] != stream_count || value->ne[3] != stream_count ||
+        output->ne[3] != stream_count || mask->ne[3] != stream_count || mask->ne[2] != 1) {
+        return {};
+    }
+    // Contiguous stream dim: the per-stream slice is one nb[3]-strided region.
+    if (query->nb[3] != static_cast<size_t>(query->ne[0] * query->ne[1] * query->ne[2]) * sizeof(float) ||
+        key->nb[3] != static_cast<size_t>(key->ne[0] * key->ne[1] * key->ne[2]) * sizeof(ggml_fp16_t) ||
+        value->nb[3] != static_cast<size_t>(value->ne[0] * value->ne[1] * value->ne[2]) * sizeof(ggml_fp16_t) ||
+        output->nb[3] != static_cast<size_t>(output->ne[0] * output->ne[1] * output->ne[2]) * sizeof(float) ||
+        mask->nb[3] != static_cast<size_t>(mask->ne[0] * mask->ne[1] * mask->ne[2]) * sizeof(ggml_fp16_t)) {
+        return {};
+    }
+
+    const int64_t query_token_count     = query->ne[1];
+    const int64_t query_head_count      = query->ne[2];
+    const int64_t key_value_capacity    = key->ne[1];
+    const int64_t key_value_head_count  = key->ne[2];
+    const int64_t key_value_token_count = mask->ne[0];
+    if (!is_supported_decode_query_length(query_token_count) ||
+        !is_supported_decode_key_value_token_count(key_value_token_count) ||
+        key_value_capacity < key_value_token_count || !is_supported_head_count(query_head_count) ||
+        !is_supported_head_count(key_value_head_count) || query_head_count % key_value_head_count != 0) {
+        return {};
+    }
+    if (value->ne[1] != key_value_capacity || value->ne[2] != key_value_head_count ||
+        mask->ne[1] != query_token_count || output->ne[1] != query_head_count || output->ne[2] != query_token_count) {
+        return {};
+    }
+    if (!has_query_layout(*query, query_head_count, head_size) ||
+        !has_key_value_layout(*key, key_value_head_count, head_size) ||
+        !has_key_value_layout(*value, key_value_head_count, head_size) ||
+        !has_mask_layout(*mask, key_value_token_count) || !has_output_layout(*output, query_head_count, head_size)) {
+        return {};
+    }
+
+    match.query                 = query;
+    match.key                   = key;
+    match.value                 = value;
+    match.mask                  = mask;
+    match.output                = output;
+    match.output_layout         = find_single_layout_alias_consumer(graph, output->id);
+    match.query_token_count     = query_token_count;
+    match.key_value_token_count = key_value_token_count;
+    match.key_value_capacity    = ceil_div(key_value_token_count, kDecodeKvTileSize) * kDecodeKvTileSize;
+    match.query_head_count      = query_head_count;
+    match.key_value_head_count  = key_value_head_count;
+    match.stream_count          = stream_count;
+    return match;
+}
+
 static void add_flash_attention_decode_compile_parameters(KernelSpecialization & kernel,
                                                           int64_t                query_head_count,
                                                           int64_t                key_value_head_count) {
@@ -447,6 +533,130 @@ static bool match_flash_attention_decode_split_next_q8_dispatch(const DispatchMa
     return true;
 }
 
+// #2153: batched decode-split flash emission — per (stream,row) dispatch with
+// per-stream offset rebinding. Partials/counter transients are shared across
+// the (stream,row) dispatches exactly like the single-seq row dispatches
+// share them: each dispatch program completes its reduce before the next
+// starts (serialized command list) and the kernel resets the counter per
+// invocation, so no counter scaling is needed.
+static bool match_flash_attention_decode_split_batched_next_q8_dispatch(const DispatchMatchContext & context,
+                                                                        DispatchMatch &              dispatch_match) {
+    const DecodeSplitFlashAttentionMatch match =
+        match_decode_split_flash_attention_f32_f16_batched(context.graph, context.root_node);
+    if (!match.matched()) {
+        return false;
+    }
+
+    const int64_t key_value_block_count = ceil_div(match.key_value_capacity, kDecodeKvTileSize);
+    const size_t  partial_scalar_count  = static_cast<size_t>(match.key_value_head_count) *
+                                        static_cast<size_t>(key_value_block_count) *
+                                        static_cast<size_t>(kDecodeRowCapacity);
+    const size_t  partial_value_count  = partial_scalar_count * static_cast<size_t>(kDecodeHeadSize);
+    const size_t  partial_scalar_bytes = partial_scalar_count * sizeof(float);
+    const size_t  partial_output_bytes = partial_value_count * sizeof(ggml_fp16_t);
+    const int64_t hidden_size          = match.query_head_count * kDecodeHeadSize;
+    const size_t  q8_row_bytes         = q8_1_x4_byte_count(1, hidden_size);
+    const size_t  q8_output_bytes      = q8_1_x4_byte_count(match.query_token_count * match.stream_count, hidden_size);
+    if (partial_scalar_bytes == 0 || partial_output_bytes == 0 || q8_row_bytes == 0 || q8_output_bytes == 0) {
+        return false;
+    }
+
+    const ValueId partial_max        = match_value(context, dispatch_match, 0);
+    const ValueId partial_sum        = match_value(context, dispatch_match, 1);
+    const ValueId partial_output     = match_value(context, dispatch_match, 2);
+    const ValueId completion_counter = match_value(context, dispatch_match, 3);
+    const ValueId q8_output          = match_value(context, dispatch_match, 4);
+
+    dispatch_match.transients.push_back(
+        { partial_max, "common.decode.flash_attention.partial_max", partial_scalar_bytes, 256 });
+    dispatch_match.transients.push_back(
+        { partial_sum, "common.decode.flash_attention.partial_sum", partial_scalar_bytes, 256 });
+    dispatch_match.transients.push_back(
+        { partial_output, "common.decode.flash_attention.partial_output", partial_output_bytes, 256 });
+    dispatch_match.transients.push_back(
+        { q8_output, "common.decode.flash_attention.next_q8_output", q8_output_bytes, 256 });
+    dispatch_match.completion_counter_requests.push_back({
+        completion_counter,
+        "common.decode.flash_attention.completion_counter",
+        static_cast<uint32_t>(match.key_value_head_count),
+    });
+
+    Status metadata_status;
+    if (!dispatch_match.metadata.append_alternate_value({ match.output->id, q8_output, GGML_TYPE_Q8_1, q8_output_bytes,
+                                                          "common.decode.flash_attention.next_q8_output" },
+                                                        metadata_status)) {
+        dispatch_match.status.append(metadata_status);
+        return false;
+    }
+
+    const size_t query_row_bytes  = static_cast<size_t>(hidden_size) * sizeof(float);
+    const size_t mask_row_bytes   = static_cast<size_t>(match.key_value_token_count) * sizeof(ggml_fp16_t);
+    const size_t output_row_bytes = query_row_bytes;
+    // Per-(stream,row) partial + counter transients: the (stream,row)
+    // dispatches can execute concurrently (unlike the single-seq row list,
+    // which shares one set at offset 0), so sharing the single-seq transients
+    // races the online-softmax reduce (observed: batched streams diverged from
+    // the same-context single-seq decode). Each dispatch gets its own set.
+    for (int64_t stream = 0; stream < match.stream_count; ++stream) {
+        for (int64_t row = 0; row < match.query_token_count; ++row) {
+            Dispatch dispatch;
+            dispatch.kernel = make_kernel_specialization(kFlashAttentionDecodeSplitNextQ8Kernel);
+            dispatch.kernel.integer_parameters.emplace("key_value_token_count", match.key_value_token_count);
+            add_flash_attention_decode_compile_parameters(dispatch.kernel, match.query_head_count,
+                                                          match.key_value_head_count);
+            dispatch.kernel.compile_parameters.emplace("ggml.flash_attention.decode.key_value_token_capacity",
+                                                       to_config_value(match.key_value_capacity));
+            dispatch.bindings.push_back(
+                { match.query->id,
+                  static_cast<size_t>(stream * match.query->nb[3] + row * match.query->nb[1]), query_row_bytes });
+            dispatch.bindings.push_back({ match.key->id, static_cast<size_t>(stream * match.key->nb[3]),
+                                          static_cast<size_t>(match.key->nb[3]) });
+            dispatch.bindings.push_back({ match.value->id, static_cast<size_t>(stream * match.value->nb[3]),
+                                          static_cast<size_t>(match.value->nb[3]) });
+            dispatch.bindings.push_back(
+                { match.mask->id,
+                  static_cast<size_t>(stream * match.mask->nb[3] + row * match.mask->nb[1]), mask_row_bytes });
+            const size_t slot = static_cast<size_t>(stream * match.query_token_count + row);
+            const ValueId partial_max_s        = match_value(context, dispatch_match, 5 + (int32_t)(slot * 4 + 0));
+            const ValueId partial_sum_s        = match_value(context, dispatch_match, 5 + (int32_t)(slot * 4 + 1));
+            const ValueId partial_output_s     = match_value(context, dispatch_match, 5 + (int32_t)(slot * 4 + 2));
+            const ValueId completion_counter_s = match_value(context, dispatch_match, 5 + (int32_t)(slot * 4 + 3));
+            dispatch_match.transients.push_back(
+                { partial_max_s, "common.decode.flash_attention.partial_max", partial_scalar_bytes, 256 });
+            dispatch_match.transients.push_back(
+                { partial_sum_s, "common.decode.flash_attention.partial_sum", partial_scalar_bytes, 256 });
+            dispatch_match.transients.push_back(
+                { partial_output_s, "common.decode.flash_attention.partial_output", partial_output_bytes, 256 });
+            dispatch_match.completion_counter_requests.push_back({
+                completion_counter_s,
+                "common.decode.flash_attention.completion_counter",
+                static_cast<uint32_t>(match.key_value_head_count),
+            });
+            dispatch.bindings.push_back({ partial_max_s, 0, partial_scalar_bytes });
+            dispatch.bindings.push_back({ partial_sum_s, 0, partial_scalar_bytes });
+            dispatch.bindings.push_back({ partial_output_s, 0, partial_output_bytes });
+            dispatch.bindings.push_back(
+                { completion_counter_s, 0, static_cast<size_t>(match.key_value_head_count) * sizeof(int32_t) });
+            dispatch.bindings.push_back(
+                { match.output->id,
+                  static_cast<size_t>(stream * match.output->nb[3] + row * match.output->nb[2]), output_row_bytes });
+            dispatch.bindings.push_back(
+                { q8_output, static_cast<size_t>((stream * match.query_token_count + row) * (int64_t)q8_row_bytes),
+                  q8_row_bytes });
+            dispatch_match.dispatches.push_back(std::move(dispatch));
+        }
+    }
+
+    dispatch_match.covered_nodes.push_back(context.root_index);
+    if (match.output_layout != nullptr) {
+        if (!append_covered_node_index_once(context.graph, context.covered_nodes, match.output_layout,
+                                            dispatch_match.covered_nodes)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 void register_flash_attention_dispatches(DispatchRegistryBuilder & registry) {
@@ -457,6 +667,14 @@ void register_flash_attention_dispatches(DispatchRegistryBuilder & registry) {
         75,
         DispatchSource::Common,
         match_flash_attention_decode_split_next_q8_dispatch,
+    });
+    registry.add({
+        "common.flash_attention_decode_split_batched_next_q8",
+        GGML_OP_FLASH_ATTN_EXT,
+        DispatchMatchKind::SingleOp,
+        76,
+        DispatchSource::Common,
+        match_flash_attention_decode_split_batched_next_q8_dispatch,
     });
     registry.add({
         "common.flash_attention_f32_f16_wmma",
