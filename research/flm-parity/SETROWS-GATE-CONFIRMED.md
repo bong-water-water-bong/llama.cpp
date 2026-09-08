@@ -126,3 +126,23 @@ Next-round options for device multi-seq (in order of size):
   3. Serve multi-seq on the CPU path only (works: -np 4 ngl0 correct, ~33 t/s
      aggregate) and keep device multi-seq as a documented follow-on - this is
      the honest interim for task-5 rows.
+
+## CORRECTION (2026-09-08, agent-ec8072): llama-batched-bench does NOT decode for zaya - rc=0 is reserve/ctx-build only
+
+Timing forensics (internal log timestamps mm.ss.mmm): model load ~34-39 s, then
+the ENTIRE bench phase completes in <1 s at every npl (device AND CPU, ngl0 npl 2
+-n 256 = 512 CPU tokens would take ~30 s if decoded - it took ~0 s). The harness
+(examples/batched in bench mode) builds the context (which exercises the
+multi-seq RESERVE graphs - real signal: the SET_ROWS reserve no longer aborts
+post-c633916f4) then exits without running decode for this arch. The earlier
+"throughput rows suppressed" reading (fleet + my addendum 3) is wrong: there is
+no decode to print. Device multi-seq DECODE execution therefore remains
+UNVERIFIED. The only real multi-seq driver is llama-server -np N, which fails at
+ctx build on the KV-buft/v_trans placement (0d6d10ff8). llama-batched (coupled
+seqs) is separately blocked: "split_equal: sequential split is not supported
+when there are coupled sequences" (harness-level, memory splitter).
+
+Net: post-c633916f4 the device multi-seq line stands at: reserve graphs build
+clean at npl 1-8 (SET_ROWS store dispatchable); actual batched decode needs the
+KV-placement/v_trans round (llama-server ctx build) or a working multi-seq
+harness. Do not cite batched-bench rc=0 as decode evidence.
