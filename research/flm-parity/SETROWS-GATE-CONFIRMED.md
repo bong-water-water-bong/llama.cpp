@@ -195,3 +195,25 @@ Remaining real paths (unchanged, all structural):
 - executor coherence machinery (flush/ordering for device-written UMA caches),
 or accept CPU-path multi-seq (verified, ~33 t/s aggregate) as the task-5
 multi-seq-with-throughput row with device multi-seq as documented follow-on.
+
+## BATCHED-FLASH KERNEL CONTRACT (2026-09-08, agent-ec8072) - captured from llama-server -np 2 device runtime
+
+llama-server -np 2 on DEVICE (ngl99): ctx/reserve builds FINE (n_seq_max=2
+reserve shapes stay dispatchable; n_seq_max=4 aborts at reserve on the V-cache
+transpose - ggml-backend.cpp:898). Two concurrent 30-token completions process
+6-7 tokens then fail at the first batched decode:
+
+    E graph_compute: unsupported HRX node 10: FLASH_ATTN_EXT
+      output=19:f32[128,8,4,2]<-FLASH_ATTN_EXT
+      inputs=[12:f32[128,4,8,2]<-PERMUTE, 15:f16[128,256,2,2]<-PERMUTE,
+              17:f16[128,256,2,2]<-PERMUTE, 18:f16[256,4,1,2]] consumers=[11:RESHAPE]
+
+This IS the kernel contract for a batched-flash dispatch (2 active seqs, 4
+decode tokens): Q f32[head=128, tokens=4, heads=8, seqs=2]; K/V f16[head=128,
+kv=256, heads=2, seqs=2] (per-seq KV streams merged in ne3); mask f16[kv=256,
+tokens=4, 1, seqs=2]. Same shape family as the earlier -np 4 reserve abort but
+with the seq dim = active slots. The single-seq decode-split kernel
+(ggml_flash_attention_decode_split_*_wmma) handles ne3==1 only; the batched
+form = the stream-dim extension target. Per-stream KV spans are implicit in
+the mask (f16[256,4,1,2] = kv x tokens per seq). Kernel contract recorded here
+for the loom-authoring round; no dispatch exists for this shape today.
