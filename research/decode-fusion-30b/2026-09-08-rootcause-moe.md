@@ -89,3 +89,27 @@ Fix: make the decode-path RMS quantize (match_qwen_decode_rmsnorm_f32_quantize
 _q8_1_x4 / qwen.decode_rmsnorm_f32_quantize_q8_1_x4) fire on the MoE input
 stream so the q8_hidden alternate exists for the routed gate matcher, OR relax
 the routed matcher to quantize inline. Then the tg8 fused decode plan engages.
+
+## Final: cross-program alternate gap (root of the fragmentation)
+
+Full decode-graph capture (GGML_HRX_PRINT_GRAPH, reverted after use) shows each
+layer splits into TWO HRX executor programs:
+1. n=31/32 attention program: GET_ROWS -> RMS(norm) -> attn -> ... -> router
+   (ffn_moe_logits)
+2. n=13 MoE program: gate/up/down MUL_MAT_ID on routed [768,8]/[2048,8] shapes
+
+The ffn_norm RMS that should quantize the gate input lives in program 1 (or
+CPU); the gate MUL_MAT_ID needing the q8_1 alternate is in program 2. The
+decode-RMS-quantize dispatch (match_qwen_decode_rmsnorm_f32_quantize_q8_1_x4)
+produces its alternate only when has_decode_q8_consumer sees the mm in the
+SAME plan; a single-level RESHAPE/VIEW look-through was tested but did not
+help (rate unchanged 11.7) — the RMS and gate are in different executor
+programs, so the alternate never materializes where the fused routed-ffn
+matcher runs.
+
+Net: the fused MoE decode kernels (routed_gate_up_swiglu_q4k_q8, routed_down
+_q4k_next_q8, decode_split FA) cannot engage until llama.cpp stops splitting
+the layer across executor programs OR the plan carries the q8 alternate across
+program boundaries. That is the launch-collapse scheduler work (goal mtsn4skn,
+lever #1: route-selector node fusion), not an isolated matcher patch. 30B
+decode stays at ~11.6-12 tok/s (generic per-expert kernels) until then.
