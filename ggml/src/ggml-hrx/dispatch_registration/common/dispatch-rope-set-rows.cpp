@@ -5,6 +5,7 @@
 #include "kernel-corpus/kernel-corpus-catalog-verify.h"
 
 #include <cmath>
+#include <cstdarg>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -214,7 +215,17 @@ static RopeMatch match_rope_f32(const Graph & graph, const GraphNode * node) {
 
 static SetRowsMatch match_set_rows_2d(const Graph & graph, const GraphNode * node) {
     SetRowsMatch match;
+    auto dbg = [&](const char * fmt, ...) {
+        if (std::getenv("GGML_HRX_SETROWS_DBG")) {
+            va_list ap; va_start(ap, fmt);
+            fprintf(stderr, "[setrows-dbg] match_set_rows_2d: ");
+            vfprintf(stderr, fmt, ap);
+            fprintf(stderr, "\n");
+            va_end(ap);
+        }
+    };
     if (node == nullptr || node->op != GGML_OP_SET_ROWS || node->inputs.size() != 3) {
+        dbg("structural: node=%d op=SET_ROWS=%d inputs=%zu", node != nullptr, node != nullptr && node->op == GGML_OP_SET_ROWS, node != nullptr ? node->inputs.size() : 0);
         return match;
     }
 
@@ -225,15 +236,24 @@ static SetRowsMatch match_set_rows_2d(const Graph & graph, const GraphNode * nod
     if (rows == nullptr || indices == nullptr || cache == nullptr || output == nullptr || !rows->contiguous ||
         !indices->contiguous || !cache->contiguous || indices->type != GGML_TYPE_I64 || output->type != cache->type ||
         !same_shape(*cache, *output) || !graph.values().same_storage(cache->id, output->id)) {
+        dbg("rows=%s idx=%s cache=%s out=%s rcont=%d icont=%d ccont=%d itype=%d otype==ctype=%d shapes_same=%d storage_same=%d",
+            rows ? "Y" : "N", indices ? "Y" : "N", cache ? "Y" : "N", output ? "Y" : "N",
+            rows ? (int)rows->contiguous : -1, indices ? (int)indices->contiguous : -1,
+            cache ? (int)cache->contiguous : -1, indices ? (int)indices->type : -1,
+            output && cache ? (int)(output->type == cache->type) : -1,
+            cache && output ? (int)same_shape(*cache, *output) : -1,
+            cache && output ? (int)graph.values().same_storage(cache->id, output->id) : -1);
         return {};
     }
 
     int64_t row_format    = 0;
     int64_t output_format = 0;
     if (!format_value(rows->type, row_format) || !format_value(output->type, output_format)) {
+        dbg("type format: rows=%d out=%d", (int)rows->type, (int)output->type);
         return {};
     }
     if (rows->type == GGML_TYPE_F16 && output->type != GGML_TYPE_F16) {
+        dbg("f16 rows to non-f16 output");
         return {};
     }
 
@@ -243,6 +263,14 @@ static SetRowsMatch match_set_rows_2d(const Graph & graph, const GraphNode * nod
     if (!is_2d_shape(*rows, hidden_size, token_count) || !is_1d_shape(*indices, token_count) ||
         !is_2d_shape(*cache, hidden_size, cache_row_count) || !supported_hidden_size(hidden_size) ||
         !supported_token_count(token_count) || !supported_cache_row_count(cache_row_count)) {
+        dbg("shape: hidden=%lld tok=%lld cache_rows=%lld rows2d=%d idx1d=%d cache2d=%d hOK=%d tOK=%d cOK=%d ne=[%lld,%lld,%lld,%lld] idxne=[%lld,%lld] cachene=[%lld,%lld,%lld]",
+            (long long)hidden_size, (long long)token_count, (long long)cache_row_count,
+            is_2d_shape(*rows, hidden_size, token_count), is_1d_shape(*indices, token_count),
+            is_2d_shape(*cache, hidden_size, cache_row_count), supported_hidden_size(hidden_size),
+            supported_token_count(token_count), supported_cache_row_count(cache_row_count),
+            (long long)rows->ne[0], (long long)rows->ne[1], (long long)rows->ne[2], (long long)rows->ne[3],
+            (long long)indices->ne[0], (long long)indices->ne[1],
+            (long long)cache->ne[0], (long long)cache->ne[1], (long long)cache->ne[2]);
         return {};
     }
 
