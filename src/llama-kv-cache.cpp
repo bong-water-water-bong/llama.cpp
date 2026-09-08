@@ -11,6 +11,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <cstdlib>
 #include <stdexcept>
 
 static bool ggml_is_power_of_2(int n) {
@@ -215,6 +216,24 @@ llama_kv_cache::llama_kv_cache(
         if (offload) {
             auto * dev = model.dev_layer(il);
             buft = ggml_backend_dev_buffer_type(dev);
+
+            // A/B (agent-ec8072, 2026-09-08): GGML_HRX_KV_HOST=1 places the KV
+            // cache on the device HOST buft (UMA - CPU-readable AND
+            // device-visible). Needed when batched/multi-seq flash-attn shapes
+            // split to CPU (no ne3>1 flash dispatch): the CPU path must
+            // transpose/view the V cache (v_trans layout), which aborts on a
+            // pre-allocated tensor in the device-only buffer
+            // (ggml-backend.cpp:898). Host-buft KV lets those CPU ops run
+            // while HRX kernels can still bind the same memory (weights
+            // already live in the host buft). Default OFF: single-seq device
+            // behavior unchanged unless the env is set.
+            const char * kv_host = std::getenv("GGML_HRX_KV_HOST");
+            if (kv_host != nullptr && kv_host[0] != '\0') {
+                ggml_backend_buffer_type_t host_buft = ggml_backend_dev_host_buffer_type(dev);
+                if (host_buft != nullptr) {
+                    buft = host_buft;
+                }
+            }
 
             dev_name = ggml_backend_dev_name(dev);
         }
