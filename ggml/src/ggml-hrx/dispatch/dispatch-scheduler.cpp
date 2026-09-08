@@ -119,8 +119,18 @@ static bool apply_value_aliases(Graph & graph, const DispatchMatch & match, Stat
     for (const DispatchValueAliasRequest & alias : match.value_aliases) {
         Status alias_status = graph.values().alias_storage(alias.target_value, alias.source_value);
         if (!alias_status.success()) {
-            status.append(alias_status);
-            return false;
+            // (f49062) Aliasing is a storage-sharing optimization, not a kernel
+            // requirement: a fused chain may request that a subgraph-external
+            // ADD output alias the mm output (qwen3moe MoE residual ADDs) and
+            // the request legitimately fails for non-transient targets. Skip
+            // the alias instead of aborting the whole plan - the kernel binds
+            // the target's own storage and stays correct. Alias failures were
+            // aborting every MoE model once standalone ADDs were claimed.
+            if (getenv("GGML_HRX_ALIAS_DBG")) {
+                fprintf(stderr, "[alias-skip] alias target %d -> source %d\n",
+                        alias.target_value.value, alias.source_value.value);
+            }
+            continue;
         }
     }
     return true;
