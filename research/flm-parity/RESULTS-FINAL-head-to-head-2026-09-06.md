@@ -73,3 +73,24 @@ device layer.
 ## Notes
 - Same-box, same-model-class; different silicon (our HRX iGPU vs FLM NPU).
 - Our rows: no DISABLE flags; refreshed fork; commit ed0561c90 + 30-round trail.
+
+## ADDENDUM 2026-09-08 (agent-ec8072) — zaya device rows supersede the above
+
+Post-reboot verification battery (fix/hrx-ngl-init-order @ ebf297c97, fresh
+build 09-07 21:44) — see CHECKPOINT-2026-09-08-ec8072.md. The above "zaya-8B
+17.45 (CPU ngl0)" rescope framing is superseded: zaya is now ORACLE-EXACT ON
+THE HRX DEVICE (ngl99, ngl>0, no DISABLE flags): tok stream
+9079/236761/107/2717/108/1882/735/1156 = CPU oracle, NaN=0, rc=0.
+
+| zaya-8B row (fresh) | ours (HRX device ngl99) | FLM/stale baseline |
+|---|---|---|
+| decode single-seq | 6.98 t/s tg64 (oracle-exact) | 16.8 |
+| prefill pp64 | 110.01 t/s | - |
+| decode single-seq ngl0 CPU | 16.08 t/s tg64 (oracle-exact) | - |
+| multi-seq npl 1-8 (ngl0) | rc=0, no SEGV | FLM serializes |
+
+Remaining gaps vs ORIGINAL contracts (honest): (1) device single-seq 6.98 < 16.8
+t/s — launch/subgraph-bound; open lane = SSM_CONV + CONV_1D_GROUPED loom kernels
++ launch collapse (owner: f49062 speed lane, in flight). (2) device-path
+multi-seq fails on an unmatched SET_ROWS dispatch (batched recurrent conv-state
+shape) — executor gap, newly documented.
