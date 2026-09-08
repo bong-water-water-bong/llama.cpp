@@ -146,3 +146,25 @@ Net: post-c633916f4 the device multi-seq line stands at: reserve graphs build
 clean at npl 1-8 (SET_ROWS store dispatchable); actual batched decode needs the
 KV-placement/v_trans round (llama-server ctx build) or a working multi-seq
 harness. Do not cite batched-bench rc=0 as decode evidence.
+
+## KNOB A/B RESULTS (2026-09-08, agent-ec8072) - no free lunch; both fast knobs corrupt
+
+Tested on the current tree (zaya-q4nx-c43, device ngl99, llama-bench tg64
+baseline 6.98 t/s oracle-exact):
+
+- GGML_HRX_ASYNC_JIT=1: tg64 6.85 (neutral, as expected - programs are cached by
+  steady-state decode; JIT overlaps prefill only).
+- GGML_HRX_USE_UNIFIED_MEMORY=1: tg64 8.29 (+19% RAW) but CORRUPT: zgreedy tok0=105
+  vs oracle 9079, garbage text. Unified memory changes buffer semantics and
+  breaks value freshness (stale reads across the shared/UMA path). NOT usable.
+- GGML_HRX_KV_HOST=1 (committed A/B hook 0c688955e): corrupt single-seq decode
+  (host-buft KV cannot round-trip device-written caches through the staging
+  binding path - round-16e class). Default OFF.
+
+Conclusion: no env-knob path to the 16.8 t/s contract. The launch-bound decode
+(~600+ subgraph programs/token, ~0.17 ms launch+sync each, programs already
+cache-hit via stable uids) needs structural work: SSM-conv/grouped-conv loom
+kernels for contiguous-HRX graphs (f49062 lane, in flight) and/or a
+submission-collapse executor feature (multi-program-per-submit does not exist
+in this tree). Device multi-seq additionally needs a batched-flash dispatch or a
+shared-buffer binding mode (see SETROWS-GATE-CONFIRMED.md).
