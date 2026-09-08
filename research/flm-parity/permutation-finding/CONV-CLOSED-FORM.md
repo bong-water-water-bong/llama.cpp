@@ -32,3 +32,23 @@ The SSM_CONV kernel contract is now fully specified (formula above + captured
 shapes/layouts). This was the gating step for writing the SSM_CONV loom kernel
 (contiguous-HRX zaya graphs -> launch collapse -> the 16.8 t/s path). Conv layer
 0 blk.0 weights used; per-layer same structure.
+
+## Grouped conv (CONV_1D_GROUPED) - structure + weight-layout warning (agent-ec8072)
+
+Not yet fully derived (f49062 is authoring SSM_CONV first; this is for when the
+grouped-conv kernel follows). Captured pair available: /tmp/nodedump r02_000 =
+QK_dw (7x1280, input), r02_001 = QK_grp ADD (6x1280, output; QK_grp = grouped
+conv + cca_conv_grp.bias), from GGML_DUMP_FILTER=QK_dw,QK_grp.
+
+Structure (src/models/zaya.cpp ggml_conv_1d_grouped, line 27): the op splits
+the 1280-channel QK into 10 groups x 128 IC/OC; per group: standard
+ggml_conv_1d(weight_g [2,128,128], input_g = QK channels [g*128,(g+1)*128)),
+outputs concat along dim 1. ggml_conv_1d = ggml_im2col + ggml_mul_mat
+(ggml.c:4596): weight reshaped [IC*K=256, OC=128], im2col [OL=6, IC*K], result
+reshaped/permuted -> [OL=6, OC=128] per group.
+
+WEIGHT-LAYOUT WARNING (same trap as ssm_conv1d): cca_conv_grp.weight [2,128,
+1280] ggml-contiguous = tap k fastest (memory index = k + 2*ic + 256*oc).
+Raw flat read: W[oc][kk] = file[256*oc + kk] with kk = k + 2*ic -> use
+raw.reshape(1280, 256)[oc_range] per group (NOT reshape(2,128,1280) row-major).
+Verify against r02_000/r02_001 before writing the kernel.
