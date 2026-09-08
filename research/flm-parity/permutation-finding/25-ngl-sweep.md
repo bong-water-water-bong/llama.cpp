@@ -33,3 +33,13 @@ still dominate. The levers, in order:
 ## Branch state
 HEAD c7b726ffd (stable split uids) + docs up to 24. Zaya oracle-exact 5.6-5.8
 t/s at ngl 1 and 99; CPU-only 14.4 (llama-bench tg64 17.45 vs FLM 16.8).
+
+## Addendum: ngl=1 has the same ~680 HRX subgraphs as ngl=99
+[gc] count at ngl=1 = 11577/17 executions = ~680/token (identical structure to
+ngl=99). The device_supports_buffer_type accepts the host-buft, so the sched
+allocates the weights there and the mms are HRX-claimable at ANY ngl>0 - the
+ngl knob only moves weights between the host-buft and the CPU buft, it does
+not change the claim pattern. The eager claims of the weightless ops
+(norms/unary/binary/set_rows/views) are ngl-independent too. => the ~640
+subgraphs/token + the mixed-mode overhead apply for every ngl>0; ngl=0 (no
+HRX claims at all) is the only fast configuration.
