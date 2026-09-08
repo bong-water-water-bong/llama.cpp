@@ -74,3 +74,29 @@ ggml.c:4596 conv_1d (im2col col = ic*2+k, mm contracts over 256, output permute
 Verification script: /tmp/conv_grp_check.py (captures in /tmp/nodedump).
 Kernel contract for CONV_1D_GROUPED now fully specified - ready for the second
 loom kernel.
+
+## SSM_CONV kernel validation (2026-09-08, agent-ec8072) - kernel correct but CANNOT fire: CPU-bound concat region
+
+Preserved f49062's kernel integration (a0ee433aa) after its session died and
+validated the device path with the kernel compiled in (binary built 01:49:18
+predates all WIP edits - the committed state == the built state):
+
+- Device single-seq decode: ORACLE-EXACT (9079/236761/107/2717/108/1882/735/1156,
+  " Paris.") - no regression, no abort (the eager claim + gate fix are coherent).
+- Speed: tg64 6.65 t/s vs 6.98 baseline - UNCHANGED.
+- Forced-CPU conv (GGML_HRX_CPU_OPS=SSM_CONV): 6.67 - identical.
+- GGML_HRX_EXECTIME: no ssm_conv kernel execution (80 log mentions are all
+  tensor-load lines).
+
+CONCLUSION: the kernel + dispatch + gate are correct but NEVER FIRE. The conv
+region is CPU-bound because cca_conv_input is produced by ggml_concat(conv_state
+[CPU-pinned recurrent cache], QKraw_t [HRX]) and GGML_OP_CONCAT has no HRX
+kernel/claim - the concat lands on CPU, dragging the conv input + the SSM_CONV
+with it (the eager claim never sees the op; the fleet's known CONCAT gap,
+52ea3aa04). The 640-subgraph fragmentation persists from the CPU concat+conv
+islands, so no speed change.
+
+NEXT STEP (for the conv-speed lane): a GGML_OP_CONCAT loom kernel + dispatch
+(contiguous channel-concat over the [state|tokens] x 1280 case), OR restructure
+so the state concat happens device-side. Until then the SSM_CONV kernel stays
+inert-but-validated. Kernel contract: CONV-CLOSED-FORM.md (both convs verified).
