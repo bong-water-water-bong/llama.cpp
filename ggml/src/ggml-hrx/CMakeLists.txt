@@ -209,6 +209,7 @@ ggml_add_backend_library(ggml-hrx
     dispatch_registration/common/dispatch-mul-mat-weight-format.h
     dispatch_registration/common/dispatch-mul-mat.h
     dispatch_registration/common/dispatch-rope-set-rows.cpp
+    dispatch_registration/common/dispatch-ssm-conv.cpp
     dispatch_registration/common/dispatch-rope-set-rows.h
     dispatch_registration/common/dispatch-rmsnorm.cpp
     dispatch_registration/common/dispatch-rmsnorm.h

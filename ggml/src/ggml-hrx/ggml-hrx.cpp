@@ -750,6 +750,13 @@ static bool eager_capability_declared(enum ggml_op op) {
         // in the kernel corpus (supported_rope_tensor). Partial-head/custom
         // rotaries (zaya CCA) split to CPU. (1bit-MONSTER zaya port, 2026-09-05)
         case GGML_OP_SET_ROWS:
+        // SSM_CONV is NOT eager-claimed (default): the loom kernel
+        // ggml_ssm_conv_f32 exists and is oracle-exact (verified 2026-09-08,
+        // stream 9079/.../1156) but claiming it costs ~2.5 t/s net on zaya
+        // decode (12.65 claimed vs 15.15 CPU-forced, zgreedy_t): ~40 conv
+        // kernels/token each pay the bind+launch+sync cycle. Re-enable only
+        // with the launch-collapse (multi-node single-launch execution).
+        // A/B: GGML_HRX_CPU_OPS=SSM_CONV forces CPU.
         // SOFT_MAX is not eager-claimed: the only standalone softmax dispatch
         // is the qwen top8-MoE-router pattern (llm.moe_router.top8_f32). Other
         // shapes (e.g. the zaya 17-slot router softmax) have no loom kernel and

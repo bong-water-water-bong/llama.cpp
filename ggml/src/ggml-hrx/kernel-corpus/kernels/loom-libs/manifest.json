@@ -148,6 +148,9 @@
   },
   {
    "path": "motifs/f32_f16.loom"
+  },
+  {
+   "path": "ops/ssm_conv_f32.loom"
   }
  ],
  "exports": [
@@ -1977,6 +1980,51 @@
    "compile_dependencies": [
     "motifs/rope_f32.loom"
    ]
+  },
+  {
+   "name": "ggml_ssm_conv_f32",
+   "family": "loom_libs",
+   "symbol": "ggml_ssm_conv_f32",
+   "source": "ops/ssm_conv_f32.loom",
+   "workload_parameters": [
+    {
+     "name": "token_count",
+     "type": "index"
+    },
+    {
+     "name": "d_inner",
+     "type": "index"
+    }
+   ],
+   "launch_parameters": [
+    {
+     "name": "token_count",
+     "type": "index"
+    },
+    {
+     "name": "d_inner",
+     "type": "index"
+    }
+   ],
+   "bindings": [
+    "input",
+    "weight",
+    "output"
+   ],
+   "binding_access": [
+    "read",
+    "read",
+    "read_write"
+   ],
+   "target_selector": "",
+   "compile_recipe": {
+    "mode": "direct",
+    "primary_sources": [
+     "ops/ssm_conv_f32.loom"
+    ],
+    "library_sources": []
+   },
+   "compile_dependencies": []
   }
  ],
  "link_modules": [],
