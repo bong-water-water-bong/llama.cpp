@@ -36,6 +36,11 @@ int llama_batched_bench(int argc, char ** argv) {
     std::vector<int> n_tg = params.n_tg;
     std::vector<int> n_pl = params.n_pl;
 
+    if (n_pp.empty() || n_tg.empty() || n_pl.empty()) {
+        LOG_ERR("%s: -npp/-ntg/-npl are required (e.g. -npp 128,256,512 -ntg 128,256 -npl 1,2,4,8,16,32)\n", __func__);
+        return 1;
+    }
+
     // init LLM
 
     llama_backend_init();
@@ -129,6 +134,9 @@ int llama_batched_bench(int argc, char ** argv) {
         LOG("|%6s-|-%6s-|-%4s-|-%6s-|-%8s-|-%8s-|-%8s-|-%8s-|-%8s-|-%8s-|\n", "------", "------", "----", "------", "--------", "--------", "--------", "--------", "--------", "--------");
     }
 
+    int n_cells_ran = 0;
+    int n_cells_skipped = 0;
+
     for (        int i_pp = 0; i_pp < (int) n_pp.size(); ++i_pp) {
         for (    int i_tg = 0; i_tg < (int) n_tg.size(); ++i_tg) {
             for (int i_pl = 0; i_pl < (int) n_pl.size(); ++i_pl) {
@@ -139,6 +147,7 @@ int llama_batched_bench(int argc, char ** argv) {
                 const int n_ctx_req = is_pp_shared ? (params.kv_unified ? pp : pl*pp) + pl*tg : pl*(pp + tg);
 
                 if (n_ctx_req > n_kv_max) {
+                    ++n_cells_skipped;
                     continue;
                 }
 
@@ -244,11 +253,21 @@ int llama_batched_bench(int argc, char ** argv) {
                 } else {
                     LOG("|%6d | %6d | %4d | %6d | %8.3f | %8.2f | %8.3f | %8.2f | %8.3f | %8.2f |\n", pp, tg, pl, n_kv, t_pp, speed_pp, t_tg, speed_tg, t, speed);
                 }
+                ++n_cells_ran;
             }
         }
     }
 
     LOG("\n");
+    if (n_cells_ran == 0) {
+        LOG_ERR("%s: no bench cells ran — every requested cell needs more context than the model provides (n_kv_max = %d, model n_ctx_train = %d, %d cell(s) skipped). Reduce -npp/-ntg/-npl (a cell needs pl*(pp+tg) positions) and/or raise -c.\n",
+                __func__, n_kv_max, (int) llama_model_n_ctx_train(model), n_cells_skipped);
+        llama_batch_free(batch);
+        llama_free(ctx);
+        llama_model_free(model);
+        llama_backend_free();
+        return 1;
+    }
     llama_perf_context_print(ctx);
 
     llama_batch_free(batch);
