@@ -27,3 +27,15 @@ kernel-corpus/kernels/loom-libs/ops/, add the manifest exports, register the
 dispatches (dispatch_registration/common), and claim them eagerly. Once the
 convs run on-device the per-block attention chain becomes contiguous HRX and
 the subgraph count collapses toward the qwen3-like structure.
+
+## Addendum: Q4NX attention-weight layout note (checkpoint 2026-09-07)
+The conv-semantics verification needs the QKraw numpy reference to match the
+graph capture. Current state: my dequant (validated bit-exact for the gate_up
+mul_mat_id path via W[e]x) gives QKraw channel-0 exact but a consistent
+permutation for channels 1+ (my channel-c appears at graph channel 683 etc.).
+The matrix-product validation is row-order-sensitive, so the gate_up row
+order is right; the attn_q mismatch indicates either a per-tensor tile-order
+difference or a cur (rmsnorm input) subtlety. Next: diff the tile-byte-order
+between the attn_q and the gate_up raw planes against the gguf spec, or
+validate QKraw via the graph's own Qraw/Kraw dumps (they are named nodes)
+instead of the concat output.
