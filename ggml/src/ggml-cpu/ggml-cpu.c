@@ -2320,7 +2320,16 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
 
     if (getenv("GGML_DUMP_NODE") && params->ith == 0 && tensor->op != GGML_OP_NONE) {
         const char * filter = getenv("GGML_DUMP_FILTER");
-        if (!filter || strstr(tensor->name, filter)) {
+        bool want = filter == NULL || filter[0] == '\0';
+        if (!want) {
+            // comma-separated filter list support (f49062 conv capture)
+            char fl[256];
+            snprintf(fl, sizeof fl, "%s", filter);
+            for (char * tok = strtok(fl, ","); tok != NULL; tok = strtok(NULL, ",")) {
+                if (strstr(tensor->name, tok)) { want = true; break; }
+            }
+        }
+        if (want) {
             static int dump_seq = 0;
             char path[512];
             snprintf(path, sizeof path, "/tmp/nodedump/r%02d_%03d_%lldx%lldx%lldx%lld_%s_%s.bin", ggml_cpu_dump_run, dump_seq++,
