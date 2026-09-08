@@ -168,3 +168,30 @@ kernels for contiguous-HRX graphs (f49062 lane, in flight) and/or a
 submission-collapse executor feature (multi-program-per-submit does not exist
 in this tree). Device multi-seq additionally needs a batched-flash dispatch or a
 shared-buffer binding mode (see SETROWS-GATE-CONFIRMED.md).
+
+## MULTI-SEQ DEVICE ROUTE CLOSURES (2026-09-08, agent-ec8072) - all alternative routes tested
+
+Testing matrix for getting zaya multi-seq decode on the HRX device path beyond
+the SET_ROWS fix (c633916f4). Every alternative route is now empirically closed:
+
+1. In-context batching (llama-server -np 4): blocked at ctx-build on the V-cache
+   transpose for CPU flash (ggml-backend.cpp:898) - the transpose comes from
+   build_attn_mha (llama-graph.cpp:2427: v_trans -> transpose before flash).
+2. GGML_HRX_KV_HOST=1 (host-buft KV, A/B hook 0c688955e): CORRUPT single-seq
+   decode (value-freshness, round-16e class).
+3. GGML_HRX_USE_UNIFIED_MEMORY=1 (direct coherent host bindings): CORRUPT
+   (tok0=105; +19% raw speed was on wrong output). Root = the fleet's known
+   "host-buft shared-arena reads are not device-coherent" (no CPU-side flush
+   machinery for UMA direct reads) - this route was why 98b2bcc kept embd
+   GET_ROWS on HRX. Re-confirmed, not a bounded fix.
+4. Multi-process (4x llama-server -np 1, one HRX context each): catastrophic
+   device contention - a 2-token prefill took 31 s (0.06 tok/s) with 4 contexts
+   interleaving graph builds/executions on the single device queue. Dead.
+5. llama-batched (coupled seqs): blocked by the memory splitter ("sequential
+   split is not supported when there are coupled sequences").
+
+Remaining real paths (unchanged, all structural):
+- batched FLASH_ATTN_EXT dispatch/loom kernel (ne3>1, per-seq KV views), or
+- executor coherence machinery (flush/ordering for device-written UMA caches),
+or accept CPU-path multi-seq (verified, ~33 t/s aggregate) as the task-5
+multi-seq-with-throughput row with device multi-seq as documented follow-on.
