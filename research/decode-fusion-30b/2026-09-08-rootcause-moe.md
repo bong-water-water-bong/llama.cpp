@@ -63,3 +63,29 @@ produce+reduce wiring.
 Coordinate with launch-collapse (same dispatch-fusion fix class, 0.6B side).
 Instrumentation: GGML_HRX_DECODE_DBG bail logging on dispatch-routed-ffn.cpp
 (local, uncommitted in ~/wt/q35-hrx-fix feat/decode-fusion-30b).
+
+## Refinement (verified both KV<2048 and KV 2962): the exact failing gate
+
+GGML_HRX_DECODE_DBG instrumentation on dispatch-routed-ffn.cpp
+match_decode_routed_ffn_gate_up_swiglu (reverted after use):
+
+- The decode graph per layer (30B-A3B Q4_K_M):
+  ffn_moe_gate-L: MUL_MAT_ID w[2048,768,128,1] src1=RESHAPE[2048,1] -> out[768,8]
+  ffn_moe_up-L:   MUL_MAT_ID w[2048,768,128,1] src1=RESHAPE[2048,1] -> out[768,8]
+  GLU on [768,8]
+  ffn_moe_down-L: MUL_MAT_ID w[768,2048,128,1] src1=GLU[768,8] -> out[2048,8]
+- The gate/up matcher PASSES its first shape gate (weight [2048,768,128,1]
+  Q4_K, input RESHAPE[2048,1] f32, route_ids [8,1] i32, output [768,8])
+  and fails at gate-A: no q8_1 input alternate registered for the gate input.
+- The fused decode kernels need the hidden stream quantized to q8_1_1_x4
+  (qwen.decode_rmsnorm_f32_quantize_q8_1_x4 dispatch, dispatch-qwen-rmsnorm.cpp
+  line ~359, produces "qwen.decode.q8_hidden"). That quantize dispatch is not
+  producing the alternate on the MoE-path input in the live decode.
+- Result: NO fused routed_gate_up/routed_down/next_q8 kernel fires at any KV;
+  every layer runs generic ggml_mul_mat_id_swiglu + mul_mat_id + binary ADD
+  (verified in program dumps). ~98 executor calls/token, 11.96 tok/s.
+
+Fix: make the decode-path RMS quantize (match_qwen_decode_rmsnorm_f32_quantize
+_q8_1_x4 / qwen.decode_rmsnorm_f32_quantize_q8_1_x4) fire on the MoE input
+stream so the q8_hidden alternate exists for the routed gate matcher, OR relax
+the routed matcher to quantize inline. Then the tg8 fused decode plan engages.
