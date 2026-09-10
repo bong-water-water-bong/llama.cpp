@@ -1,0 +1,53 @@
+// GGML_OP_CONCAT dim-0 concat of two 2D f32 inputs.
+// ggml memory: ne0 = dim0 = FASTEST axis. Dim-0 concat of src0 [a, C] + src1 [b, C]
+// -> output [a+b, C]; element (pos, ch) at pos + (a+b)*ch.
+// buffer.view<[D0]x[D1]> index [i,j] = i*D1 + j (D1 fastest) -> the ggml ne0 dim
+// (rows, fastest) must be the view's SECOND dim.
+// (agent-ec8072, 2026-09-08)
+amdgpu.target<gfx11-generic> @ggml_concat_f32_gfx11_wave64 {subgroup_size = 64}
+
+config.decl @ggml.concat_f32.rows_capacity : %value: index where [range(%value, 1, 8192)]
+config.decl @ggml.concat_f32.cols_capacity : %value: index where [range(%value, 1, 65536)]
+
+kernel.def target(@ggml_concat_f32_gfx11_wave64) export("ggml_concat_f32") @ggml_concat_f32(%element_count: index, %rows_a: index, %rows_b: index, %cols: index) {
+  %one = index.constant 1 : index
+  %twofiftysix = index.constant 256 : index
+  %rounding = index.constant 255 : index
+  %rounded = index.add %element_count, %rounding : index
+  %workgroup_count = index.div %rounded, %twofiftysix : index
+  kernel.launch.config workgroups(%workgroup_count, %one, %one) workgroup_size(%twofiftysix, %one, %one) : index
+} launch(%element_count: index, %rows_a: index, %rows_b: index, %cols: index, %src0: buffer, %src1: buffer, %output: buffer) {
+  %rows_capacity = config.get @ggml.concat_f32.rows_capacity : index
+  %cols_capacity = config.get @ggml.concat_f32.cols_capacity : index
+  %count = index.assume %element_count [range(%element_count, 1, 536870912), le(%element_count, %rows_capacity)] : index
+  %a = index.assume %rows_a [range(%rows_a, 1, 8192), le(%rows_a, %rows_capacity)] : index
+  %b = index.assume %rows_b [range(%rows_b, 1, 8192), le(%rows_b, %rows_capacity)] : index
+  %c = index.assume %cols [range(%cols, 1, 65536), le(%cols, %cols_capacity)] : index
+  %rows = index.add %a, %b : index
+  %workgroup = kernel.workgroup.id<x> : index
+  %workitem = kernel.workitem.id<x> : index
+  %twofiftysix = index.constant 256 : index
+  %zero_offset = index.constant 0 : offset
+  %base0 = index.mul %workgroup, %twofiftysix : index
+  %linear0 = index.add %base0, %workitem : index
+  %linear = index.assume %linear0 [range(%linear0, 0, 536870911)] : index
+  %in_bounds = index.cmp ult, %linear, %count : index
+  %src0_noalias, %src1_noalias, %output_noalias = buffer.assume.noalias %src0, %src1, %output : buffer, buffer, buffer
+  %output_view = buffer.view %output_noalias[%zero_offset] : buffer -> view<[%c]x[%rows]xf32>
+  %src0_view = buffer.view %src0_noalias[%zero_offset] : buffer -> view<[%c]x[%a]xf32>
+  %src1_view = buffer.view %src1_noalias[%zero_offset] : buffer -> view<[%c]x[%b]xf32>
+  scf.if %in_bounds {
+    %pos = index.rem %linear, %rows : index
+    %ch = index.div %linear, %rows : index
+    %from_src0 = index.cmp ult, %pos, %a : index
+    scf.if %from_src0 {
+      %v0 = view.load %src0_view[%ch, %pos] : view<[%c]x[%a]xf32> -> f32
+      view.store %v0, %output_view[%ch, %pos] : f32, view<[%c]x[%rows]xf32>
+    } else {
+      %pos1 = index.sub %pos, %a : index
+      %v1 = view.load %src1_view[%ch, %pos1] : view<[%c]x[%b]xf32> -> f32
+      view.store %v1, %output_view[%ch, %pos] : f32, view<[%c]x[%rows]xf32>
+    }
+  }
+  kernel.return
+}
