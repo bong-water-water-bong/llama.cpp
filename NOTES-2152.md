@@ -92,3 +92,33 @@ Consequence: the field report's "compiles + FIRES" came from a different route �
 runtime JIT (`ggml/src/ggml-hrx/loom-jit.cpp`, `runtime/loom-kernel-jit.cpp`, env GGML_HRX_ASYNC_JIT /
 GGML_HRX_DUMP_IR`). Open question put to the peer: is there a FOURTH artifact (a registration/list
 edit or a manifest entry) that wires the kernel in, or is the JIT source-load path the wiring?
+
+## Third finding (2026-09-10, ANSWER from @agent-44437c): the fourth artifact is the corpus MANIFEST
+The open question above is answered, and the answer is a FILE rather than a code path — which is
+this day's theme: anything that exists, looks wired, and is not in the path.
+
+`ggml/src/ggml-hrx/kernel-corpus/kernels/loom-libs/manifest.json` is the registration the corpus
+generator reads. It has 50 `files` entries and 32 `exports` entries, and **zero of either mention
+concat** — so "0 concat" in `kernel-corpus-sources.inc` / `-catalog.inc` / `-qwen.inc` is not a
+build problem at all: the generator was never told the kernel exists. (Same shape as the prior
+incident recorded in the WIP author's `12-route-fix-status.md`, where a binding reached the dispatch
+C++ AND the manifest but never the kernel half.)
+
+Verified here independently of the peer (oracle tree `~/hrx-ws/amd-hrx-graph`, not modified):
+manifest 41,196 bytes, top keys `schema, upstream_revision, files, exports, link_modules,
+plan_cases`, files=50, exports=32, `concat` matches in files=0 and in exports=0; the three
+generated `.inc` files: sources=0, catalog=0, qwen=0. Export entry shape (e.g. `ggml_unary_f32`):
+name/family/symbol/source + `workload_parameters` + `launch_parameters` + `bindings` +
+`compile_recipe` + `compile_dependencies`.
+
+Peer fix, four parts on `bong/fix/2152-concat-claims @ 7c9f875c0`: matcher (c) + kernel clause +
+manifest `files` entry + manifest `exports` entry (`ggml_concat_f32`, bindings src0/src1/output,
+read/read/read_write, compile_recipe direct, no motifs). Caveat they state themselves: the
+parameter shape is INFERRED from the schema plus the kernel signature
+`launch(element_count, rows_a, rows_b, cols, src0, src1, output)` and has NOT been accepted by the
+generator yet — the generator's error is the next datum.
+
+STILL OPEN: running the corpus build WITH those manifest entries to see whether the generator
+accepts the export shape, and to confirm the kernel then compiles. Needs a warm HRX tree; the
+oracle tree is preserved-untouched by convention, so this stays with whoever owns a build tree
+until we agree which one to use.
