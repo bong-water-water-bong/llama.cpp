@@ -151,6 +151,9 @@
   },
   {
    "path": "ops/ssm_conv_f32.loom"
+  },
+  {
+   "path": "ops/concat_f32.loom"
   }
  ],
  "exports": [
@@ -2021,6 +2024,67 @@
     "mode": "direct",
     "primary_sources": [
      "ops/ssm_conv_f32.loom"
+    ],
+    "library_sources": []
+   },
+   "compile_dependencies": []
+  },
+  {
+   "name": "ggml_concat_f32",
+   "family": "loom_libs",
+   "symbol": "ggml_concat_f32",
+   "source": "ops/concat_f32.loom",
+   "workload_parameters": [
+    {
+     "name": "element_count",
+     "type": "index"
+    },
+    {
+     "name": "rows_a",
+     "type": "index"
+    },
+    {
+     "name": "rows_b",
+     "type": "index"
+    },
+    {
+     "name": "cols",
+     "type": "index"
+    }
+   ],
+   "launch_parameters": [
+    {
+     "name": "element_count",
+     "type": "index"
+    },
+    {
+     "name": "rows_a",
+     "type": "index"
+    },
+    {
+     "name": "rows_b",
+     "type": "index"
+    },
+    {
+     "name": "cols",
+     "type": "index"
+    }
+   ],
+   "bindings": [
+    "src0",
+    "src1",
+    "output"
+   ],
+   "binding_access": [
+    "read",
+    "read",
+    "read_write"
+   ],
+   "target_selector": "",
+   "compile_recipe": {
+    "mode": "direct",
+    "primary_sources": [
+     "ops/concat_f32.loom"
     ],
     "library_sources": []
    },
