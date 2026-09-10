@@ -768,6 +768,11 @@ static bool eager_capability_declared(enum ggml_op op) {
         // form) previously landed in HRX splits with no dispatch = graph
         // compute -1 (qwen3moe 30B prefill, #2147). Unclaimed shapes now split
         // to CPU.
+        // CONCAT is eager-claimed for the dim-0 row-stacking case that
+        // dispatch_registration/common/dispatch-concat.cpp matches: two contiguous
+        // 2D f32 inputs (ggml_concat_f32, corpus loom_libs). Other concat shapes
+        // fail the dispatch matcher's schema check and split to CPU.
+        case GGML_OP_CONCAT:
         case GGML_OP_VIEW:
             return true;
         default:

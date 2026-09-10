@@ -190,6 +190,8 @@ ggml_add_backend_library(ggml-hrx
     dispatch_registration/common/dispatch-binary.cpp
     dispatch_registration/common/dispatch-binary.h
     dispatch_registration/common/dispatch-common.cpp
+    dispatch_registration/common/dispatch-concat.cpp
+    dispatch_registration/common/dispatch-concat.h
     dispatch_registration/common/dispatch-common.h
     dispatch_registration/common/dispatch-flash-attention.cpp
     dispatch_registration/common/dispatch-flash-attention.h
