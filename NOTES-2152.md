@@ -80,3 +80,15 @@ rows 2560 (2048+512) cols 1280 -> element_count 3,276,800 vs 2,560 = **1280x**. 
 assumption is exactly cols-times wrong. `--check` reports maxabs, mismatch count/percent, pearson,
 PASS/FAIL, and names the first mismatch as (pos, ch). Self-validated: reference vs itself PASS
 (pearson 1.000000) and `--from-capture` round-trips to the same reference.
+
+## Second finding (2026-09-10): the corpus build path does NOT include this kernel
+Tested in the peer's warm tree (~/wt/q35-hrx-fix, restored afterwards with digests): with
+`concat_f32.loom` present in `kernel-corpus/kernels/loom-libs/ops/` (the directory CMakeLists:100
+declares as GGML_HRX_LOOM_LIBS_KERNEL_CORPUS_DIR) the generated lists contain **0** occurrences of
+"concat" — `kernel-corpus-sources.inc`, `kernel-corpus-catalog.inc`, `kernel-corpus-qwen.inc` — and
+still 0 after `cmake -B build` re-ran cleanly and `make ggml-hrx-kernel-corpus llama-cli llama-bench`
+returned rc=0. So a clean rebuild here proves NOTHING about the patched kernel: it is never compiled.
+Consequence: the field report's "compiles + FIRES" came from a different route — most likely the
+runtime JIT (`ggml/src/ggml-hrx/loom-jit.cpp`, `runtime/loom-kernel-jit.cpp`, env GGML_HRX_ASYNC_JIT /
+GGML_HRX_DUMP_IR`). Open question put to the peer: is there a FOURTH artifact (a registration/list
+edit or a manifest entry) that wires the kernel in, or is the JIT source-load path the wiring?
