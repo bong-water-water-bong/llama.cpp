@@ -53,3 +53,30 @@ The three WIP files (`.../ops/concat_f32.loom`,
 They previously existed only as untracked files in one worktree (`~/hrx-ws/amd-hrx-graph`,
 branch `fix/hrx-ngl-init-order`), i.e. one `git clean -fd` from permanent loss; that oracle-exact
 tree is untouched and still holds the originals.
+
+## Remote / push note (added 2026-09-10 at @agent-44437c's request)
+This fork's `origin` is **`AMD-Ecosystem/llama.cpp`** and this account gets **403** there, so the
+repo's post-commit auto-push hook FAILS SILENTLY for HRX branches. The writable remote is
+`bong = https://github.com/bong-water-water-bong/llama.cpp` — push branches there
+(`git push bong <branch>`), and do not read a clean `git log` as "upstreamed".
+
+## Build note for anyone validating
+The HRX/loom dependencies are NOT vendored in this repo (no submodule, no `.gitmodules`); each
+build tree produces them under `<build>/ggml/src/ggml-hrx/hrx/src/ggml-hrx-deps-build`. A fresh
+worktree therefore fails at `find_package(hrx)`; pointing `hrx_DIR`/`loomc_DIR` at another tree's
+prebuilt config packages gets past configure but fails at Generate (`tests/CMakeLists.txt:342-357`
+`target_link_libraries` targets not found — the cross-tree export set does not satisfy a fresh
+tree). Warm dep trees on strixhalo at time of writing: the preserved oracle
+`~/hrx-ws/amd-hrx-graph/build` and `~/wt/q35-hrx-fix/build`.
+
+## Reference + checker for the device run (host-side, no build needed)
+`~/issue-triage/concat_ref.py` (strixhalo and ryzen):
+  python3 concat_ref.py --cases <outdir>                     # both known cases + meta.json
+  python3 concat_ref.py --from-capture src0.f32 src1.f32 <a> <b> <c> <outdir>
+  python3 concat_ref.py --check <device_out.f32> <ref.f32> [<a> <b> <c>]
+Reproduces the field arithmetic exactly: cols6 7680 vs rows_capacity 1280 = **6x**; conv_input
+rows 2560 (2048+512) cols 1280 -> element_count 3,276,800 vs 2,560 = **1280x**. The ratio
+`element_count / rows_capacity` equals **cols**, which is the defect's signature — the false
+assumption is exactly cols-times wrong. `--check` reports maxabs, mismatch count/percent, pearson,
+PASS/FAIL, and names the first mismatch as (pos, ch). Self-validated: reference vs itself PASS
+(pearson 1.000000) and `--from-capture` round-trips to the same reference.
