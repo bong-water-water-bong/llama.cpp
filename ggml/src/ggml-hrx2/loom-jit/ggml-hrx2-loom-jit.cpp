@@ -344,22 +344,26 @@ hrx_status_t ggml_hrx2_loom_jit_amdgpu_compile(
     }
   }
 
-  std::unique_ptr<loomc_config_binding_t[]> config_bindings;
-  if (options->config_binding_count > 0) {
-    config_bindings.reset(new (std::nothrow)
-                              loomc_config_binding_t[options
-                                                          ->config_binding_count]());
-    if (!config_bindings) {
-      return ggml_hrx2_loom_jit_make_status(
-          HRX_STATUS_OUT_OF_MEMORY,
-          "failed to allocate GGML HRX2 Loom JIT config bindings");
+  // The current Loom C API removed `loomc_compile_options_t.config`, so the route's
+  // per-compile config bindings are no longer handed to loomc_compile_module as a bindings
+  // array. Compile-time config now arrives as an ordinary typed module of exact `config.def`
+  // ops (`loomc_compile_options_t.config_module`; see loomc/compile.h plus the file comment
+  // in loomc/config.h), loaded through the normal module API -- so serialize the bindings to
+  // text here and load that module below, once the context and workspace are live.
+  // Every binding this fork's catalog supplies is an integer (238 routes: 1224 shape-derived
+  // counts/strides and 285 literal tuning values, all integral), so `: index` is exact.
+  std::string config_module_text;
+  config_module_text.reserve(options->config_binding_count * 48);
+  for (size_t i = 0; i < options->config_binding_count; ++i) {
+    const char* config_key = options->config_bindings[i].key;
+    config_module_text += "config.def ";
+    if (config_key[0] != '@') {
+      config_module_text += "@";
     }
-    for (size_t i = 0; i < options->config_binding_count; ++i) {
-      config_bindings[i].key =
-          loomc_make_cstring_view(options->config_bindings[i].key);
-      config_bindings[i].value =
-          loomc_make_cstring_view(options->config_bindings[i].value);
-    }
+    config_module_text += config_key;
+    config_module_text += " = ";
+    config_module_text += options->config_bindings[i].value;
+    config_module_text += " : index\n";
   }
 
   LoomWorkspace workspace;
@@ -466,9 +470,40 @@ hrx_status_t ggml_hrx2_loom_jit_amdgpu_compile(
   compile_options.structure_size = sizeof(compile_options);
   compile_options.next = &compile_target_options;
   compile_options.module_name = loomc_make_cstring_view(options->module_name);
-  compile_options.config.bindings = config_bindings.get();
-  compile_options.config.binding_count = options->config_binding_count;
-  compile_options.config.flags = LOOMC_CONFIG_POLICY_FLAG_REQUIRE_RESOLVED;
+  // The current API flattens what was
+  // `compile_options.config.flags`, and takes the config values as a module (port note above).
+  // The module borrows config_module_text, which lives to the end of this function.
+  compile_options.config_flags = LOOMC_CONFIG_POLICY_FLAG_REQUIRE_RESOLVED;
+  LoomSource config_source;
+  LoomModule config_module;
+  if (!config_module_text.empty()) {
+    loomc_source_options_t config_source_options = {};
+    config_source_options.type = LOOMC_STRUCTURE_TYPE_SOURCE_OPTIONS;
+    config_source_options.structure_size = sizeof(config_source_options);
+    config_source_options.format = LOOMC_SOURCE_FORMAT_TEXT;
+    config_source_options.identifier = loomc_make_cstring_view("ggml-hrx2-config");
+    config_source_options.contents = loomc_make_byte_span(
+        config_module_text.data(), config_module_text.size());
+    config_source_options.storage = LOOMC_SOURCE_STORAGE_BORROWED;
+    status = loomc_source_create(&config_source_options, loomc_allocator_system(),
+                                 config_source.out());
+    if (!loomc_status_is_ok(status)) {
+      return ggml_hrx2_loom_jit_status_from_loom(status, "create Loom config source");
+    }
+    LoomResult config_result;
+    status = loomc_module_deserialize_text_from_source(
+        jit->context, workspace.get(), config_source.get(), nullptr,
+        loomc_allocator_system(), config_module.out(), config_result.out());
+    if (!loomc_status_is_ok(status)) {
+      return ggml_hrx2_loom_jit_status_from_loom(
+          status, "deserialize Loom config module");
+    }
+    if (!loomc_result_succeeded(config_result.get())) {
+      return ggml_hrx2_loom_jit_status_from_result(
+          config_result.get(), "Loom config module deserialization failed");
+    }
+    compile_options.config_module = config_module.get();
+  }
   status = loomc_compile_module(jit->compiler, workspace.get(),
                                 jit->pass_program, module.get(),
                                 &compile_options, loomc_allocator_system(),
