@@ -206,6 +206,10 @@ check.case @hrx2_rms_norm_f32_case {
   check.return
 }
 
-check.benchmark<@hrx2_rms_norm_f32_case>
+// A bodiless `check.benchmark<@case>` group declaration used to be accepted here. The current Loom
+// front-end parses the op and then requires a body/op name, so the whole kernel set failed to build:
+//   rms_norm_f32.loom:210:1: error [PARSE/003]: unexpected token 'check.benchmark', expected symbol
+// The keyword itself is unchanged - current Loom sources use check.benchmark with a body - so the
+// redundant declaration is dropped; the case stays exercised by the two declarations below.
 check.benchmark<@hrx2_rms_norm_f32_case> @hrx2_rms_norm_f32_decode {ncols = 4096, nrows = 1}
 check.benchmark<@hrx2_rms_norm_f32_case> @hrx2_rms_norm_f32_small_prefill {ncols = 4096, nrows = 32}
