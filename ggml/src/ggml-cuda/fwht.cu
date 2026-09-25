@@ -271,7 +271,7 @@ static bool fwht_launch(ggml_backend_cuda_context & ctx, const T * src_d, float 
             return true; \
         }
     static const bool legacy = getenv("GGML_CUDA_FWHT_LEGACY") != nullptr;
-    if (legacy) {
+    if (legacy || signs) {
         switch (n) {
             FWHT_CASE(512)
             FWHT_CASE(1024)
