@@ -9300,6 +9300,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, GGML_TYPE_F16, 2048, 1, 2048));
     test_cases.emplace_back(new test_fwht_signed(1024, 5120, 1));
     test_cases.emplace_back(new test_fwht_signed(1024, 5120, 32));
+    test_cases.emplace_back(new test_fwht_signed(1024, 5120, 128));
+    test_cases.emplace_back(new test_fwht_signed(1024, 5120, 512));
     test_cases.emplace_back(new test_fwht_signed(1024, 6144, 7, GGML_TYPE_F16));
     test_cases.emplace_back(new test_fwht_signed(1024, 17408, 3));
     // Block widths above the register path's reach, plus a couple below it as controls. 4096 and
