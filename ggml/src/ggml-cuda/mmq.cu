@@ -368,6 +368,14 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
     return false;
 #endif // GGML_CUDA_FORCE_CUBLAS
 
+#if defined(GGML_USE_HIP)
+    // ref: PQ2_0 MMQ on HIP (RDNA WMMA) produces wrong results at model scale;
+    // fall back to dequant + rocBLAS like PTQ1_0.
+    if (type == GGML_TYPE_PQ2_0) {
+        return false;
+    }
+#endif
+
     bool mmq_supported;
 
     switch (type) {
