@@ -4633,6 +4633,50 @@ struct test_mul_mat : public test_case {
     }
 };
 
+// Small-scale weights (mimics a ternary checkpoint's ~1/64 scale) to probe the
+// MMQ path for value-dependent issues that the default [-1,1] init hides.
+struct test_mul_mat_small_scale : public test_mul_mat {
+    test_mul_mat_small_scale(ggml_type type_a, ggml_type type_b, int64_t m, int64_t n, int64_t k,
+            std::array<int64_t, 2> bs = {1, 1}, std::array<int64_t, 2> nr = {1, 1})
+        : test_mul_mat(type_a, type_b, m, n, k, bs, nr) {}
+
+    void initialize_tensors(ggml_context * ctx) override {
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx, t)) {
+            if (ggml_is_quantized(t->type)) {
+                init_tensor_uniform(t, -0.02f, 0.02f);
+            } else {
+                init_tensor_uniform(t);
+            }
+        }
+    }
+};
+
+// N(0,1) activations + small-scale ternary weights: mimics the RMS-normed hidden
+// state feeding the output layer, the one data regime the uniform init never hits.
+struct test_mul_mat_realistic : public test_mul_mat {
+    test_mul_mat_realistic(ggml_type type_a, ggml_type type_b, int64_t m, int64_t n, int64_t k)
+        : test_mul_mat(type_a, type_b, m, n, k, {1, 1}, {1, 1}) {}
+
+    void initialize_tensors(ggml_context * ctx) override {
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx, t)) {
+            if (ggml_is_quantized(t->type)) {
+                init_tensor_uniform(t, -0.02f, 0.02f);
+            } else if (t->type == GGML_TYPE_F32) {
+                size_t nels = ggml_nelements(t);
+                std::vector<float> data(nels);
+                std::default_random_engine gen(42);
+                std::normal_distribution<float> dist(0.0f, 1.0f);
+                for (size_t i = 0; i < nels; ++i) {
+                    data[i] = dist(gen);
+                }
+                ggml_backend_tensor_set(t, data.data(), 0, nels * sizeof(float));
+            } else {
+                init_tensor_uniform(t);
+            }
+        }
+    }
+};
+
 // GGML_HINT_SRC0_IS_HADAMARD
 struct test_mul_mat_hadamard : public test_mul_mat {
     test_mul_mat_hadamard(ggml_type type_a = GGML_TYPE_F32, ggml_type type_b = GGML_TYPE_F32,
@@ -9330,6 +9374,35 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     // m == 1, with n on both sides of MMVF_MAX_BATCH_SIZE (8): mmvf below, operand swap above
     for (int64_t n : {1, 7, 8, 9, 16, 128, 512}) {
         test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F32, GGML_TYPE_F32, 1, n, 2048, {1, 1}, {1, 1}));
+    }
+
+    // MMQ / batch matmul coverage (n > 8) for the Q2_0-codec family — the ubatch
+    // prefill path the small-n mat-vec cases above never exercise.
+    for (ggml_type type_a : {GGML_TYPE_Q2_0, GGML_TYPE_PQ2_0, GGML_TYPE_PTQ1_0}) {
+        for (int64_t k : {2048, 5120}) {
+            for (int64_t n : {16, 32, 128}) {
+                test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 512, n, k, {1, 1}, {1, 1}));
+            }
+        }
+        // Real Bonsai-2 FFN / attention shapes at prefill batch sizes.
+        for (int64_t n : {128, 512}) {
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 5120, n, 17408, {1, 1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 17408, n, 5120, {1, 1}, {1, 1}));
+        }
+        // Output-logits / tied-embedding shapes (m = vocab) and the odd k=6144 attn_output.
+        for (int64_t n : {16, 128, 512}) {
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 248320, n, 5120, {1, 1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 5120, n, 6144, {1, 1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 10240, n, 5120, {1, 1}, {1, 1}));
+        }
+        // Small-scale ternary weights at the output-logits shape (mimics real checkpoint scale).
+        for (int64_t n : {128, 512}) {
+            test_cases.emplace_back(new test_mul_mat_small_scale(type_a, GGML_TYPE_F32, 248320, n, 5120, {1, 1}, {1, 1}));
+        }
+        // N(0,1) activations (RMS-normed hidden) at the output-logits shape.
+        for (int64_t n : {128, 512}) {
+            test_cases.emplace_back(new test_mul_mat_realistic(type_a, GGML_TYPE_F32, 248320, n, 5120));
+        }
     }
 
 #if 0
